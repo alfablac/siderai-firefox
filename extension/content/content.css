@@ -1,0 +1,56 @@
+/* Graphite content-script page-level styles.
+   Shadow-DOM UI (toolbar / popover / writing assistant) is styled by
+   overlay.css, which content.js also injects into the shadow root.
+   This file only styles elements inserted directly into the page DOM:
+   the host element, full-page translation notes and subtitle overlays. */
+
+/* Inter — bundled locally. @font-face inlined (not @import of
+   ../fonts/inter.css): @import in manifest-injected content stylesheets
+   is fragile in Firefox (must precede all other rules, extra fetch chain,
+   resolution against the page can fail). url() here resolves relative to
+   this stylesheet's moz-extension:// URL: extension/content/ -> extension/fonts/. */
+@font-face{font-family:"Inter";src:url("../fonts/inter-latin-400-normal.woff2") format("woff2");font-weight:400;font-style:normal;font-display:swap}
+@font-face{font-family:"Inter";src:url("../fonts/inter-latin-500-normal.woff2") format("woff2");font-weight:500;font-style:normal;font-display:swap}
+@font-face{font-family:"Inter";src:url("../fonts/inter-latin-600-normal.woff2") format("woff2");font-weight:600;font-style:normal;font-display:swap}
+@font-face{font-family:"Inter";src:url("../fonts/inter-latin-700-normal.woff2") format("woff2");font-weight:700;font-style:normal;font-display:swap}
+
+#graphite-sider-root {
+  all: initial;
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 0;
+  height: 0;
+  z-index: 2147483647;
+  pointer-events: none;
+}
+
+.gs-translated-note {
+  display: block;
+  color: #8f959e;
+  font-size: 0.92em;
+  line-height: 1.5;
+  margin: 0.25em 0 0.9em;
+  padding-left: 0.6em;
+  border-left: 2px solid #5ec8c0;
+  font-style: normal;
+}
+
+.gs-yt-subs {
+  position: absolute;
+  left: 50%;
+  bottom: 64px;
+  transform: translateX(-50%);
+  max-width: 86%;
+  text-align: center;
+  background: rgba(23, 25, 29, 0.88);
+  color: #e6e8eb;
+  border: 1px solid #33373f;
+  border-radius: 8px;
+  padding: 6px 12px;
+  font-family: "Inter", system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  font-size: 15px;
+  line-height: 1.45;
+  pointer-events: none;
+  z-index: 60;
+}

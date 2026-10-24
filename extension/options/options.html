@@ -1,0 +1,317 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Graphite Sider — Settings</title>
+<link rel="stylesheet" href="options.css">
+</head>
+<body>
+<header class="topbar">
+  <div class="brand">
+    <div class="logo" aria-hidden="true">G</div>
+    <div>
+      <h1>Graphite Sider</h1>
+      <p class="subtitle">Settings &middot; bring your own model providers</p>
+    </div>
+  </div>
+  <div class="topbar-actions">
+    <span id="saveStatus" class="save-status" role="status" aria-live="polite">Loading…</span>
+    <button id="saveAllBtn" class="btn btn-primary" type="button">Save settings</button>
+  </div>
+</header>
+
+<nav class="toc" aria-label="Settings sections">
+  <a href="#providers">Providers</a>
+  <a href="#defaults">Defaults</a>
+  <a href="#features">Features</a>
+  <a href="#prompts">Prompt Library</a>
+  <a href="#data">Data</a>
+  <a href="#security">Security &amp; Privacy</a>
+  <a href="#help">Help</a>
+</nav>
+
+<main>
+  <!-- ================= Providers ================= -->
+  <section id="providers" class="panel">
+    <h2>Model providers</h2>
+    <p class="muted">
+      Add one or more providers. Every enabled provider can be picked in the sidebar,
+      and enabled providers are the sources used for multi-model / group chat.
+      Use <strong>Set Active</strong> to choose the default provider.
+    </p>
+
+    <div class="add-provider">
+      <label class="field grow">
+        <span>Preset</span>
+        <select id="presetSelect"></select>
+      </label>
+      <button id="addProviderBtn" class="btn" type="button">+ Add provider</button>
+    </div>
+
+    <div id="providerList" class="provider-list"></div>
+    <p id="noProviders" class="muted empty-note">No providers yet. Pick a preset above and add one to get started.</p>
+  </section>
+
+  <!-- ================= Defaults ================= -->
+  <section id="defaults" class="panel">
+    <h2>Defaults</h2>
+    <div class="grid-2">
+      <label class="field">
+        <span>Active provider</span>
+        <select id="activeProviderSelect"></select>
+      </label>
+      <label class="field">
+        <span>Active model override <em class="hint">(blank = provider's model)</em></span>
+        <input id="activeModel" type="text" placeholder="e.g. gpt-4o-mini" autocomplete="off" spellcheck="false">
+      </label>
+      <label class="field">
+        <span>Target language (translation / summaries)</span>
+        <select id="targetLang"></select>
+      </label>
+      <label class="field">
+        <span>Max tokens <span id="maxTokensValue" class="hint"></span></span>
+        <input id="maxTokens" type="number" min="64" max="131072" step="64">
+      </label>
+    </div>
+
+    <label class="field">
+      <span>Translation languages (one per line)</span>
+      <textarea id="translationLanguages" rows="8" spellcheck="false" placeholder="English&#10;Portuguese (Brazil)"></textarea>
+      <span class="hint">One language per line. These are the languages offered in Translate pickers. Example: Portuguese (Brazil)</span>
+    </label>
+
+    <label class="field">
+      <span>Temperature: <strong id="temperatureValue">0.7</strong></span>
+      <input id="temperature" type="range" min="0" max="2" step="0.1">
+      <span class="hint">0 = focused / deterministic &middot; 2 = very creative</span>
+    </label>
+
+    <label class="field">
+      <span>System prompt</span>
+      <textarea id="systemPrompt" rows="4" placeholder="You are a helpful assistant…"></textarea>
+    </label>
+  </section>
+
+  <!-- ================= Features ================= -->
+  <section id="features" class="panel">
+    <h2>Features</h2>
+    <label class="toggle">
+      <input id="featSelectionToolbar" type="checkbox">
+      <span><strong>Selection toolbar</strong><br><small>Show a floating toolbar when text is selected on a page (explain, translate, summarize, rewrite…).</small></span>
+    </label>
+    <label class="toggle">
+      <input id="featSearchEnhance" type="checkbox">
+      <span><strong>Search engine boost</strong><br><small>Show an AI answer panel alongside Google / Bing / DuckDuckGo and other supported search results.</small></span>
+    </label>
+    <label class="toggle">
+      <input id="featYoutubeAutoSummary" type="checkbox">
+      <span><strong>YouTube auto-summary prompt</strong><br><small>Offer / show a summary prompt automatically when a YouTube video page is opened.</small></span>
+    </label>
+    <label class="toggle">
+      <input id="featBilingualSubtitles" type="checkbox">
+      <span><strong>Bilingual subtitles</strong><br><small>Show translated subtitles under the original captions on YouTube.</small></span>
+    </label>
+    <p class="muted note">
+      Context menus are always registered by the extension (right-click selected text, a page,
+      an image or a YouTube link for Graphite actions). There is no toggle for them; remove the
+      extension to remove its context-menu entries.
+    </p>
+
+    <h3>Sidebar position (right side)</h3>
+    <p class="muted">
+      Firefox — not the extension — controls which side the built-in sidebar appears on.
+      The MV2 <code>sidebar_action</code> API has no side option, so Graphite Sider cannot
+      force the right side in code. Move it once using Firefox's own control and Firefox
+      remembers the choice for this profile:
+    </p>
+    <ol id="sidebarGuideSteps" class="plain"></ol>
+    <div class="row-actions wrap">
+      <button id="openSidebarBtn" class="btn" type="button">Open sidebar</button>
+      <label class="field grow" style="margin:0">
+        <span>Preferred side (preference only — Firefox applies it)</span>
+        <select id="sidebarSidePref">
+          <option value="right">Right (recommended)</option>
+          <option value="left">Left</option>
+        </select>
+      </label>
+    </div>
+  </section>
+
+  <!-- ================= Prompt Library ================= -->
+  <section id="prompts" class="panel">
+    <h2>Prompt Library</h2>
+    <p class="muted">
+      Built-in prompts can be customized below: your version replaces the built-in everywhere it is used.
+      Custom prompts are stored with your settings and can use
+      placeholders such as <code>{{text}}</code>, <code>{{selection}}</code>, <code>{{url}}</code>,
+      <code>{{title}}</code> and <code>{{targetLang}}</code> (exact placeholders depend on
+      <code>GraphitePrompts.renderPrompt</code> when available).
+    </p>
+
+    <h3>Your prompts</h3>
+    <p class="muted">Your custom prompts stay in the dropdown below — a prompt's body only appears in the editor after you select it. Select "(+ New prompt)" to add a new one.</p>
+    <div id="customPromptEditor" class="prompt-editor">
+      <label class="field">
+        <span>Your prompt</span>
+        <select id="customPromptSelect"></select>
+      </label>
+      <p id="customPromptStatus" class="hint" role="status" aria-live="polite"></p>
+      <label class="field">
+        <span>Name</span>
+        <input id="promptName" type="text" placeholder="e.g. Explain like I'm five">
+      </label>
+      <label class="field">
+        <span>Body</span>
+        <textarea id="promptBody" rows="4" placeholder="Explain the following text simply:&#10;&#10;{{text}}"></textarea>
+      </label>
+      <div class="row-actions">
+        <button id="savePromptBtn" class="btn btn-primary" type="button">Add prompt</button>
+        <button id="cancelPromptEditBtn" class="btn btn-ghost hidden" type="button">Cancel edit</button>
+        <button id="deleteCustomPromptBtn" class="btn btn-small btn-danger" type="button">Delete selected prompt</button>
+      </div>
+    </div>
+    <p id="noCustomPrompts" class="muted empty-note">No custom prompts yet. Pick "(+ New prompt)" above, name it and save.</p>
+
+    <div class="row-actions wrap">
+      <button id="exportPromptsBtn" class="btn" type="button">Export prompts (JSON)</button>
+      <label class="btn file-btn">Import prompts (JSON)
+        <input id="importPromptsFile" type="file" accept="application/json,.json" class="hidden">
+      </label>
+    </div>
+
+    <h3>Built-in prompts</h3>
+    <div id="builtinPromptEditor" class="builtin-prompt-editor">
+      <label class="field">
+        <span>Built-in prompt</span>
+        <select id="builtinPromptSelect" class="builtin-prompt-select"></select>
+      </label>
+      <label class="field">
+        <span>Body</span>
+        <textarea id="builtinPromptBody" class="builtin-prompt-body" rows="18" spellcheck="false"></textarea>
+      </label>
+      <p id="builtinPromptStatus" class="hint builtin-prompt-status" role="status" aria-live="polite">Built-in default</p>
+      <div class="row-actions">
+        <button id="saveBuiltinPromptBtn" class="btn btn-primary" type="button">Save prompt</button>
+        <button id="resetBuiltinPromptBtn" class="btn btn-ghost" type="button">Reset to built-in</button>
+      </div>
+    </div>
+    <p id="noBuiltinPrompts" class="muted empty-note">Built-in prompt library not loaded (lib/prompts.js not present yet).</p>
+  </section>
+
+  <!-- ================= Data ================= -->
+  <section id="data" class="panel">
+    <h2>Data</h2>
+    <p class="muted" id="storageUsage">Storage usage: calculating…</p>
+    <p class="muted note" id="persistenceStatus" role="status" aria-live="polite">Storage status: checking…</p>
+    <p class="muted note">
+      <strong>Settings not surviving a Firefox restart?</strong> This add-on uses the stable ID
+      <code>graphite-sider@local</code> (manifest <code>browser_specific_settings.gecko.id</code>).
+      Durable storage requires a <strong>permanent install</strong>: temporary installs via
+      <code>about:debugging</code> are removed by Firefox at restart <em>including their storage</em>,
+      and no extension code can prevent that. For an unsigned build, install the XPI permanently in
+      Firefox Developer Edition, Nightly or ESR with <code>xpinstall.signatures.required</code> set to
+      <code>false</code> in <code>about:config</code> (or use a signed build). Until then, use
+      <strong>Export all settings</strong> below as a backup and re-import after reinstalling.
+      Saves are written to <code>browser.storage.local</code> and verified by read-back; a backup
+      mirror is also kept so a lost primary copy can be recovered automatically on next load.
+    </p>
+    <div class="row-actions wrap">
+      <button id="exportAllBtn" class="btn" type="button">Export all settings (JSON)</button>
+      <label class="btn file-btn">Import all settings (JSON)
+        <input id="importAllFile" type="file" accept="application/json,.json" class="hidden">
+      </label>
+      <button id="refreshUsageBtn" class="btn" type="button">Refresh usage</button>
+      <button id="clearHistoryBtn" class="btn btn-danger" type="button">Clear chat history</button>
+    </div>
+    <p class="muted note">
+      Exported settings files contain your API keys in plain text. Keep them private and delete
+      them when no longer needed. Importing replaces your current providers, defaults and custom prompts.
+    </p>
+  </section>
+
+  <!-- ================= Security ================= -->
+  <section id="security" class="panel">
+    <h2>Security &amp; privacy</h2>
+    <ul class="plain">
+      <li>API keys are stored in <code>browser.storage.local</code> on this device, with a recovery mirror in the extension's local storage and a size-capped settings-core mirror in <code>browser.storage.sync</code> (history is never mirrored to sync). They are sent only to your configured provider. Use Export/Import in Data to move or back up settings; exported files contain keys in plain text.</li>
+      <li>Keys are sent <strong>only</strong> to the <code>baseUrl</code> of the provider you configured, as part of that provider's API requests. Check the URL before pasting a key.</li>
+      <li>Local providers (Ollama, LM Studio) need <strong>no API key</strong> — leave the key field blank.</li>
+      <li>Page text, selections, subtitles or files you ask about are sent to your configured provider so it can answer. Nothing is sent to the Graphite Sider authors; there is no Graphite account or telemetry server.</li>
+      <li><strong>Firefox host permissions:</strong> reaching <code>http://localhost:11434</code> (Ollama) or <code>http://localhost:1234</code> (LM Studio) requires host permission for localhost. If a local provider fails to connect, check that Firefox was granted permission for localhost / <code>&lt;all_urls&gt;</code> in <code>about:addons</code> → Graphite Sider → Permissions, and that the local server is running.</li>
+      <li>Use a separate, revocable API key for this extension where the provider allows it, and rotate keys you have shared in exported settings files.</li>
+    </ul>
+  </section>
+
+  <!-- ================= Help ================= -->
+  <section id="help" class="panel">
+    <h2>Help</h2>
+
+    <details>
+      <summary>Getting an OpenAI API key</summary>
+      <p>Sign in at <code>platform.openai.com</code>, open <em>API keys</em>, create a new secret key, then add an
+      <strong>OpenAI</strong> provider here, paste the key, pick a model (e.g. <code>gpt-4o-mini</code>) and click
+      <strong>Test Connection</strong>. API billing is separate from a ChatGPT subscription.</p>
+    </details>
+
+    <details>
+      <summary>Getting an Anthropic API key</summary>
+      <p>Sign in at <code>console.anthropic.com</code>, open <em>API Keys</em>, create a key, then add an
+      <strong>Anthropic</strong> provider, paste the key and pick a Muse model. Anthropic requests go to
+      <code>https://api.anthropic.com</code> with the <code>x-api-key</code> header; Test Connection verifies it.</p>
+    </details>
+
+    <details>
+      <summary>Running Ollama locally (no key, private)</summary>
+      <p>Install Ollama from <code>ollama.com</code>, pull a model such as <code>ollama pull llama3.1</code>, and add the
+      <strong>Ollama local</strong> provider (base URL <code>http://localhost:11434</code>, model = the pulled model name).
+      Browsers block cross-origin calls by default, so start Ollama allowing extension origins:</p>
+      <pre>OLLAMA_ORIGINS=* ollama serve</pre>
+      <p>On Windows, set the <code>OLLAMA_ORIGINS</code> environment variable to <code>*</code> and restart Ollama.
+      Then use <strong>Fetch models</strong> / <strong>Test Connection</strong> here.</p>
+    </details>
+
+    <details>
+      <summary>Running LM Studio locally</summary>
+      <p>Install LM Studio from <code>lmstudio.ai</code>, load a model, open the <em>Local Server</em> tab and start the
+      server (default <code>http://localhost:1234/v1</code>) with CORS enabled. Add the <strong>LM Studio local</strong>
+      provider, leave the API key blank, and use the model identifier shown by LM Studio.</p>
+    </details>
+
+    <details>
+      <summary>Sidebar on the right side</summary>
+      <p>Firefox controls the built-in sidebar position; extensions cannot set it (the
+      <code>sidebar_action</code> API has no side option and extensions cannot change Firefox
+      preferences). Open the sidebar, then use the sidebar header menu / <em>View → Sidebar
+      position</em> to move it to the right, or set <code>sidebar.position_start</code> to
+      <code>false</code> in <code>about:config</code> and restart Firefox. Firefox remembers
+      the side for this profile. See <a href="#features">Features → Sidebar position</a>.</p>
+    </details>
+
+    <details>
+      <summary>Settings / API keys lost after restarting Firefox</summary>
+      <p>A temporary <code>about:debugging</code> install is removed at restart together with its
+      <code>browser.storage.local</code> data — this is Firefox behaviour, not a settings bug, and
+      no extension code can persist across it. Install the XPI permanently instead: Firefox
+      Developer Edition / Nightly / ESR with <code>xpinstall.signatures.required=false</code>
+      (unsigned builds), or a signed build in regular Firefox. The add-on's stable ID
+      (<code>graphite-sider@local</code>) keeps its storage across restarts once permanently
+      installed. You can also Export settings (Data section) and Import them after reinstalling.</p>
+    </details>
+
+    <details>
+      <summary>OpenAI-compatible gateways (OpenRouter, Groq, DeepSeek, Together, Fireworks, Mistral, xAI…)</summary>
+      <p>Pick the matching preset so the base URL is filled in for you, paste that service's API key, then use
+      <strong>Fetch models</strong> to list the models your key can access. For any other gateway, choose
+      <em>Custom OpenAI-compatible</em> and enter its <code>/v1</code> base URL.</p>
+    </details>
+  </section>
+
+  <p class="footer muted">Graphite Sider is a bring-your-own-key sidebar. Your providers bill you directly, and your keys never leave this machine except to the provider you picked.</p>
+</main>
+
+<script src="../lib/storage.js"></script>
+<script src="../lib/prompts.js"></script>
+<script src="options.js"></script>
+</body>
+</html>

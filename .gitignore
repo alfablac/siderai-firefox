@@ -1,0 +1,19 @@
+# Build output and signed packages
+dist/
+*.xpi
+*.crx
+
+# Third-party extension packages and unpacked copies (reference only, never ship)
+/original-crx/
+/original-unpacked/
+
+# Working notes, analysis output, and agent scratch files
+/analysis/
+/docs/
+/DEBUGGING.md
+
+# Local tooling state
+.amo-upload-uuid
+node_modules/
+.DS_Store
+*.log

@@ -1,0 +1,143 @@
+{
+  "manifest_version": 2,
+  "name": "Graphite Sider — AI Sidebar (BYO API)",
+  "version": "1.0.8",
+  "description": "Graphite-themed AI sidebar for Firefox. Bring your own key (BYOK; OpenAI-compatible, Anthropic, Ollama, LM Studio) for page and YouTube summaries with clickable timestamps, translation and writing help. No account, no proprietary backend.",
+  "author": "Graphite Sider contributors",
+  "icons": {
+    "16": "icons/icon-16.png",
+    "32": "icons/icon-32.png",
+    "48": "icons/icon-48.png",
+    "96": "icons/icon-96.png"
+  },
+  "browser_specific_settings": {
+    "gecko": {
+      "id": "graphite-sider@local",
+      "strict_min_version": "140.0",
+      "data_collection_permissions": {
+        "required": [
+          "authenticationInfo",
+          "browsingActivity",
+          "personalCommunications",
+          "searchTerms",
+          "websiteContent"
+        ]
+      }
+    }
+  },
+  "permissions": [
+    "storage",
+    "contextMenus",
+    "activeTab",
+    "tabs",
+    "<all_urls>",
+    "clipboardWrite",
+    "notifications"
+  ],
+  "background": {
+    "persistent": false,
+    "scripts": [
+      "lib/storage.js",
+      "lib/providers.js",
+      "lib/prompts.js",
+      "lib/youtube.js",
+      "lib/pdf.js",
+      "background.js"
+    ]
+  },
+  "sidebar_action": {
+    "default_title": "Graphite Sider",
+    "default_panel": "sidebar/sidebar.html",
+    "default_icon": {
+      "16": "icons/icon-16.png",
+      "32": "icons/icon-32.png",
+      "48": "icons/icon-48.png",
+      "96": "icons/icon-96.png"
+    },
+    "open_at_install": false
+  },
+  "browser_action": {
+    "default_title": "Graphite Sider — open sidebar",
+    "default_icon": {
+      "16": "icons/icon-16.png",
+      "32": "icons/icon-32.png",
+      "48": "icons/icon-48.png",
+      "96": "icons/icon-96.png"
+    }
+  },
+  "options_ui": {
+    "page": "options/options.html",
+    "open_in_tab": true
+  },
+  "commands": {
+    "_execute_sidebar_action": {
+      "suggested_key": {
+        "default": "Ctrl+Shift+Y",
+        "mac": "MacCtrl+Shift+Y"
+      },
+      "description": "Toggle the Graphite Sider sidebar"
+    },
+    "summarize-page": {
+      "suggested_key": {
+        "default": "Alt+Shift+S",
+        "mac": "Alt+Shift+S"
+      },
+      "description": "Summarize the current page in Graphite Sider"
+    },
+    "quick-translate": {
+      "suggested_key": {
+        "default": "Alt+Shift+T",
+        "mac": "Alt+Shift+T"
+      },
+      "description": "Translate the current selection in Graphite Sider"
+    }
+  },
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["content/content.js"],
+      "css": ["content/content.css", "content/overlay.css"],
+      "run_at": "document_end",
+      "match_about_blank": false
+    },
+    {
+      "matches": ["*://*.youtube.com/*"],
+      "js": ["content/youtube.js"],
+      "run_at": "document_end"
+    },
+    {
+      "matches": [
+        "*://*.google.com/search*",
+        "*://*.google.co.uk/search*",
+        "*://*.google.de/search*",
+        "*://*.google.fr/search*",
+        "*://*.google.co.jp/search*",
+        "*://*.google.com.au/search*",
+        "*://*.google.ca/search*",
+        "*://*.google.com.br/search*",
+        "*://*.google.co.in/search*",
+        "*://www.bing.com/search*",
+        "*://cn.bing.com/search*",
+        "*://duckduckgo.com/*",
+        "*://html.duckduckgo.com/html/*",
+        "*://lite.duckduckgo.com/lite/*"
+      ],
+      "js": ["content/search.js"],
+      "run_at": "document_end"
+    },
+    {
+      "matches": ["*://*.youtube.com/*"],
+      "js": ["content/inject-yt.js"],
+      "run_at": "document_start"
+    }
+  ],
+  "web_accessible_resources": [
+    "content/*",
+    "sidebar/*",
+    "options/*",
+    "lib/*",
+    "fonts/*",
+    "icons/*"
+  ],
+  "content_security_policy": "script-src 'self'; object-src 'self'"
+}

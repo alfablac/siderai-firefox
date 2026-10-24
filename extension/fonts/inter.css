@@ -1,0 +1,36 @@
+/* Inter — bundled locally (OF​L 1.1, rsms/inter via @fontsource/inter).
+   No network fetch: fonts ship inside the .xpi so the extension works
+   offline and never phones home for type. Weights 400/500/600/700.
+   Paths are relative to each stylesheet that @imports this file only
+   when that stylesheet lives in extension/fonts/; see per-surface
+   @font-face blocks in sidebar.css / options.css / overlay.css, which
+   use surface-relative paths. This file is the canonical copy for
+   pages that link it directly. */
+@font-face {
+  font-family: "Inter";
+  src: url("inter-latin-400-normal.woff2") format("woff2");
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: "Inter";
+  src: url("inter-latin-500-normal.woff2") format("woff2");
+  font-weight: 500;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: "Inter";
+  src: url("inter-latin-600-normal.woff2") format("woff2");
+  font-weight: 600;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: "Inter";
+  src: url("inter-latin-700-normal.woff2") format("woff2");
+  font-weight: 700;
+  font-style: normal;
+  font-display: swap;
+}

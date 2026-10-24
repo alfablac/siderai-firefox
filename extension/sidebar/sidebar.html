@@ -1,0 +1,123 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Graphite Sider</title>
+<link rel="stylesheet" href="../fonts/inter.css">
+<link rel="stylesheet" href="sidebar.css">
+</head>
+<body>
+<header class="app-header">
+  <div class="brand">
+    <svg class="logo" viewBox="0 0 32 32" width="22" height="22" aria-hidden="true"><path d="M16 2 L28 12 L16 30 L4 12 Z" fill="#26292f" stroke="#5ec8c0" stroke-width="1.6"/><path d="M4 12 H28 M16 2 L11 12 L16 30 L21 12 L16 2" fill="none" stroke="#8b9bb4" stroke-width="1"/></svg>
+    <span class="brand-name">Graphite Sider</span>
+  </div>
+  <div class="header-controls">
+    <select id="providerSelect" title="Provider / model" aria-label="Provider"></select>
+    <select id="modelSelect" title="Model" aria-label="Model"></select>
+    <button id="newChatBtn" class="icon-btn" title="New chat">+ New</button>
+    <button id="settingsBtn" class="icon-btn" title="Settings" aria-label="Settings">&#9881;</button>
+  </div>
+</header>
+
+<div id="noProviderBanner" class="banner hidden">
+  No provider configured. <button id="bannerSettingsBtn" class="link-btn" type="button">Open Settings</button> to add an API key.
+</div>
+
+<nav class="tabs" role="tablist">
+  <button class="tab active" data-view="chat" role="tab">Chat</button>
+  <button class="tab" data-view="tools" role="tab">Tools</button>
+  <button class="tab" data-view="prompts" role="tab">Prompts</button>
+  <button class="tab" data-view="history" role="tab">History</button>
+</nav>
+
+<main>
+  <!-- CHAT -->
+  <section id="view-chat" class="view active">
+    <div class="context-row">
+      <span id="pageChip" class="chip" title="">No page context</span>
+      <span id="youtubeChip" class="chip accent hidden">YouTube</span>
+      <span id="contextChip" class="chip removable hidden"><span id="contextLabel"></span><button id="clearContextBtn" type="button" title="Clear context">&times;</button></span>
+    </div>
+    <div class="attach-row">
+      <button class="chip-btn" id="attachPageBtn" type="button">This Page</button>
+      <button class="chip-btn" id="attachYouTubeBtn" type="button">YouTube</button>
+      <button class="chip-btn" id="attachImageBtn" type="button">Image</button>
+      <button class="chip-btn" id="attachPdfBtn" type="button">PDF</button>
+      <button class="chip-btn" id="attachAudioBtn" type="button">Audio</button>
+      <button class="chip-btn" id="attachTextBtn" type="button">Text file</button>
+      <input type="file" id="fileImage" accept="image/*" class="hidden">
+      <input type="file" id="filePdf" accept="application/pdf,.pdf" class="hidden">
+      <input type="file" id="fileAudio" accept="audio/*" class="hidden">
+      <input type="file" id="fileText" accept=".txt,.md,.csv,.json,.log,text/*" class="hidden">
+    </div>
+    <div id="attachmentPreview" class="attach-preview hidden"></div>
+
+    <div id="messages" class="messages" aria-live="polite"></div>
+
+    <div class="group-row">
+      <label class="toggle"><input type="checkbox" id="groupToggle"> Group chat</label>
+      <span class="muted small">2-4 models answer in parallel</span>
+    </div>
+    <div id="groupModels" class="group-models hidden"></div>
+
+    <div class="composer-wrap">
+      <div id="slashPopup" class="slash-popup hidden"></div>
+      <textarea id="composer" rows="3" placeholder="Ask anything...  / for prompts, Enter to send, Shift+Enter for newline"></textarea>
+      <div class="composer-actions">
+        <span class="hint">Enter sends &middot; / prompts &middot; @Model in group chat</span>
+        <span class="spacer"></span>
+        <button id="stopBtn" class="btn danger hidden" type="button">Stop</button>
+        <button id="sendBtn" class="btn primary" type="button">Send</button>
+      </div>
+    </div>
+  </section>
+
+  <!-- TOOLS -->
+  <section id="view-tools" class="view">
+    <div class="tool-grid" id="toolGrid"></div>
+    <div id="toolPanel" class="tool-panel hidden"></div>
+  </section>
+
+  <!-- PROMPTS -->
+  <section id="view-prompts" class="view">
+    <div class="row-between"><strong>Prompt library</strong><button id="addPromptBtn" class="btn small" type="button">+ Add</button></div>
+    <div id="promptForm" class="form hidden">
+      <input id="promptName" type="text" placeholder="Name">
+      <textarea id="promptBody" rows="4" placeholder="Prompt text. Use {{input}} for user input."></textarea>
+      <div class="row"><button id="savePromptBtn" class="btn primary small" type="button">Save</button><button id="cancelPromptBtn" class="btn small" type="button">Cancel</button></div>
+    </div>
+    <label class="muted small" for="promptSelect">Prompt</label>
+    <select id="promptSelect" title="Prompt" aria-label="Prompt"></select>
+    <p id="promptStatus" class="muted small" role="status" aria-live="polite"></p>
+    <div class="row">
+      <button id="promptInsertBtn" class="btn primary small" type="button">Insert</button>
+      <button id="promptEditBtn" class="btn small" type="button">Edit</button>
+      <button id="promptDeleteBtn" class="btn small danger-outline" type="button">Delete</button>
+    </div>
+    <div id="promptList" class="list hidden"></div>
+  </section>
+
+  <!-- HISTORY -->
+  <section id="view-history" class="view">
+    <div class="row-between"><strong>Conversations</strong><button id="clearHistoryBtn" class="btn small danger-outline" type="button">Clear all</button></div>
+    <div id="historyList" class="list"></div>
+  </section>
+</main>
+
+<div id="artifactBar" class="artifact-bar hidden">
+  <div class="row-between"><strong>Artifact preview</strong><span><button id="downloadArtifactBtn" class="btn small" type="button">Download .html</button> <button id="closeArtifactBtn" class="btn small" type="button">Close</button></span></div>
+  <iframe id="artifactFrame" sandbox="allow-scripts" title="Artifact preview"></iframe>
+</div>
+
+<footer class="status-bar"><span id="statusLine">Ready</span></footer>
+
+<script src="../lib/storage.js"></script>
+<script src="../lib/prompts.js"></script>
+<script src="../lib/pdf.js"></script>
+<script src="../lib/youtube.js"></script>
+<script src="markdown.js"></script>
+<script src="sidebar.js"></script>
+</body>
+</html>
