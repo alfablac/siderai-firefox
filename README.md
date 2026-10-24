@@ -4,6 +4,19 @@ Graphite Sider is an AI sidebar for Firefox that runs on your own API keys. You 
 
 There is no account to create and nothing to top up, because there is no server on our side to hold one. Your keys and settings live in Firefox local storage on your machine. The only address the extension calls is the base URL you typed into Settings.
 
+## Screenshots
+
+The pictures below are renders of the extension interface with example text typed in. No real pages, keys, or accounts appear in them. Click a thumbnail to see it at full size.
+
+| Preview | What it shows |
+| --- | --- |
+| [![Sidebar chat with a YouTube answer and clickable timestamps](screenshots/01-sidebar-chat.png)](screenshots/01-sidebar-chat.png) | Sidebar chat. Timestamps in an answer are buttons that seek the player. |
+| [![Sidebar tools grid with the Translate tool open](screenshots/02-sidebar-tools.png)](screenshots/02-sidebar-tools.png) | The tools grid, with Translate open on Portuguese (Brazil). |
+| [![YouTube summary panel with tables and timestamp buttons](screenshots/03-youtube-panel.png)](screenshots/03-youtube-panel.png) | The summary panel that sits under a YouTube video. |
+| [![Search answer card in the right rail next to results](screenshots/04-search-answer.png)](screenshots/04-search-answer.png) | The answer card in the right rail of a search results page. It stays empty until you press Generate. |
+| [![Settings page with provider cards](screenshots/05-settings.png)](screenshots/05-settings.png) | Settings, where providers, keys, and models live. The key field here is filler text. |
+| [![Selection toolbar and result card on a page](screenshots/06-selection-tools.png)](screenshots/06-selection-tools.png) | The toolbar that appears when you select text, and the card that holds the answer. |
+
 ## What it does
 
 Chat in the sidebar and watch answers stream in. You can keep several providers on file and send one prompt to a few of them at once to compare replies side by side.
