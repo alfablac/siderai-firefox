@@ -8,7 +8,7 @@
 *An AI sidebar for Firefox that runs on your own API keys*
 
 [![Firefox](https://img.shields.io/badge/Firefox->=140-FF7139?style=flat-square&logo=firefoxbrowser&logoColor=white)](https://www.mozilla.org/firefox/)
-[![Version](https://img.shields.io/badge/version-1.0.8-blue?style=flat-square)](https://addons.mozilla.org/en-US/firefox/addon/graphite-sider-ai-sidebar-byo-/)
+[![Version](https://img.shields.io/badge/version-1.0.9-blue?style=flat-square)](https://addons.mozilla.org/en-US/firefox/addon/graphite-sider-ai-sidebar-byo-/)
 [![License](https://img.shields.io/badge/License-MIT-yellow?style=flat-square)](LICENSE)
 
 [Features](#features) • [Screenshots](#screenshots) • [Install](#install) • [Setup](#setup) • [Privacy](#privacy) • [Troubleshooting](#troubleshooting)
@@ -27,7 +27,7 @@ OpenAI, Anthropic, OpenRouter, Groq, DeepSeek, Together, Fireworks, Mistral, and
 - **Sidebar chat** with streaming answers. Keep several providers on file, and send one prompt to a few models at once when you want to compare replies.
 - **Page chat.** Summarize the page in the current tab or ask questions about its readable text. With text selected, the same actions work on the selection.
 - **YouTube summaries** built from the video captions, with headings and themes, chapters, and subtitle translation. Every timestamp in an answer is a button that seeks the player, and a range seeks to its start.
-- **Writing help anywhere.** Highlight a draft and rewrite it in one of 15 tones, shorten it, expand it, or fix the grammar. The toolbar that appears can be dragged by its logo, and a small diamond icon next to text fields opens the same menu.
+- **Writing help anywhere.** Highlight a draft and rewrite it in one of 15 tones, shorten it, expand it, or fix the grammar. The toolbar that appears is a row of icons with the names on hover, Copy first, and it can be dragged by its logo. A small diamond icon next to text fields opens the same menu.
 - **Search answers** in the right rail on Google, Bing, and DuckDuckGo. The card stays idle until you press Generate, so normal searches cost nothing.
 - **Translation with your own language list.** The picker offers the languages you keep in Settings, one per line, so Brazilian Portuguese is there if that is the Portuguese you read.
 - **A tools grid** for the one-off jobs: OCR an image, chat with a PDF or a picture, transcribe audio, generate an image with a separate image model, read text aloud, outlines, essays, mind maps, CSV questions, and HTML artifacts.

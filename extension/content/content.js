@@ -785,6 +785,32 @@
     if (toolbar) toolbar.classList.add('gs-hidden');
   }
 
+  // Icon-only toolbar buttons: the word is the tooltip (data-label,
+  // rendered on hover/focus by overlay.css) and the aria-label. Stroke
+  // icons in a 24x24 grid, currentColor so hover/accent colors apply.
+  const TOOLBAR_ICONS = {
+    copy: '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>',
+    check: '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M20 6 9 17l-5-5"/></svg>',
+    explain: '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M15 14c.2-1 .7-1.7 1.5-2.5 1-.9 1.5-2.2 1.5-3.5A6 6 0 0 0 6 8c0 1.3.5 2.6 1.5 3.5.8.8 1.3 1.5 1.5 2.5"/><path d="M9 18h6"/><path d="M10 22h4"/></svg>',
+    translate: '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="m5 8 6 6"/><path d="m4 14 6-6 2-3"/><path d="M2 5h12"/><path d="M7 2h1"/><path d="m22 22-5-10-5 10"/><path d="M14 18h6"/></svg>',
+    summarize: '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M8 6h13"/><path d="M8 12h13"/><path d="M8 18h13"/><path d="M3 6h.01"/><path d="M3 12h.01"/><path d="M3 18h.01"/></svg>',
+    grammar: '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M18 6 7 17l-5-5"/><path d="m22 10-7.5 7.5L13 16"/></svg>',
+    rewrite: '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/></svg>',
+    ask: '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"/></svg>',
+    speak: '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M11 5 6 9H2v6h4l5 4z"/><path d="M15.54 8.46a5 5 0 0 1 0 7.07"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14"/></svg>'
+  };
+
+  function toolbarButton(label, iconName) {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'gs-toolbar-btn';
+    button.innerHTML = TOOLBAR_ICONS[iconName] || '';
+    button.setAttribute('aria-label', label);
+    button.dataset.label = label;
+    button.addEventListener('mousedown', (event) => event.preventDefault());
+    return button;
+  }
+
   function showToolbar(rect, text) {
     if (settings.selectionToolbar === false) return;
     const toolbar = qs('[data-gs="toolbar"]');
@@ -792,7 +818,21 @@
     const logo = document.createElement('span');
     logo.className = 'gs-toolbar-logo';
     logo.textContent = '\u25C6';
+    logo.title = 'Drag to move';
     toolbar.appendChild(logo);
+
+    // First action: copy the selection. copyText() runs on a snapshot of
+    // the text, so hiding the toolbar right after cannot lose it.
+    const copyBtn = toolbarButton('Copy', 'copy');
+    copyBtn.addEventListener('click', () => {
+      copyText(text);
+      copyBtn.innerHTML = TOOLBAR_ICONS.check;
+      copyBtn.classList.add('gs-toolbar-btn--copied');
+      copyBtn.setAttribute('aria-label', 'Copied');
+      copyBtn.dataset.label = 'Copied';
+      setTimeout(hideToolbar, 450);
+    });
+    toolbar.appendChild(copyBtn);
 
     const actions = [
       ['Explain', 'explain'],
@@ -803,10 +843,7 @@
       ['Ask AI', 'ask']
     ];
     actions.forEach(([label, action]) => {
-      const button = document.createElement('button');
-      button.className = 'gs-toolbar-btn';
-      button.textContent = label;
-      button.addEventListener('mousedown', (event) => event.preventDefault());
+      const button = toolbarButton(label, action);
       button.addEventListener('click', () => {
         hideToolbar();
         if (action === 'ask') {
@@ -822,10 +859,7 @@
       toolbar.appendChild(button);
     });
 
-    const speak = document.createElement('button');
-    speak.className = 'gs-toolbar-btn';
-    speak.textContent = 'Read aloud';
-    speak.addEventListener('mousedown', (event) => event.preventDefault());
+    const speak = toolbarButton('Read aloud', 'speak');
     speak.addEventListener('click', () => { hideToolbar(); readAloud(text); });
     toolbar.appendChild(speak);
 
@@ -833,7 +867,7 @@
     // so the first paint cannot overflow the right/bottom edge.
     toolbar.style.visibility = 'hidden';
     toolbar.classList.remove('gs-hidden');
-    const width = toolbar.offsetWidth || 420;
+    const width = toolbar.offsetWidth || 300;
     const height = toolbar.offsetHeight || 38;
     let left = rect.left + rect.width / 2 - width / 2;
     let top = rect.top - height - 10;
