@@ -649,12 +649,12 @@ check("background prompt path guarded and loads settings", () => {
   assert.ok(!/(^|[^\w.$])global\./.test(bg), "background.js must not use the bare global object");
 });
 
-check("manifest background order and release version 1.0.16", () => {
+check("manifest background order and release version 1.0.17", () => {
   assert.ok(manifest, "manifest required");
   const scripts = (manifest.background && manifest.background.scripts) || [];
   const iP = scripts.indexOf("lib/prompts.js"), iY = scripts.indexOf("lib/youtube.js"), iB = scripts.indexOf("background.js");
   assert.ok(iP >= 0 && iY >= 0 && iB > iP && iB > iY, "lib/prompts.js + lib/youtube.js load before background.js");
-  assert.strictEqual(manifest.version, "1.0.16", "release version");
+  assert.strictEqual(manifest.version, "1.0.17", "release version");
 });
 
 /* ---------- 1.0.6 bug: transcript truncated at 22:52 of a 44:59 video -----
@@ -1285,7 +1285,7 @@ let modelsDone = Promise.resolve();
     const opt = fs.readFileSync(path.join(EXT, "options/options.js"), "utf8");
     assert.ok(/Array\.isArray\(resp\)/.test(opt), "options fetch-models accepts the bare listModels array");
     assert.ok(!/\(resp && \(resp\.models/.test(opt), "old resp.models-only unpacking is gone");
-    assert.ok(/p\.models = idList/.test(opt), "fetch-models persists p.models");
+    assert.ok(/p\.models = normalizeModels\(idList/.test(opt), "fetch-models persists p.models via normalizeModels");
     assert.ok(/p\.models\) \? p\.models : \[\]/.test(opt.replace(/\s+/g, " ")) || /Array\.isArray\(p\.models\)/.test(opt),
       "renderProviders lists persisted models in the datalist");
     const side = fs.readFileSync(path.join(EXT, "sidebar/sidebar.js"), "utf8");
@@ -1300,8 +1300,99 @@ let modelsDone = Promise.resolve();
     (e) => fail("1.0.15: /models parsing (9Router/embedded/SSE), persisted catalogue, default first", e));
 }
 
+/* ---------- 1.0.17: full ~600-model catalogue, stable across fetches -----
+   1.0.15 persisted fetched lists but capped them at 250 in both storage
+   normalizers, so a ~600-model gateway (9Router) lost most of its list and
+   some models "didn't appear". Repeated Fetch clicks also had to never
+   grow the saved list: the options handler built a growing idList on top
+   of the capped, re-normalized state, so each fetch kept a different 250
+   window and the visible list kept shifting/growing. 1.0.17 removes the
+   cap (storage.sync sheds the catalogue instead — it cannot hold 600 ids
+   under its 8 KB/item quota) and replaces on fetch. */
+let models17Done = Promise.resolve();
+{
+  const runModels17Tests = async () => {
+    const fakeJsonResp = (body) => ({
+      ok: true, status: 200,
+      text: async () => body,
+      json: async () => { throw new Error("listModels must read text, not res.json()"); },
+    });
+    const ids = (n, prefix) => Array.from({ length: n }, (_, i) => prefix + i);
+    let fetchCount = 0;
+    let fetchBody = "";
+    const sb = loadLibInSandbox("lib/providers.js", {
+      fetch: async () => { fetchCount++; return fakeJsonResp(fetchBody); },
+    });
+    const GP = sb.GraphiteProviders;
+    const sbS = loadLibInSandbox("lib/storage.js");
+    const GS = sbS.GraphiteStorage;
+    const idsEq = (actual, expected, msg) =>
+      assert.strictEqual(Array.from(actual || []).join(""), expected.join(""), msg);
+
+    // 1) ~600-model gateway response parses completely (no parser cap).
+    const all = ids(600, "m");
+    fetchBody = JSON.stringify({ object: "list", data: all.map((id) => ({ id, object: "model" })) });
+    const parsed = await GP.listModels({ label: "9router", kind: "openai-compatible",
+      baseUrl: "https://gw.test/v1", apiKey: "k", model: "" });
+    idsEq(parsed, all, "~600 models parse completely");
+
+    // 2) Storage normalize keeps all 600 with the configured default first,
+    //    and is idempotent (no growth on re-normalize / sync round-trip).
+    const norm = GS.normalize({
+      version: 1, activeProviderId: "p1", activeModel: "",
+      providers: [{ id: "p1", label: "9Router", kind: "openai-compatible",
+        baseUrl: "https://gw.test/v1", apiKey: "k", model: "cfg-default",
+        models: all, enabled: true }],
+      settings: {}, prompts: [], history: [],
+    });
+    assert.strictEqual(norm.providers[0].models.length, 601, "default + 600 models persist (no 250 cap)");
+    const expected601 = ["cfg-default"].concat(all);
+    idsEq(norm.providers[0].models, expected601, "configured default first, then all 600");
+    idsEq(GS.normalize(norm).providers[0].models, expected601, "normalize idempotent at 601 models");
+
+    // 3) Repeated fetches REPLACE: a smaller/rotated gateway answer shrinks
+    //    the saved list to exactly that answer (+ configured default), and
+    //    a repeat fetch of the same answer changes nothing.
+    const settingsWith = (models) => ({
+      version: 1, activeProviderId: "p1", activeModel: "",
+      providers: [{ id: "p1", label: "9Router", kind: "openai-compatible",
+        baseUrl: "https://gw.test/v1", apiKey: "k", model: "cfg-default",
+        models, enabled: true }],
+      settings: {}, prompts: [], history: [],
+    });
+    const rotated = ids(300, "r"); // gateway now returns a different 300
+    fetchBody = JSON.stringify({ object: "list", data: rotated.map((id) => ({ id })) });
+    const fetched2 = await GP.listModels({ label: "9router", kind: "openai-compatible",
+      baseUrl: "https://gw.test/v1", apiKey: "k", model: "cfg-default" });
+    const saved2 = GS.normalize(settingsWith(fetched2)).providers[0].models;
+    idsEq(saved2, ["cfg-default"].concat(rotated), "second fetch replaces: 301 models, no leftovers from the 600");
+    const fetched3 = await GP.listModels({ label: "9router", kind: "openai-compatible",
+      baseUrl: "https://gw.test/v1", apiKey: "k", model: "cfg-default" });
+    const saved3 = GS.normalize(settingsWith(fetched3)).providers[0].models;
+    idsEq(saved3, Array.from(saved2), "third identical fetch: list stable, no growth");
+    assert.strictEqual(fetchCount, 3, "three listModels fetches issued");
+
+    // 4) Options handler: fetched ids are deduped and normalized through the
+    //    same default-first path (no uncapped concat of a previous list).
+    const opt = fs.readFileSync(path.join(EXT, "options/options.js"), "utf8");
+    assert.ok(/p\.models = normalizeModels\(idList/.test(opt), "fetch-models replaces p.models via normalizeModels (default first, deduped)");
+    assert.ok(!/slice\(0, 250\)/.test(opt), "options no longer caps models at 250");
+    const storeSrc = fs.readFileSync(path.join(EXT, "lib/storage.js"), "utf8");
+    assert.ok(!/slice\(0, 250\)/.test(storeSrc), "storage no longer caps models at 250");
+    assert.ok(/c\.models = c\.model \? \[c\.model\] : \[\]/.test(storeSrc),
+      "storage.sync mirror sheds the catalogue (keeps configured default only)");
+
+    // 5) Group chat lists every saved model (was slice(0, 12)).
+    const side = fs.readFileSync(path.join(EXT, "sidebar/sidebar.js"), "utf8");
+    assert.ok(!/allModelCombos\(\)\.slice\(0, 12\)/.test(side), "group chat no longer truncated at 12 combos");
+  };
+  models17Done = runModels17Tests().then(
+    () => ok("1.0.17: full ~600-model catalogue persists, fetch replaces (no growth), group chat complete"),
+    (e) => fail("1.0.17: full ~600-model catalogue persists, fetch replaces (no growth), group chat complete", e));
+}
+
 /* The async SSE + image tests above must settle before the summary/exit. */
-Promise.all([Promise.resolve(sseDone), Promise.resolve(imageDone), Promise.resolve(activityDone), Promise.resolve(modelsDone)]).then(() => {
+Promise.all([Promise.resolve(sseDone), Promise.resolve(imageDone), Promise.resolve(activityDone), Promise.resolve(modelsDone), Promise.resolve(models17Done)]).then(() => {
   console.log(`\n${failures} failure(s), ${pending} pending (core not present yet)`);
   if (pending) console.warn("note: pending checks become hard failures under STRICT=1 once core files land");
   process.exit(failures ? 1 : 0);

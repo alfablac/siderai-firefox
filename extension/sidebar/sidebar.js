@@ -234,7 +234,7 @@
   }
   function renderGroupModels() {
     var box = $('groupModels'); box.innerHTML = '';
-    allModelCombos().slice(0, 12).forEach(function (c, i) {
+    allModelCombos().forEach(function (c, i) {
       var lab = document.createElement('label');
       var cb = document.createElement('input'); cb.type = 'checkbox'; cb.value = c.providerId + '|' + c.model; cb.checked = i < 2;
       lab.appendChild(cb); lab.appendChild(document.createTextNode(' ' + c.label));

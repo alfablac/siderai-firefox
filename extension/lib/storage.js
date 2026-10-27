@@ -250,7 +250,10 @@
       if (out.indexOf(def) !== -1) out = out.filter(function (m) { return m !== def; });
       out.unshift(def);
     }
-    return out.slice(0, 250);
+    // Full provider catalogue: gateways like 9Router list ~600 models, so
+    // there is no artificial cap here. storage.sync sheds the catalogue
+    // (see coreForSync) to stay under its 8 KB/item quota.
+    return out;
   }
 
   /** Factory-default full settings object. */
@@ -326,10 +329,19 @@
     return settings && settings._meta ? (Number(settings._meta.savedAt) || 0) : 0;
   }
 
-  /** Settings core for the size-capped storage.sync mirror (no history). */
+  /** Settings core for the size-capped storage.sync mirror (no history).
+   *  The fetched model catalogue is shed ALWAYS: a ~600-model gateway list
+   *  alone bursts the 8 KB/item sync quota, so the mirror keeps only each
+   *  provider's identity + configured default model. The full catalogue
+   *  lives in browser.storage.local and the localStorage backup. */
   function coreForSync(settings) {
     var core = clone(settings);
     delete core.history;
+    core.providers = (core.providers || []).map(function (p) {
+      var c = clone(p);
+      c.models = c.model ? [c.model] : [];
+      return c;
+    });
     var text = JSON.stringify(core);
     if (byteLength(text) > SYNC_BUDGET_BYTES) {
       // Shed prompts first (they are also in the local/export copies).
@@ -427,6 +439,23 @@
       if (local && candidates[0] && candidates[0].source === 'sync') {
         candidates = candidates.filter(function (c) { return c.source !== 'sync'; })
           .concat(candidates.filter(function (c) { return c.source === 'sync'; }));
+      }
+      // A winning sync copy carries only each provider's configured default
+      // (coreForSync sheds the fetched catalogue to fit the sync quota).
+      // When a fuller catalogue exists in another copy, graft it back by
+      // provider id — but only when both copies name the same default
+      // model; a changed default means the catalogue is stale and must
+      // wait for the next Fetch models.
+      if (candidates.length > 1 && candidates[0].source === 'sync') {
+        var winner = candidates[0].settings;
+        candidates.slice(1).forEach(function (other) {
+          (winner.providers || []).forEach(function (wp) {
+            var op = (other.settings.providers || []).filter(function (x) { return x.id === wp.id; })[0];
+            if (op && op.model === wp.model && (op.models || []).length > (wp.models || []).length) {
+              wp.models = (op.models || []).slice();
+            }
+          });
+        });
       }
       return candidates;
     });

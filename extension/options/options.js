@@ -253,7 +253,8 @@ function normalizeModels(input, defaultModel) {
     if (out.indexOf(def) !== -1) out = out.filter(function (m) { return m !== def; });
     out.unshift(def);
   }
-  return out.slice(0, 250);
+  // Full provider catalogue (~600 models on 9Router-class gateways): no cap.
+  return out;
 }
 
 function normalizeState(raw) {
@@ -988,12 +989,12 @@ function bindEvents() {
             if (id) idList.push(String(id));
           });
           if (idList.length) {
-            fillModelDatalist(card, idList);
+            // Replace, never merge with the previous fetch: gateways return
+            // their full catalogue on every call, so unioning would grow the
+            // saved list on each fetch and keep models the provider dropped.
+            p.models = normalizeModels(idList, String(p.model || ""));
+            fillModelDatalist(card, p.models);
             var currentModel = String(p.model || "").trim();
-            // Keep the configured default first so it stays the sidebar default.
-            if (currentModel && idList.indexOf(currentModel) === -1) idList.unshift(currentModel);
-            else if (currentModel) idList = [currentModel].concat(idList.filter(function (m) { return m !== currentModel; }));
-            p.models = idList.slice();
             if (!currentModel) {
               p.model = idList[0];
               var modelInput = card.querySelector('[data-field="model"]');
@@ -1001,7 +1002,7 @@ function bindEvents() {
               currentModel = idList[0];
             }
             schedulePersist();
-            showTestResult(card, true, "✓ " + idList.length + " model(s) saved. Default: " + currentModel + " — pick any in the sidebar Model menu.");
+            showTestResult(card, true, "✓ " + p.models.length + " model(s) saved. Default: " + currentModel + " — pick any in the sidebar Model menu.");
           } else {
             showTestResult(card, false, "✗ No models returned by the provider");
           }
