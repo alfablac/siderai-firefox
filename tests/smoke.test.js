@@ -649,12 +649,12 @@ check("background prompt path guarded and loads settings", () => {
   assert.ok(!/(^|[^\w.$])global\./.test(bg), "background.js must not use the bare global object");
 });
 
-check("manifest background order and release version 1.0.18", () => {
+check("manifest background order and release version 1.0.19", () => {
   assert.ok(manifest, "manifest required");
   const scripts = (manifest.background && manifest.background.scripts) || [];
   const iP = scripts.indexOf("lib/prompts.js"), iY = scripts.indexOf("lib/youtube.js"), iB = scripts.indexOf("background.js");
   assert.ok(iP >= 0 && iY >= 0 && iB > iP && iB > iY, "lib/prompts.js + lib/youtube.js load before background.js");
-  assert.strictEqual(manifest.version, "1.0.18", "release version");
+  assert.strictEqual(manifest.version, "1.0.19", "release version");
 });
 
 /* ---------- 1.0.6 bug: transcript truncated at 22:52 of a 44:59 video -----
@@ -1396,4 +1396,21 @@ Promise.all([Promise.resolve(sseDone), Promise.resolve(imageDone), Promise.resol
   console.log(`\n${failures} failure(s), ${pending} pending (core not present yet)`);
   if (pending) console.warn("note: pending checks become hard failures under STRICT=1 once core files land");
   process.exit(failures ? 1 : 0);
+});
+
+/* ---------- 1.0.19: toolbar/write icons blank after the innerHTML removal --
+   1.0.18's setIcon parsed icon strings via DOMParser('image/svg+xml') +
+   importNode. Verified against Firefox 158: nodes from that document
+   render nothing (0 icon pixels), even imported/adopted. The fix rebuilds
+   each node with createElementNS in the target document. Guard both the
+   construction and the absence of the cross-document path. */
+check("1.0.19: icons built as same-document SVG nodes (no DOMParser import)", () => {
+  const src = fs.readFileSync(path.join(EXT, "content/content.js"), "utf8");
+  assert.ok(!src.includes("'image/svg+xml'"), "no image/svg+xml DOMParser parse call remains");
+  assert.ok(!src.includes("importNode"), "no cross-document importNode for icons");
+  assert.ok(src.includes("buildSvgNode"), "recursive SVG node builder exists");
+  assert.ok(src.includes("createElementNS"), "icons built via createElementNS");
+  assert.ok(src.includes("document.createElementNS(SVG_NS"), "builder targets the SVG namespace");
+  // setIcon still feeds every icon surface: write button, toolbar, logo, copy-check.
+  assert.ok((src.match(/setIcon\(/g) || []).length >= 5, "setIcon still wires write button, toolbar, logo, copy-check");
 });

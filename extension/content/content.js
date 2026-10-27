@@ -140,14 +140,27 @@
     return el;
   }
 
+  // Materialize an inline SVG icon string as real nodes in THIS document.
+  // 1.0.18 parsed icon strings via DOMParser and moved the nodes in:
+  // another document render nothing in Firefox (all toolbar icons blank).
+  // Instead parse as text/html only to READ the shape, then rebuild every
+  // node with createElementNS in the target document — no innerHTML sink,
+  // and the nodes are same-document so they lay out and paint.
+  var SVG_NS = 'http://www.w3.org/2000/svg';
+  function buildSvgNode(parsed) {
+    var node = document.createElementNS(SVG_NS, parsed.tagName.toLowerCase());
+    Array.from(parsed.attributes || []).forEach(function (a) { node.setAttribute(a.name, a.value); });
+    Array.from(parsed.childNodes || []).forEach(function (child) {
+      if (child.nodeType === 1) node.appendChild(buildSvgNode(child));
+      else if (child.nodeType === 3) node.appendChild(document.createTextNode(child.nodeValue));
+    });
+    return node;
+  }
   function setIcon(el, svgString) {
     el.replaceChildren();
     if (!svgString) return;
-    const doc = new DOMParser().parseFromString(svgString, 'image/svg+xml');
-    const svg = doc.documentElement;
-    if (svg && svg.tagName && svg.tagName.toLowerCase() === 'svg') {
-      el.appendChild(document.importNode(svg, true));
-    }
+    var parsed = new DOMParser().parseFromString(String(svgString), 'text/html').body.querySelector('svg');
+    if (parsed) el.appendChild(buildSvgNode(parsed));
   }
 
   function setGeneratedHtml(el, html) {
