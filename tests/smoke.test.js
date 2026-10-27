@@ -395,9 +395,9 @@ if (!fs.existsSync(providersFile)) {
 check("input write button is an SVG icon, not 'AI' text", () => {
   const src = fs.readFileSync(path.join(EXT, "content/content.js"), "utf8");
   assert.ok(!src.includes(">AI<"), "stale >AI< badge remains in content.js");
-  const m = src.match(/gs-write-btn[^']*'<svg|gs-write-btn[\s\S]{0,300}?<svg/);
+  const m = src.match(/gs-write-btn[\s\S]{0,600}?setIcon\(writeBtn,\s*'<svg/);
   assert.ok(m, "write button must embed inline SVG");
-  assert.ok(src.includes('aria-label="Graphite writing assistant"'), "write button aria-label");
+  assert.ok(src.includes("setAttribute('aria-label', 'Graphite writing assistant')"), "write button aria-label");
 });
 check("write menu is the scroll container with viewport clamps", () => {
   const css = fs.readFileSync(path.join(EXT, "content/overlay.css"), "utf8");
@@ -597,7 +597,7 @@ check("prompts confined to dropdowns in options and sidebar", () => {
   const sideHtml = fs.readFileSync(path.join(EXT, "sidebar/sidebar.html"), "utf8");
   assert.ok(sideHtml.includes('id="promptSelect"'), "sidebar prompt dropdown");
   // the sidebar slash popup shows prompt names only (no bodies/descriptions)
-  assert.ok(sideJs.includes("'<strong>/' + esc(p.name) + '</strong>'"), "slash popup renders prompt names only");
+  assert.ok(sideJs.includes("strongEl.textContent = '/' + p.name"), "slash popup renders prompt names only");
 });
 
 check("youtube chat is port-streamed (graphite-chat), never one-shot chatSync", () => {
@@ -649,12 +649,12 @@ check("background prompt path guarded and loads settings", () => {
   assert.ok(!/(^|[^\w.$])global\./.test(bg), "background.js must not use the bare global object");
 });
 
-check("manifest background order and release version 1.0.17", () => {
+check("manifest background order and release version 1.0.18", () => {
   assert.ok(manifest, "manifest required");
   const scripts = (manifest.background && manifest.background.scripts) || [];
   const iP = scripts.indexOf("lib/prompts.js"), iY = scripts.indexOf("lib/youtube.js"), iB = scripts.indexOf("background.js");
   assert.ok(iP >= 0 && iY >= 0 && iB > iP && iB > iY, "lib/prompts.js + lib/youtube.js load before background.js");
-  assert.strictEqual(manifest.version, "1.0.17", "release version");
+  assert.strictEqual(manifest.version, "1.0.18", "release version");
 });
 
 /* ---------- 1.0.6 bug: transcript truncated at 22:52 of a 44:59 video -----

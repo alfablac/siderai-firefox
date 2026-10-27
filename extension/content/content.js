@@ -133,6 +133,41 @@
       .replace(/(^|[^*])\*([^*\n]+)\*/g, '$1<em>$2</em>');
   }
 
+  function createEl(tag, className, text) {
+    const el = document.createElement(tag);
+    if (className) el.className = className;
+    if (text != null) el.textContent = text;
+    return el;
+  }
+
+  function setIcon(el, svgString) {
+    el.replaceChildren();
+    if (!svgString) return;
+    const doc = new DOMParser().parseFromString(svgString, 'image/svg+xml');
+    const svg = doc.documentElement;
+    if (svg && svg.tagName && svg.tagName.toLowerCase() === 'svg') {
+      el.appendChild(document.importNode(svg, true));
+    }
+  }
+
+  function setGeneratedHtml(el, html) {
+    while (el.firstChild) el.removeChild(el.firstChild);
+    if (!html) return;
+    const doc = new DOMParser().parseFromString(html, 'text/html');
+    const drop = 'script,style,iframe,object,embed,form,input,img,svg,math,link,meta,title,base';
+    Array.from(doc.body.querySelectorAll(drop)).forEach((node) => node.remove());
+    Array.from(doc.body.querySelectorAll('*')).forEach((node) => {
+      Array.from(node.attributes).forEach((attr) => {
+        if (attr.name !== 'href' && attr.name !== 'title' && attr.name !== 'class') {
+          node.removeAttribute(attr.name);
+        } else if (attr.name === 'href' && !/^(https?:|mailto:|#|\/|\.)/i.test(attr.value)) {
+          node.removeAttribute(attr.name);
+        }
+      });
+    });
+    while (doc.body.firstChild) el.appendChild(doc.body.firstChild);
+  }
+
   function clamp(value, min, max) {
     return Math.max(min, Math.min(max, value));
   }
@@ -311,18 +346,39 @@
     shadowRoot.appendChild(style);
     const root = document.createElement('div');
     root.className = 'gs-root';
-    root.innerHTML =
-      '<div class="gs-toolbar gs-hidden" data-gs="toolbar"></div>' +
-      '<div class="gs-card gs-hidden" data-gs="card">' +
-        '<div class="gs-card-header" data-gs="card-header">' +
-          '<span class="gs-card-title" data-gs="card-title">Graphite</span>' +
-          '<button class="gs-card-close" data-gs="card-close" title="Close">&times;</button>' +
-        '</div>' +
-        '<div class="gs-card-body" data-gs="card-body"></div>' +
-        '<div class="gs-card-footer" data-gs="card-footer"></div>' +
-      '</div>' +
-      '<button type="button" class="gs-write-btn gs-hidden" data-gs="write-btn" title="Graphite writing assistant" aria-label="Graphite writing assistant"><svg viewBox="0 0 32 32" width="16" height="16" aria-hidden="true" focusable="false"><path d="M16 2 L28 12 L16 30 L4 12 Z" fill="#26292f" stroke="currentColor" stroke-width="1.6"/><path d="M4 12 H28 M16 2 L11 12 L16 30 L21 12 L16 2" fill="none" stroke="#8b9bb4" stroke-width="1"/></svg></button>' +
-      '<div class="gs-write-menu gs-hidden" data-gs="write-menu"></div>';
+    const toolbarEl = createEl('div', 'gs-toolbar gs-hidden');
+    toolbarEl.setAttribute('data-gs', 'toolbar');
+    root.appendChild(toolbarEl);
+    const cardEl = createEl('div', 'gs-card gs-hidden');
+    cardEl.setAttribute('data-gs', 'card');
+    const cardHeader = createEl('div', 'gs-card-header');
+    cardHeader.setAttribute('data-gs', 'card-header');
+    const cardTitle = createEl('span', 'gs-card-title', 'Graphite');
+    cardTitle.setAttribute('data-gs', 'card-title');
+    const cardClose = createEl('button', 'gs-card-close', '\u00d7');
+    cardClose.setAttribute('data-gs', 'card-close');
+    cardClose.title = 'Close';
+    cardHeader.appendChild(cardTitle);
+    cardHeader.appendChild(cardClose);
+    const cardBody = createEl('div', 'gs-card-body');
+    cardBody.setAttribute('data-gs', 'card-body');
+    const cardFooter = createEl('div', 'gs-card-footer');
+    cardFooter.setAttribute('data-gs', 'card-footer');
+    cardEl.appendChild(cardHeader);
+    cardEl.appendChild(cardBody);
+    cardEl.appendChild(cardFooter);
+    root.appendChild(cardEl);
+    const writeBtn = document.createElement('button');
+    writeBtn.type = 'button';
+    writeBtn.className = 'gs-write-btn gs-hidden';
+    writeBtn.setAttribute('data-gs', 'write-btn');
+    writeBtn.title = 'Graphite writing assistant';
+    writeBtn.setAttribute('aria-label', 'Graphite writing assistant');
+    setIcon(writeBtn, '<svg viewBox="0 0 32 32" width="16" height="16" aria-hidden="true" focusable="false"><path d="M16 2 L28 12 L16 30 L4 12 Z" fill="#26292f" stroke="currentColor" stroke-width="1.6" /><path d="M4 12 H28 M16 2 L11 12 L16 30 L21 12 L16 2" fill="none" stroke="#8b9bb4" stroke-width="1" /></svg>');
+    root.appendChild(writeBtn);
+    const writeMenu = createEl('div', 'gs-write-menu gs-hidden');
+    writeMenu.setAttribute('data-gs', 'write-menu');
+    root.appendChild(writeMenu);
     shadowRoot.appendChild(root);
     wireCard(root);
     wireToolbarDrag(root);
@@ -551,19 +607,22 @@
 
   function setCardLoading(label) {
     const body = qs('[data-gs="card-body"]');
-    body.innerHTML = '<div class="gs-loading"><span class="gs-spinner"></span><span>' +
-      escapeHtml(label || 'Thinking...') + '</span></div>';
+    body.replaceChildren();
+    const wrap = createEl('div', 'gs-loading');
+    wrap.appendChild(createEl('span', 'gs-spinner'));
+    wrap.appendChild(createEl('span', '', label || 'Thinking...'));
+    body.appendChild(wrap);
     setCardFooter([]);
   }
 
   function setCardError(message) {
     const body = qs('[data-gs="card-body"]');
-    body.innerHTML = '<p class="gs-error">' + escapeHtml(message) + '</p>';
+    body.replaceChildren(createEl('p', 'gs-error', String(message == null ? '' : message)));
   }
 
   function setCardFooter(buttons) {
     const footer = qs('[data-gs="card-footer"]');
-    footer.innerHTML = '';
+    footer.replaceChildren();
     (buttons || []).forEach((button) => {
       const el = document.createElement('button');
       el.className = 'gs-btn' + (button.primary ? ' gs-btn-primary' : '');
@@ -622,9 +681,11 @@
       const result = await chatSync([{ role: 'user', content: prompt }], action);
       popoverState.lastText = result;
       const body = qs('[data-gs="card-body"]');
-      body.innerHTML =
-        (opts.sourceText ? '<div class="gs-source">' + escapeHtml(truncate(opts.sourceText, 400)) + '</div>' : '') +
-        '<div>' + markdownLite(result) + '</div>';
+      body.replaceChildren();
+      if (opts.sourceText) body.appendChild(createEl('div', 'gs-source', truncate(opts.sourceText, 400)));
+      const resultDiv = createEl('div');
+      setGeneratedHtml(resultDiv, markdownLite(result));
+      body.appendChild(resultDiv);
       setCardFooter(opts.footer ? opts.footer(result) : defaultFooter(opts.extraButtons));
       return result;
     } catch (error) {
@@ -641,7 +702,7 @@
     showCard('Rewrite: ' + tone.label, anchorRect);
     cardContext = { text: String(text || ''), rect: anchorRect || null, kind: 'rewrite' };
     const body = qs('[data-gs="card-body"]');
-    body.innerHTML = '';
+    body.replaceChildren();
     const source = document.createElement('div');
     source.className = 'gs-source';
     source.textContent = truncate(String(text || ''), 400);
@@ -752,7 +813,7 @@
     showCard('Translate', anchorRect);
     cardContext = { text: String(text || ''), rect: anchorRect || null, kind: 'translate' };
     const body = qs('[data-gs="card-body"]');
-    body.innerHTML = '';
+    body.replaceChildren();
     const source = document.createElement('div');
     source.className = 'gs-source';
     source.textContent = truncate(String(text || ''), 400);
@@ -892,7 +953,7 @@
     const button = document.createElement('button');
     button.type = 'button';
     button.className = 'gs-toolbar-btn';
-    button.innerHTML = TOOLBAR_ICONS[iconName] || '';
+    setIcon(button, TOOLBAR_ICONS[iconName] || '');
     button.setAttribute('aria-label', label);
     button.dataset.label = label;
     // Preserve the page selection when an action button is pressed, but do
@@ -907,7 +968,7 @@
   function showToolbar(rect, text) {
     if (settings.selectionToolbar === false) return;
     const toolbar = qs('[data-gs="toolbar"]');
-    toolbar.innerHTML = '';
+    toolbar.replaceChildren();
     const logo = document.createElement('span');
     logo.className = 'gs-toolbar-logo';
     logo.setAttribute('data-gs', 'toolbar-drag');
@@ -915,7 +976,7 @@
     logo.setAttribute('aria-label', 'Drag to move');
     // Grab handle: a small grip-pill with three dots, tinted so it reads as
     // a move handle rather than a seventh action button.
-    logo.innerHTML = '<svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor" aria-hidden="true" focusable="false"><circle cx="9" cy="6" r="1.6"/><circle cx="15" cy="6" r="1.6"/><circle cx="9" cy="12" r="1.6"/><circle cx="15" cy="12" r="1.6"/><circle cx="9" cy="18" r="1.6"/><circle cx="15" cy="18" r="1.6"/></svg>';
+    setIcon(logo, '<svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor" aria-hidden="true" focusable="false"><circle cx="9" cy="6" r="1.6"/><circle cx="15" cy="6" r="1.6"/><circle cx="9" cy="12" r="1.6"/><circle cx="15" cy="12" r="1.6"/><circle cx="9" cy="18" r="1.6"/><circle cx="15" cy="18" r="1.6"/></svg>');
     toolbar.appendChild(logo);
 
     // First action: copy the selection. copyText() runs on a snapshot of
@@ -923,7 +984,7 @@
     const copyBtn = toolbarButton('Copy', 'copy');
     copyBtn.addEventListener('click', () => {
       copyText(text);
-      copyBtn.innerHTML = TOOLBAR_ICONS.check;
+      setIcon(copyBtn, TOOLBAR_ICONS.check);
       copyBtn.classList.add('gs-toolbar-btn--copied');
       copyBtn.setAttribute('aria-label', 'Copied');
       copyBtn.dataset.label = 'Copied';
@@ -986,10 +1047,18 @@
   function showAskCard(text, rect) {
     showCard('Ask AI', rect);
     const body = qs('[data-gs="card-body"]');
-    body.innerHTML =
-      '<div class="gs-source">' + escapeHtml(truncate(text, 400)) + '</div>' +
-      '<div class="gs-ask-row"><input class="gs-ask-input" data-gs="ask-input" ' +
-      'placeholder="Ask about the selected text..."><button class="gs-btn gs-btn-primary" data-gs="ask-send">Ask</button></div>';
+    body.replaceChildren();
+    body.appendChild(createEl('div', 'gs-source', truncate(text, 400)));
+    const askRow = createEl('div', 'gs-ask-row');
+    const askInput = document.createElement('input');
+    askInput.className = 'gs-ask-input';
+    askInput.setAttribute('data-gs', 'ask-input');
+    askInput.placeholder = 'Ask about the selected text...';
+    const askSend = createEl('button', 'gs-btn gs-btn-primary', 'Ask');
+    askSend.setAttribute('data-gs', 'ask-send');
+    askRow.appendChild(askInput);
+    askRow.appendChild(askSend);
+    body.appendChild(askRow);
     setCardFooter(defaultFooter());
     const input = body.querySelector('[data-gs="ask-input"]');
     const send = body.querySelector('[data-gs="ask-send"]');
@@ -1153,7 +1222,7 @@
 
   function showWriteMenu(el) {
     const menu = qs('[data-gs="write-menu"]');
-    menu.innerHTML = '';
+    menu.replaceChildren();
     const actions = [
       ['Improve writing', 'improve'],
       ['Fix grammar', 'grammar'],
@@ -1273,7 +1342,10 @@
       );
       popoverState = { lastText: result, action: chatAction };
       const body = qs('[data-gs="card-body"]');
-      body.innerHTML = '<div>' + markdownLite(result) + '</div>';
+      body.replaceChildren();
+      const resultDiv2 = createEl('div');
+      setGeneratedHtml(resultDiv2, markdownLite(result));
+      body.appendChild(resultDiv2);
       setCardFooter([
         {
           label: effectiveAction === 'continue' ? 'Insert' : 'Apply',
@@ -1405,11 +1477,19 @@
     translateState = { active: false, entries: [], running: true };
     showCard('Translate page');
     const body = qs('[data-gs="card-body"]');
-    body.innerHTML =
-      '<div class="gs-loading"><span class="gs-spinner"></span><span>Translating page into ' +
-      escapeHtml(targetLang()) + '...</span></div>' +
-      '<div class="gs-progress"><div class="gs-progress-bar" data-gs="progress-bar"></div></div>' +
-      '<p class="gs-muted" data-gs="progress-label">0 / ' + paragraphs.length + '</p>';
+    body.replaceChildren();
+    const loadWrap = createEl('div', 'gs-loading');
+    loadWrap.appendChild(createEl('span', 'gs-spinner'));
+    loadWrap.appendChild(createEl('span', '', 'Translating page into ' + targetLang() + '...'));
+    body.appendChild(loadWrap);
+    const progressWrap = createEl('div', 'gs-progress');
+    const progressBar = createEl('div', 'gs-progress-bar');
+    progressBar.setAttribute('data-gs', 'progress-bar');
+    progressWrap.appendChild(progressBar);
+    body.appendChild(progressWrap);
+    const progressLabel = createEl('p', 'gs-muted', '0 / ' + paragraphs.length);
+    progressLabel.setAttribute('data-gs', 'progress-label');
+    body.appendChild(progressLabel);
     setCardFooter([
       { label: 'Stop & restore', onClick: () => restorePage() }
     ]);
@@ -1457,10 +1537,9 @@
         if (label) label.textContent = done + ' / ' + paragraphs.length;
       }
       translateState.active = true;
-      body.innerHTML =
-        '<p>Translated ' + translateState.entries.filter((e) => e.note).length +
-        ' paragraphs into ' + escapeHtml(targetLang()) +
-        '. Translations appear under each original paragraph.</p>';
+      body.replaceChildren(createEl('p', '', 'Translated ' + translateState.entries.filter((e) => e.note).length +
+        ' paragraphs into ' + targetLang() +
+        '. Translations appear under each original paragraph.'));
       setCardFooter([
         { label: 'Restore original', primary: true, onClick: () => restorePage() },
         { label: 'Open in sidebar', onClick: () => openSidebarWith('translate-page', '') }
@@ -1481,7 +1560,7 @@
     document.querySelectorAll('[data-gs-translation]').forEach((node) => node.remove());
     if (isCardVisible()) {
       const body = qs('[data-gs="card-body"]');
-      body.innerHTML = '<p>Original page restored.</p>';
+      body.replaceChildren(createEl('p', '', 'Original page restored.'));
       setCardFooter([]);
     }
     return { restored: true };
@@ -1520,13 +1599,24 @@
     });
   }
 
+  function cardImage() {
+    const img = document.createElement('img');
+    img.className = 'gs-card-image';
+    img.alt = 'Selected image';
+    return img;
+  }
+
   async function handleOcrImage(srcUrl) {
     showCard('Image OCR / Describe');
     setCardLoading('Loading image...');
     const body = qs('[data-gs="card-body"]');
-    body.innerHTML = '<img class="gs-card-image" alt="Selected image"><div class="gs-loading">' +
-      '<span class="gs-spinner"></span><span>Reading image...</span></div>';
-    const img = body.querySelector('img');
+    body.replaceChildren();
+    const img = cardImage();
+    body.appendChild(img);
+    const loadWrap3 = createEl('div', 'gs-loading');
+    loadWrap3.appendChild(createEl('span', 'gs-spinner'));
+    loadWrap3.appendChild(createEl('span', '', 'Reading image...'));
+    body.appendChild(loadWrap3);
     img.src = srcUrl;
     setCardFooter([]);
     try {
@@ -1558,15 +1648,20 @@
         'ocr-image'
       );
       popoverState = { lastText: result, action: 'ocr-image' };
-      body.innerHTML = '<img class="gs-card-image" alt="Selected image"><div>' + markdownLite(result) + '</div>';
-      const newImg = body.querySelector('img');
-      if (newImg) newImg.src = srcUrl;
+      body.replaceChildren();
+      const okImg = cardImage();
+      const okDiv = createEl('div');
+      setGeneratedHtml(okDiv, markdownLite(result));
+      body.appendChild(okImg);
+      body.appendChild(okDiv);
+      if (okImg) okImg.src = srcUrl;
       setCardFooter(defaultFooter());
     } catch (error) {
-      body.innerHTML = '<img class="gs-card-image" alt="Selected image"><p class="gs-error">' +
-        escapeHtml(error && error.message ? error.message : 'OCR failed') + '</p>';
-      const newImg = body.querySelector('img');
-      if (newImg) newImg.src = srcUrl;
+      body.replaceChildren();
+      const errImg = cardImage();
+      body.appendChild(errImg);
+      body.appendChild(createEl('p', 'gs-error', String(error && error.message ? error.message : 'OCR failed')));
+      if (errImg) errImg.src = srcUrl;
       setCardFooter(defaultFooter());
     }
   }

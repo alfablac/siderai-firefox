@@ -89,6 +89,35 @@
       .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
   }
 
+  // Parse markup generated only from escapeHtml()-escaped text by
+  // markdownLite()/linkifyTimestamps() without an unsafe-assignment sink:
+  // DOMParser builds a detached document, disallowed tags/attrs are
+  // stripped (buttons kept: .gs-yt-ts seek controls rely on them), then
+  // nodes are moved into the target.
+  function setGeneratedHtml(el, html) {
+    var doc = new DOMParser().parseFromString(String(html == null ? '' : html), 'text/html');
+    doc.body.querySelectorAll('script,style,iframe,object,embed,form,input,img,svg,math,link,meta,title,base').forEach(function (n) { n.remove(); });
+    var allowedAttrs = { href: 1, title: 1, class: 1, 'data-seek-seconds': 1 };
+    doc.body.querySelectorAll('*').forEach(function (n) {
+      Array.from(n.attributes).forEach(function (a) {
+        if (!allowedAttrs[a.name]) { n.removeAttribute(a.name); return; }
+        if (a.name === 'href' && !/^(https?:|#|\/|\.)/i.test(a.value)) n.removeAttribute('href');
+      });
+    });
+    el.replaceChildren();
+    while (doc.body.firstChild) el.appendChild(doc.body.firstChild);
+  }
+
+  function makeStatusEl(text) {
+    var span = document.createElement('span');
+    span.className = 'gs-yt-status';
+    var spinner = document.createElement('span');
+    spinner.className = 'gs-spinner';
+    span.appendChild(spinner);
+    span.appendChild(document.createTextNode(text));
+    return span;
+  }
+
   /* Shared timestamp helpers. This content script cannot load lib/prompts.js
    * (not in manifest), so the helpers below mirror GraphitePrompts
    * parseTimestampSeconds / linkifyTimestamps / extractTimestamps. */
@@ -301,7 +330,7 @@
   function renderSummary(text) {
     cancelPendingPartial();
     const body = panelBody();
-    body.innerHTML = markdownLite(text);
+    setGeneratedHtml(body, markdownLite(text));
     body.dataset.seekTargets = JSON.stringify(extractTimestamps(text));
     return body;
   }
@@ -321,8 +350,10 @@
     partialTimer = 0;
     lastPartialAt = Date.now();
     const body = panelBody();
-    body.innerHTML = '<span class="gs-yt-status"><span class="gs-spinner"></span>Summarizing\u2026</span>' +
-      '<div class="gs-yt-partial">' + escapeHtml(String(latestPartialText || '')) + '</div>';
+    var partialDiv = document.createElement('div');
+    partialDiv.className = 'gs-yt-partial';
+    partialDiv.textContent = String(latestPartialText || '');
+    body.replaceChildren(makeStatusEl('Summarizing\u2026'), partialDiv);
     body.dataset.seekTargets = '[]';
   }
   function renderSummaryPartial(text) {
@@ -723,17 +754,27 @@
     const anchor = document.querySelector('#below, ytd-watch-metadata, #meta-contents, #primary-inner');
     panel = document.createElement('div');
     panel.className = 'gs-yt-panel';
-    panel.innerHTML =
-      '<div class="gs-yt-head">' +
-        '<span class="gs-yt-title">\u25C6 Graphite</span>' +
-        '<button class="gs-yt-btn" data-gs-yt="summarize">Summarize with Graphite</button>' +
-        '<button class="gs-yt-btn" data-gs-yt="chapters">Chapters</button>' +
-        '<button class="gs-yt-btn" data-gs-yt="bilingual">Bilingual subtitles</button>' +
-        '<button class="gs-yt-btn" data-gs-yt="sidebar">Send summary to sidebar</button>' +
-      '</div>' +
-      '<div class="gs-yt-body" data-gs-yt="body">' +
-        '<span class="gs-yt-status">Summarize this video, jump through chapters, or overlay translated subtitles.</span>' +
-      '</div>';
+    var head = document.createElement('div');
+    head.className = 'gs-yt-head';
+    var titleSpan = document.createElement('span');
+    titleSpan.className = 'gs-yt-title';
+    titleSpan.textContent = '\u25C6 Graphite';
+    head.appendChild(titleSpan);
+    [['summarize', 'Summarize with Graphite'], ['chapters', 'Chapters'], ['bilingual', 'Bilingual subtitles'], ['sidebar', 'Send summary to sidebar']].forEach(function (pair) {
+      var btn = document.createElement('button');
+      btn.className = 'gs-yt-btn';
+      btn.dataset.gsYt = pair[0];
+      btn.textContent = pair[1];
+      head.appendChild(btn);
+    });
+    var bodyDiv = document.createElement('div');
+    bodyDiv.className = 'gs-yt-body';
+    bodyDiv.dataset.gsYt = 'body';
+    var hint = document.createElement('span');
+    hint.className = 'gs-yt-status';
+    hint.textContent = 'Summarize this video, jump through chapters, or overlay translated subtitles.';
+    bodyDiv.appendChild(hint);
+    panel.append(head, bodyDiv);
     if (anchor && anchor.parentNode) {
       // Prefer directly below the title/meta block.
       const meta = document.querySelector('ytd-watch-metadata') || anchor;
@@ -755,7 +796,7 @@
 
   function setPanelLoading(label) {
     cancelPendingPartial();
-    panelBody().innerHTML = '<span class="gs-yt-status"><span class="gs-spinner"></span>' + escapeHtml(label) + '</span>';
+    panelBody().replaceChildren(makeStatusEl(label));
   }
 
   // Shown once a background heartbeat reports the provider has not sent
@@ -765,14 +806,17 @@
   function setPanelWaiting(elapsedMs) {
     cancelPendingPartial();
     const secs = Math.max(1, Math.round((elapsedMs || 0) / 1000));
-    panelBody().innerHTML = '<span class="gs-yt-status"><span class="gs-spinner"></span>' +
-      'Waiting for the model\u2026 (' + secs + 's \u2014 large transcripts can take a few minutes)</span>';
+    panelBody().replaceChildren(makeStatusEl('Waiting for the model\u2026 (' + secs + 's \u2014 large transcripts can take a few minutes)'));
   }
 
   function setPanelError(message) {
     cancelPendingPartial();
     ytLog('panel error shown', { name: (message && message.name) || '' });
-    panelBody().innerHTML = '<span class="gs-yt-status" style="color:#e88a8a">' + escapeHtml(friendlyPanelError(message, 'Request failed')) + '</span>';
+    var errSpan = document.createElement('span');
+    errSpan.className = 'gs-yt-status';
+    errSpan.style.color = '#e88a8a';
+    errSpan.textContent = friendlyPanelError(message, 'Request failed');
+    panelBody().replaceChildren(errSpan);
   }
 
   // The canonical prompt lives in lib/prompts.js ('youtube-summary'), which is
@@ -842,15 +886,19 @@
         if (match) chapters.push({ time: match[1], seconds: parseTime(match[1]), title: match[2].trim() });
       });
       if (!chapters.length) {
-        panelBody().innerHTML = markdownLite(result);
+        setGeneratedHtml(panelBody(), markdownLite(result));
         return;
       }
       const body = panelBody();
-      body.innerHTML = '';
+      body.replaceChildren();
       chapters.forEach((chapter) => {
         const button = document.createElement('button');
         button.className = 'gs-yt-chapter';
-        button.innerHTML = '<span class="gs-yt-chapter-time">' + escapeHtml(chapter.time) + '</span>' + escapeHtml(chapter.title);
+        const timeSpan = document.createElement('span');
+        timeSpan.className = 'gs-yt-chapter-time';
+        timeSpan.textContent = chapter.time;
+        button.appendChild(timeSpan);
+        button.appendChild(document.createTextNode(chapter.title));
         button.addEventListener('click', () => seekTo(chapter.seconds));
         body.appendChild(button);
       });
@@ -970,9 +1018,12 @@
     lastCaptionIndex = index;
     overlay.dataset.gsIndex = String(index);
     const cached = translationCache.get(index);
-    overlay.innerHTML =
-      '<div>' + escapeHtml(line.text) + '</div>' +
-      '<div class="gs-yt-subs-trans">' + escapeHtml(cached || '...') + '</div>';
+    var origDiv = document.createElement('div');
+    origDiv.textContent = line.text;
+    var transDiv = document.createElement('div');
+    transDiv.className = 'gs-yt-subs-trans';
+    transDiv.textContent = cached || '...';
+    overlay.replaceChildren(origDiv, transDiv);
     if (!cached) queueTranslation(index);
   }
 

@@ -135,7 +135,14 @@ var SIDEBAR_GUIDE_STEPS = [
 ];
 function renderSidebarGuide() {
   var box = el("sidebarGuideSteps");
-  if (box) box.innerHTML = SIDEBAR_GUIDE_STEPS.map(function (s) { return "<li>" + esc(s) + "</li>"; }).join("");
+  if (box) {
+    clearChildren(box);
+    SIDEBAR_GUIDE_STEPS.forEach(function (s) {
+      var li = document.createElement("li");
+      li.textContent = s;
+      box.appendChild(li);
+    });
+  }
   var pref = el("sidebarSidePref");
   if (pref && state.settings) pref.value = state.settings.sidebarSide === "left" ? "left" : "right";
 }
@@ -395,6 +402,35 @@ function esc(s) {
     .replace(/"/g, "&quot;").replace(/'/g, "&#39;");
 }
 
+function clearChildren(node) {
+  while (node.firstChild) node.removeChild(node.firstChild);
+}
+
+function addOption(parent, value, text) {
+  var opt = document.createElement("option");
+  opt.value = value == null ? "" : String(value);
+  opt.textContent = text == null ? "" : String(text);
+  parent.appendChild(opt);
+  return opt;
+}
+
+function setGeneratedHtml(el, html) {
+  var doc = new DOMParser().parseFromString(String(html == null ? '' : html), 'text/html');
+  var drop = { script:1, style:1, iframe:1, object:1, embed:1, link:1, meta:1, title:1, base:1, svg:1, math:1 };
+  Array.prototype.forEach.call(doc.querySelectorAll('*'), function (n) {
+    if (drop[n.tagName.toLowerCase()]) { n.remove(); return; }
+    Array.prototype.slice.call(n.attributes).forEach(function (a) {
+      var name = a.name.toLowerCase();
+      if (name.indexOf('on') === 0) { n.removeAttribute(a.name); return; }
+      if (!/^(href|title|class|id|type|value|placeholder|spellcheck|autocomplete|disabled|selected|checked|list|for|role|aria-[a-z-]+|data-[a-z0-9-]+)$/.test(name)) n.removeAttribute(a.name);
+    });
+    var href = n.getAttribute && n.getAttribute('href');
+    if (href && !/^(https?:|mailto:|#|\/|\.)/i.test(href)) n.removeAttribute('href');
+  });
+  while (el.firstChild) el.removeChild(el.firstChild);
+  while (doc.body.firstChild) el.appendChild(doc.body.firstChild);
+}
+
 var state = defaultState();
 var editingPromptId = null;
 var editingDirty = false;
@@ -465,28 +501,29 @@ function schedulePersist() {
 /* ---------------- Providers UI ---------------- */
 
 function renderPresetOptions() {
-  el("presetSelect").innerHTML = PRESETS.map(function (p) {
-    return '<option value="' + esc(p.id) + '">' + esc(p.label) + "</option>";
-  }).join("");
+  var sel = el("presetSelect");
+  if (!sel) return;
+  clearChildren(sel);
+  PRESETS.forEach(function (p) { addOption(sel, p.id, p.label); });
 }
 
 function renderActiveProviderOptions() {
   var sel = el("activeProviderSelect");
+  if (!sel) return;
+  clearChildren(sel);
   if (!state.providers.length) {
-    sel.innerHTML = '<option value="">(no providers)</option>';
+    addOption(sel, "", "(no providers)");
     sel.value = "";
     return;
   }
-  sel.innerHTML = state.providers.map(function (p) {
-    return '<option value="' + esc(p.id) + '">' + esc(p.label) + "</option>";
-  }).join("");
+  state.providers.forEach(function (p) { addOption(sel, p.id, p.label); });
   sel.value = state.activeProviderId || state.providers[0].id;
 }
 
 function renderProviders() {
   var list = el("providerList");
   el("noProviders").classList.toggle("hidden", state.providers.length > 0);
-  list.innerHTML = state.providers.map(function (p) {
+  setGeneratedHtml(list, state.providers.map(function (p) {
     var active = p.id === state.activeProviderId;
     return '' +
     '<article class="provider-card' + (active ? " is-active" : "") + '" data-id="' + esc(p.id) + '">' +
@@ -527,7 +564,7 @@ function renderProviders() {
       "</div>" +
       '<div class="test-result" data-role="test-result" role="status" aria-live="polite"></div>' +
     "</article>";
-  }).join("");
+  }).join(""));
   renderActiveProviderOptions();
 }
 
@@ -556,7 +593,8 @@ function fillModelDatalist(card, models) {
     var id = typeof m === "string" ? m : (m && (m.id || m.name || m.model));
     if (id) list.push(String(id));
   });
-  dl.innerHTML = list.map(function (m) { return '<option value="' + esc(m) + '"></option>'; }).join("");
+  clearChildren(dl);
+  list.forEach(function (m) { addOption(dl, m, ""); });
   return list;
 }
 
@@ -681,11 +719,11 @@ function renderBuiltinPromptEditor(preferredId) {
   if (!want || !builtins.some(function (p) { return p.id === want; })) want = builtins[0].id;
   selectedBuiltinPromptId = want;
   if (sel) {
-    sel.innerHTML = builtins.map(function (p) {
+    clearChildren(sel);
+    builtins.forEach(function (p) {
       var overridden = !!promptOverride(p.id);
-      return '<option value="' + esc(p.id) + '">' + esc(promptName(p)) +
-        (overridden ? " (customized)" : "") + "</option>";
-    }).join("");
+      addOption(sel, p.id, promptName(p) + (overridden ? " (customized)" : ""));
+    });
     sel.value = want;
   }
   var builtin = builtinById(want);
@@ -731,10 +769,11 @@ function renderCustomPromptSelect(preferredId) {
   selectedCustomPromptId = want;
 
   if (sel) {
-    sel.innerHTML = '<option value="">(+ New prompt)</option>' + state.prompts.map(function (p) {
-      return '<option value="' + esc(p.id) + '">' + esc(promptName(p)) +
-        (isBuiltinId(p.id) ? " (built-in override)" : " (custom)") + "</option>";
-    }).join("");
+    clearChildren(sel);
+    addOption(sel, "", "(+ New prompt)");
+    state.prompts.forEach(function (p) {
+      addOption(sel, p.id, promptName(p) + (isBuiltinId(p.id) ? " (built-in override)" : " (custom)"));
+    });
     sel.value = want || "";
   }
 
@@ -1176,9 +1215,10 @@ function renderLanguageOptions(preserveValue) {
     (selLang.value || (state.settings && state.settings.targetLang) || "");
   var names = effectiveTranslationLanguages().slice();
   if (previous && names.indexOf(previous) < 0) names.unshift(previous);
-  selLang.innerHTML = names.map(function (name) {
-    return '<option value="' + esc(name) + '">' + esc(name || "Auto / same as source") + "</option>";
-  }).join("");
+  clearChildren(selLang);
+  names.forEach(function (name) {
+    addOption(selLang, name, name || "Auto / same as source");
+  });
   selLang.value = previous;
 }
 

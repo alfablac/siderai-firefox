@@ -64,11 +64,13 @@ if (manifest) {
     expected.forEach((v) => assert.ok(dcp.required.includes(v), "expected declared data type missing: " + v));
   });
 
-  check("strict_min_version covers built-in data consent (Firefox >= 140)", () => {
+  check("strict_min_version covers built-in data consent (Firefox >= 142)", () => {
     const gecko = manifest.browser_specific_settings.gecko;
     const min = parseInt(String(gecko.strict_min_version || "0"), 10);
-    assert.ok(min >= 140,
-      "strict_min_version must be >= 140.0 so data_collection_permissions is enforced at install, got " + gecko.strict_min_version);
+    // gecko.data_collection_permissions is only understood from Firefox 142;
+    // a lower floor makes AMO warn the key is unsupported on Android.
+    assert.ok(min >= 142,
+      "strict_min_version must be >= 142.0 so data_collection_permissions is enforced at install, got " + gecko.strict_min_version);
   });
 
   check("sidebar_action present (Firefox sidebar)", () => {
@@ -122,6 +124,28 @@ if (manifest) {
   check("permissions include storage", () => {
     assert.ok(Array.isArray(manifest.permissions) && manifest.permissions.includes("storage"),
       "permissions should include 'storage'");
+  });
+
+  // 1.0.18: AMO warned on every dynamic innerHTML assignment (54 warnings)
+  // plus a strict_min_version below the Firefox 142 floor that understands
+  // gecko.data_collection_permissions. Rendering now goes through DOM
+  // construction or DOMParser + sanitizer walks; this keeps it that way.
+  check("no unsafe innerHTML sinks (AMO warnings stay at zero)", () => {
+    const files = [
+      "content/content.js", "content/youtube.js", "content/search.js",
+      "content/inject-yt.js", "sidebar/sidebar.js", "sidebar/markdown.js",
+      "options/options.js", "background.js",
+    ];
+    const sink = /\.innerHTML\s*=|\.outerHTML\s*=|insertAdjacentHTML|document\.write\s*\(/;
+    const offenders = [];
+    files.forEach((rel) => {
+      const p = path.join(EXT, rel);
+      if (!fs.existsSync(p)) return;
+      fs.readFileSync(p, "utf8").split(/\r?\n/).forEach((line, i) => {
+        if (sink.test(line)) offenders.push(rel + ":" + (i + 1) + " " + line.trim().slice(0, 80));
+      });
+    });
+    assert.deepStrictEqual(offenders, [], "unsafe HTML sinks found:\n" + offenders.join("\n"));
   });
 } else {
   failures++;

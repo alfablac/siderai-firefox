@@ -16,6 +16,25 @@
   };
 
   function esc(s) { return window.GraphiteMarkdown ? GraphiteMarkdown.escapeHtml(s) : String(s).replace(/[&<>"]/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]; }); }
+  function setGeneratedHtml(el, html) {
+    var doc = new DOMParser().parseFromString(String(html == null ? '' : html), 'text/html');
+    var drop = { script: 1, style: 1, iframe: 1, object: 1, embed: 1, form: 1, link: 1, meta: 1, title: 1, base: 1, svg: 1, math: 1 };
+    Array.prototype.forEach.call(doc.querySelectorAll('*'), function (n) {
+      if (drop[n.tagName.toLowerCase()]) { n.remove(); return; }
+      Array.prototype.slice.call(n.attributes).forEach(function (a) {
+        var name = a.name.toLowerCase();
+        if (name.indexOf('on') === 0) { n.removeAttribute(a.name); return; }
+        if (!/^(href|src|alt|title|class|id|type|disabled|checked|selected|value|placeholder|rows|cols|accept|for|target|rel|data-[a-z0-9-]+)$/.test(name)) n.removeAttribute(a.name);
+      });
+      var href = n.getAttribute && n.getAttribute('href');
+      if (href && !/^(https?:|mailto:|#|\/|\.)/i.test(href)) n.removeAttribute('href');
+      var src = n.getAttribute && n.getAttribute('src');
+      if (src && !/^(https?:|data:image\/|#|\/|\.)/i.test(src)) n.removeAttribute('src');
+    });
+    while (el.firstChild) el.removeChild(el.firstChild);
+    while (doc.body.firstChild) el.appendChild(doc.body.firstChild);
+  }
+  function emptyNoteEl(text) { var d = document.createElement('div'); d.className = 'empty-note'; d.textContent = text; return d; }
   function status(t) { $('statusLine').textContent = t; }
   function truncate(s, n) { s = String(s || ''); return s.length > n ? s.slice(0, n) + '\n...[truncated]' : s; }
   function uid() { return 'c' + Date.now().toString(36) + Math.random().toString(36).slice(2, 7); }
@@ -143,7 +162,7 @@
 
   function renderProviderSelects() {
     var ps = $('providerSelect');
-    ps.innerHTML = '';
+    ps.textContent = '';
     if (!state.providers.length) { var o = document.createElement('option'); o.textContent = 'No provider'; ps.appendChild(o); }
     state.providers.forEach(function (p) {
       var o = document.createElement('option'); o.value = p.id; o.textContent = p.label; ps.appendChild(o);
@@ -176,7 +195,7 @@
     var query = ($('modelSearch') ? $('modelSearch').value : '').toLowerCase();
     var filtered = models.filter(function (m) { return !query || m.toLowerCase().indexOf(query) !== -1; });
     modelPickerState.filtered = filtered;
-    list.innerHTML = '';
+    list.textContent = '';
     if (!models.length) { var e = document.createElement('div'); e.className = 'model-empty'; e.textContent = 'No models available'; list.appendChild(e); modelPickerState.highlight = -1; return; }
     if (!filtered.length) { var n = document.createElement('div'); n.className = 'model-empty'; n.textContent = 'No matching models'; list.appendChild(n); modelPickerState.highlight = -1; return; }
     // Highlight current model if present, else first match.
@@ -233,14 +252,14 @@
     var btn = $('modelButton'); if (btn) btn.focus();
   }
   function renderGroupModels() {
-    var box = $('groupModels'); box.innerHTML = '';
+    var box = $('groupModels'); box.textContent = '';
     allModelCombos().forEach(function (c, i) {
       var lab = document.createElement('label');
       var cb = document.createElement('input'); cb.type = 'checkbox'; cb.value = c.providerId + '|' + c.model; cb.checked = i < 2;
       lab.appendChild(cb); lab.appendChild(document.createTextNode(' ' + c.label));
       box.appendChild(lab);
     });
-    if (!box.children.length) box.innerHTML = '<span class="muted small">Configure providers in Settings to use group chat.</span>';
+    if (!box.children.length) { var note = document.createElement('span'); note.className = 'muted small'; note.textContent = 'Configure providers in Settings to use group chat.'; box.appendChild(note); }
   }
   function selectedGroupCombos(promptText) {
     var boxes = Array.prototype.slice.call($('groupModels').querySelectorAll('input:checked'));
@@ -401,7 +420,7 @@
   function readAsText(file) { return new Promise(function (res, rej) { var r = new FileReader(); r.onload = function () { res(r.result); }; r.onerror = rej; r.readAsText(file); }); }
   function readAsArrayBuffer(file) { return new Promise(function (res, rej) { var r = new FileReader(); r.onload = function () { res(r.result); }; r.onerror = rej; r.readAsArrayBuffer(file); }); }
 
-  function showAttachment(html) { var el = $('attachmentPreview'); el.innerHTML = html; el.classList.remove('hidden'); }
+  function showAttachment(html) { var el = $('attachmentPreview'); setGeneratedHtml(el, html); el.classList.remove('hidden'); }
   function handleImageFile(file, promptText) {
     return readAsDataURL(file).then(function (dataUrl) {
       state.attachment = { kind: 'image', name: file.name, dataUrl: dataUrl, mime: file.type };
@@ -482,9 +501,13 @@
     var wrap = $('messages');
     var el = document.createElement('div');
     el.className = 'msg ' + role;
-    el.innerHTML = '<div class="msg-head"><span>' + esc(label) + '</span><span class="msg-actions">' +
-      (role === 'assistant' ? '<button type="button" class="mini-btn" data-act="speak">Read</button>' : '') +
-      '<button type="button" class="mini-btn" data-act="copy">Copy</button></span></div><div class="body"></div>';
+    var headEl = document.createElement('div'); headEl.className = 'msg-head';
+    var labelEl = document.createElement('span'); labelEl.textContent = label;
+    var actionsEl = document.createElement('span'); actionsEl.className = 'msg-actions';
+    if (role === 'assistant') { var speakBtnEl = document.createElement('button'); speakBtnEl.type = 'button'; speakBtnEl.className = 'mini-btn'; speakBtnEl.setAttribute('data-act', 'speak'); speakBtnEl.textContent = 'Read'; actionsEl.appendChild(speakBtnEl); }
+    var copyBtnEl = document.createElement('button'); copyBtnEl.type = 'button'; copyBtnEl.className = 'mini-btn'; copyBtnEl.setAttribute('data-act', 'copy'); copyBtnEl.textContent = 'Copy'; actionsEl.appendChild(copyBtnEl);
+    headEl.appendChild(labelEl); headEl.appendChild(actionsEl); el.appendChild(headEl);
+    var bodyDivEl = document.createElement('div'); bodyDivEl.className = 'body'; el.appendChild(bodyDivEl);
     el.querySelector('[data-act="copy"]').addEventListener('click', function () {
       var t = el.dataset.raw || '';
       if (navigator.clipboard) navigator.clipboard.writeText(t);
@@ -499,7 +522,7 @@
   function setMessageBody(el, rawText) {
     el.dataset.raw = rawText;
     var body = el.querySelector('.body');
-    body.innerHTML = window.GraphiteMarkdown ? GraphiteMarkdown.render(rawText, markdownOpts()) : esc(rawText);
+    if (window.GraphiteMarkdown) setGeneratedHtml(body, GraphiteMarkdown.render(rawText, markdownOpts())); else body.textContent = rawText;
     wireCodeButtons(el, rawText);
     scrollBottom();
   }
@@ -662,9 +685,9 @@
     var results = combos.map(function () { return ''; });
     var promises = combos.map(function (combo, i) {
       var col = document.createElement('div'); col.className = 'group-col';
-      col.innerHTML = '<h4>' + esc(combo.label) + '</h4>';
+      var colHead = document.createElement('h4'); colHead.textContent = combo.label; col.appendChild(colHead);
       wrap.appendChild(col);
-      var el = document.createElement('div'); el.className = 'msg assistant'; el.innerHTML = '<div class="body"></div>';
+      var el = document.createElement('div'); el.className = 'msg assistant'; var elBody = document.createElement('div'); elBody.className = 'body'; el.appendChild(elBody);
       col.appendChild(el);
       return streamChat(apiMessages, combo.providerId, combo.model, el, function () {}).then(function (full) {
         if (!full && !state.stopRequested) return chatSyncFallback(apiMessages, combo.providerId, combo.model, el);
@@ -863,13 +886,13 @@
       cachedPrompts = list;
       var sel = $('promptSelect');
       var box = $('promptList');
-      if (box) { box.innerHTML = ''; box.classList.add('hidden'); }
+      if (box) { box.textContent = ''; box.classList.add('hidden'); }
       if (!sel) return;
       var want = (selectedPromptId && promptById(selectedPromptId)) ? selectedPromptId
         : (sel.value && promptById(sel.value)) ? sel.value
         : (list.length ? list[0].id : '');
       selectedPromptId = want || null;
-      sel.innerHTML = '';
+      sel.textContent = '';
       list.forEach(function (p) {
         var o = document.createElement('option');
         o.value = p.id; o.textContent = p.name + (p.builtin ? ' (builtin)' : ' (custom)');
@@ -942,10 +965,10 @@
       var hits = list.filter(function (p) { return p.name.toLowerCase().indexOf(query) !== -1; }).slice(0, 8);
       var pop = $('slashPopup');
       if (!hits.length) { hideSlash(); return; }
-      pop.innerHTML = ''; state.slashIndex = 0;
+      pop.textContent = ''; state.slashIndex = 0;
       hits.forEach(function (p, i) {
         var el = document.createElement('div'); el.className = 'slash-item' + (i === 0 ? ' selected' : '');
-        el.innerHTML = '<strong>/' + esc(p.name) + '</strong>';
+        var strongEl = document.createElement('strong'); strongEl.textContent = '/' + p.name; el.appendChild(strongEl);
         el.addEventListener('click', function () { pickSlash(p); });
         pop.appendChild(el);
       });
@@ -965,11 +988,18 @@
   function renderHistory() {
     storageGet('graphite_history').then(function (o) {
       var hist = Array.isArray(o.graphite_history) ? o.graphite_history : [];
-      var box = $('historyList'); box.innerHTML = '';
-      if (!hist.length) { box.innerHTML = '<div class="empty-note">No conversations yet</div>'; return; }
+      var box = $('historyList'); box.textContent = '';
+      if (!hist.length) { box.appendChild(emptyNoteEl('No conversations yet')); return; }
       hist.forEach(function (h) {
         var el = document.createElement('div'); el.className = 'list-item';
-        el.innerHTML = '<div class="row-between"><strong>' + esc(h.title || 'Chat') + '</strong><span><button type="button" class="mini-btn" data-a="load">Load</button> <button type="button" class="mini-btn" data-a="del">Delete</button></span></div><div class="desc">' + esc(new Date(h.updatedAt || 0).toLocaleString()) + ' - ' + ((h.messages || []).length) + ' messages</div>';
+        var rowEl = document.createElement('div'); rowEl.className = 'row-between';
+        var titleEl = document.createElement('strong'); titleEl.textContent = h.title || 'Chat';
+        var btnSpan = document.createElement('span');
+        var loadBtn = document.createElement('button'); loadBtn.type = 'button'; loadBtn.className = 'mini-btn'; loadBtn.setAttribute('data-a', 'load'); loadBtn.textContent = 'Load';
+        var delBtn = document.createElement('button'); delBtn.type = 'button'; delBtn.className = 'mini-btn'; delBtn.setAttribute('data-a', 'del'); delBtn.textContent = 'Delete';
+        btnSpan.appendChild(loadBtn); btnSpan.appendChild(document.createTextNode(' ')); btnSpan.appendChild(delBtn);
+        rowEl.appendChild(titleEl); rowEl.appendChild(btnSpan); el.appendChild(rowEl);
+        var descEl = document.createElement('div'); descEl.className = 'desc'; descEl.textContent = new Date(h.updatedAt || 0).toLocaleString() + ' - ' + ((h.messages || []).length) + ' messages'; el.appendChild(descEl);
         el.querySelector('[data-a="load"]').addEventListener('click', function () { loadConversation(h); });
         el.querySelector('[data-a="del"]').addEventListener('click', function () {
           storageGet('graphite_history').then(function (oo) {
@@ -984,14 +1014,14 @@
   function loadConversation(h) {
     state.conversationId = h.id;
     state.messages = (h.messages || []).map(function (m) { return { role: m.role, content: m.content }; });
-    var box = $('messages'); box.innerHTML = '';
+    var box = $('messages'); box.textContent = '';
     state.messages.forEach(function (m) { addMessageEl(m.role === 'user' ? 'user' : 'assistant', m.role === 'user' ? 'You' : 'Assistant', plainText(m.content)); });
     switchView('chat'); status('Loaded: ' + (h.title || 'Chat'));
   }
   function newChat() {
     stopGeneration();
     state.messages = []; state.conversationId = null; state.groupResults = [];
-    $('messages').innerHTML = '<div class="empty-note">New chat. Attach a page, file, or ask anything.</div>';
+    var msgBox = $('messages'); msgBox.textContent = ''; msgBox.appendChild(emptyNoteEl('New chat. Attach a page, file, or ask anything.'));
     switchView('chat'); status('New chat');
   }
 
@@ -1016,10 +1046,10 @@
     { id: 'artifacts', name: 'Artifacts', desc: 'HTML artifact preview', form: 'artifact' }
   ];
   function renderTools() {
-    var grid = $('toolGrid'); grid.innerHTML = '';
+    var grid = $('toolGrid'); grid.textContent = '';
     TOOLS.forEach(function (t) {
       var b = document.createElement('button'); b.type = 'button'; b.className = 'tool-card';
-      b.innerHTML = '<strong>' + esc(t.name) + '</strong><span>' + esc(t.desc) + '</span>';
+      var cardName = document.createElement('strong'); cardName.textContent = t.name; var cardDesc = document.createElement('span'); cardDesc.textContent = t.desc; b.appendChild(cardName); b.appendChild(cardDesc);
       b.addEventListener('click', function () { openTool(t); });
       grid.appendChild(b);
     });
@@ -1031,12 +1061,12 @@
     function ta(id, ph, rows) { return '<textarea id="' + id + '" rows="' + (rows || 4) + '" placeholder="' + esc(ph) + '"></textarea>'; }
     function btn(id, label, cls) { return '<button type="button" class="btn ' + (cls || 'primary') + ' small" id="' + id + '">' + esc(label) + '</button>'; }
     if (tool.form === 'page') {
-      panel.innerHTML = h + '<div class="muted small">Uses extractPage on the current tab.</div><div class="row">' + btn('tGo', 'Summarize current page') + '</div>';
+      setGeneratedHtml(panel, h + '<div class="muted small">Uses extractPage on the current tab.</div><div class="row">' + btn('tGo', 'Summarize current page') + '</div>');
       $('tGo').addEventListener('click', function () { attachPage().then(function () { runToolPrompt('Summarize this page: key points, main argument, and action items.'); }); });
     } else if (tool.form === 'youtube') {
-      panel.innerHTML = h + '<input type="text" id="tUrl" placeholder="YouTube URL or video ID (blank = current tab)">' +
+      setGeneratedHtml(panel, h + '<input type="text" id="tUrl" placeholder="YouTube URL or video ID (blank = current tab)">' +
         '<label class="toggle"><input type="checkbox" id="tBilingual"> Bilingual subtitles note (include original + translation guidance)</label>' +
-        '<div class="row">' + btn('tSum', 'Summarize') + btn('tChap', 'Chapters', '') + '</div><div class="muted small">Bilingual mode asks the model to keep key original-language quotes with translations.</div>';
+        '<div class="row">' + btn('tSum', 'Summarize') + btn('tChap', 'Chapters', '') + '</div><div class="muted small">Bilingual mode asks the model to keep key original-language quotes with translations.</div>');
       var go = function (mode) {
         attachYouTube($('tUrl').value.trim() || undefined).then(function () {
           var extra = $('tBilingual').checked ? '\n\nInclude bilingual notes: quote key original-language lines and give translations.' : '';
@@ -1059,28 +1089,28 @@
       $('tChap').addEventListener('click', function () { go('chapters'); });
     } else if (tool.form === 'translate') {
       var defaultLang = defaultTargetLang();
-      panel.innerHTML = h + ta('tText', 'Text to translate') +
+      setGeneratedHtml(panel, h + ta('tText', 'Text to translate') +
         '<label class="muted small" for="tLangSel">Target language</label>' +
         '<select id="tLangSel">' + translateSelOptions(defaultLang) + '</select>' +
         '<input type="text" id="tLangCustom" class="hidden" placeholder="Target language, e.g. Spanish">' +
-        '<div class="row">' + btn('tGo', 'Translate') + '</div>';
+        '<div class="row">' + btn('tGo', 'Translate') + '</div>');
       $('tLangSel').addEventListener('change', function () { $('tLangCustom').classList.toggle('hidden', this.value !== TRANSLATE_CUSTOM_LANG); if (this.value === TRANSLATE_CUSTOM_LANG) $('tLangCustom').focus(); });
       $('tGo').addEventListener('click', function () { runToolPrompt('Translate the following to ' + toolTranslateLang() + '. Preserve formatting and tone:\n\n' + $('tText').value); });
     } else if (tool.form === 'ocr' || tool.form === 'vision') {
       var isOcr = tool.form === 'ocr';
-      panel.innerHTML = h + '<input type="file" id="tFile" accept="image/*">' + (isOcr ? '' : ta('tQ', 'Question about the image', 2)) + '<div class="row">' + btn('tGo', isOcr ? 'Extract text' : 'Ask') + '</div>';
+      setGeneratedHtml(panel, h + '<input type="file" id="tFile" accept="image/*">' + (isOcr ? '' : ta('tQ', 'Question about the image', 2)) + '<div class="row">' + btn('tGo', isOcr ? 'Extract text' : 'Ask') + '</div>');
       $('tGo').addEventListener('click', function () {
         var f = $('tFile').files[0]; if (!f) { status('Pick an image first'); return; }
         handleImageFile(f).then(function () { runToolPrompt(isOcr ? 'OCR: extract all visible text exactly, preserving layout as much as possible.' : ($('tQ').value.trim() || 'Describe this image in detail.')); });
       });
     } else if (tool.form === 'pdf') {
-      panel.innerHTML = h + '<input type="file" id="tFile" accept="application/pdf,.pdf">' + ta('tQ', 'Question about the PDF', 2) + '<div class="row">' + btn('tGo', 'Ask PDF') + '</div>';
+      setGeneratedHtml(panel, h + '<input type="file" id="tFile" accept="application/pdf,.pdf">' + ta('tQ', 'Question about the PDF', 2) + '<div class="row">' + btn('tGo', 'Ask PDF') + '</div>');
       $('tGo').addEventListener('click', function () {
         var f = $('tFile').files[0]; if (!f) { status('Pick a PDF first'); return; }
         handlePdfFile(f).then(function () { runToolPrompt($('tQ').value.trim() || 'Summarize this PDF document.'); });
       });
     } else if (tool.form === 'audio') {
-      panel.innerHTML = h + '<input type="file" id="tFile" accept="audio/*"><div class="row">' + btn('tGo', 'Transcribe + Summarize') + '</div>';
+      setGeneratedHtml(panel, h + '<input type="file" id="tFile" accept="audio/*"><div class="row">' + btn('tGo', 'Transcribe + Summarize') + '</div>');
       $('tGo').addEventListener('click', function () {
         var f = $('tFile').files[0]; if (!f) { status('Pick an audio file first'); return; }
         handleAudioFile(f, true).then(function () { runToolPrompt('Summarize this audio transcript: key points, decisions, and action items.'); });
@@ -1090,12 +1120,12 @@
       var opts = tones.map(function (t) {
         return '<option value="' + esc(t.id) + '"' + (t.id === 'professional' ? ' selected' : '') + '>' + esc(t.label) + '</option>';
       }).join('') + '<option value="custom">Custom tone…</option>';
-      panel.innerHTML = h + ta('tText', 'Text to rewrite') +
+      setGeneratedHtml(panel, h + ta('tText', 'Text to rewrite') +
         '<label class="muted small" for="tToneSel">Tone</label>' +
         '<select id="tToneSel">' + opts + '</select>' +
         '<input type="text" id="tTone" class="hidden" placeholder="Custom tone, e.g. like a friendly pirate captain">' +
         '<div class="row">' + btn('tGo', 'Rewrite') + '</div>' +
-        '<div class="muted small">Tone source: lib/prompts.js — REWRITE_TONES (rewrite-&lt;tone&gt; prompts).</div>';
+        '<div class="muted small">Tone source: lib/prompts.js — REWRITE_TONES (rewrite-&lt;tone&gt; prompts).</div>');
       $('tToneSel').addEventListener('change', function () { $('tTone').classList.toggle('hidden', this.value !== 'custom'); if (this.value === 'custom') $('tTone').focus(); });
       $('tGo').addEventListener('click', function () {
         var textToRewrite = $('tText').value;
@@ -1104,10 +1134,10 @@
         runToolPrompt(rewritePromptFor(toneId, textToRewrite, toneId === 'custom' ? $('tTone').value.trim() : ''));
       });
     } else if (tool.form === 'essay') {
-      panel.innerHTML = h + '<input type="text" id="tTopic" placeholder="Essay topic">' + '<input type="text" id="tLen" placeholder="Length, e.g. 600 words" value="600 words"><div class="row">' + btn('tGo', 'Write essay') + '</div>';
+      setGeneratedHtml(panel, h + '<input type="text" id="tTopic" placeholder="Essay topic">' + '<input type="text" id="tLen" placeholder="Length, e.g. 600 words" value="600 words"><div class="row">' + btn('tGo', 'Write essay') + '</div>');
       $('tGo').addEventListener('click', function () { runToolPrompt('Write a well-structured essay (' + ($('tLen').value.trim() || '600 words') + ') on: ' + $('tTopic').value + '. Include introduction, body paragraphs with evidence-style reasoning, and conclusion.'); });
     } else if (tool.form === 'imagegen') {
-      panel.innerHTML = h + ta('tText', 'Image prompt', 3) + '<div class="row">' + btn('tGo', 'Generate image') + '</div><div id="tImg"></div>';
+      setGeneratedHtml(panel, h + ta('tText', 'Image prompt', 3) + '<div class="row">' + btn('tGo', 'Generate image') + '</div><div id="tImg"></div>');
       $('tGo').addEventListener('click', function () {
         var prompt = $('tText').value.trim(); if (!prompt) return;
         status('Generating image...');
@@ -1120,30 +1150,30 @@
             url = r.dataUrl || r.url || r.image || (r.b64_json ? ('data:image/png;base64,' + r.b64_json) : '') || '';
           }
           if (!url) throw new Error((r && r.error) || 'Background generateImage returned no image');
-          $('tImg').innerHTML = '<img alt="" style="max-width:100%;border-radius:8px;margin-top:8px" src="' + esc(url) + '">';
+          var imgWrap = $('tImg'); imgWrap.textContent = ''; var genImg = document.createElement('img'); genImg.alt = ''; genImg.style.cssText = 'max-width:100%;border-radius:8px;margin-top:8px'; genImg.src = url; imgWrap.appendChild(genImg);
           status('Image generated');
         }).catch(function (e) { status('Image generation failed: ' + e.message); });
       });
     } else if (tool.form === 'tts') {
-      panel.innerHTML = h + ta('tText', 'Text to read aloud') + '<div class="row">' + btn('tGo', 'Read aloud') + btn('tStop', 'Stop', '') + '</div>';
+      setGeneratedHtml(panel, h + ta('tText', 'Text to read aloud') + '<div class="row">' + btn('tGo', 'Read aloud') + btn('tStop', 'Stop', '') + '</div>');
       $('tGo').addEventListener('click', function () { speak($('tText').value); });
       $('tStop').addEventListener('click', function () { if ('speechSynthesis' in window) speechSynthesis.cancel(); });
     } else if (tool.form === 'websearch') {
-      panel.innerHTML = h + '<div class="muted small">Open a search results tab, then run this - it extracts that tab via extractPage and answers.</div>' + ta('tQ', 'Question', 2) + '<div class="row">' + btn('tGo', 'Answer from current tab') + '</div>';
+      setGeneratedHtml(panel, h + '<div class="muted small">Open a search results tab, then run this - it extracts that tab via extractPage and answers.</div>' + ta('tQ', 'Question', 2) + '<div class="row">' + btn('tGo', 'Answer from current tab') + '</div>');
       $('tGo').addEventListener('click', function () { attachPage().then(function () { runToolPrompt('Answer using the search/page context above. Cite sources with URLs where present:\n\n' + ($('tQ').value.trim() || 'What are the key findings?')); }); });
     } else if (tool.form === 'data') {
-      panel.innerHTML = h + ta('tCsv', 'Paste CSV data', 6) + ta('tQ', 'Question about the data', 2) + '<div class="row">' + btn('tPreview', 'Preview table', '') + btn('tGo', 'Analyze') + '</div><div id="tTable"></div>';
+      setGeneratedHtml(panel, h + ta('tCsv', 'Paste CSV data', 6) + ta('tQ', 'Question about the data', 2) + '<div class="row">' + btn('tPreview', 'Preview table', '') + btn('tGo', 'Analyze') + '</div><div id="tTable"></div>');
       $('tPreview').addEventListener('click', function () {
         var rows = $('tCsv').value.trim().split('\n').slice(0, 12).map(function (l) { return l.split(','); });
         var html = '<div class="table-wrap"><table>' + rows.map(function (r, i) { return '<tr>' + r.map(function (c) { return i === 0 ? '<th>' + esc(c) + '</th>' : '<td>' + esc(c) + '</td>'; }).join('') + '</tr>'; }).join('') + '</table></div>';
-        $('tTable').innerHTML = html;
+        setGeneratedHtml($('tTable'), html);
       });
       $('tGo').addEventListener('click', function () { setContext($('tCsv').value, 'CSV data'); runToolPrompt('Analyze this CSV data. ' + ($('tQ').value.trim() || 'Summarize trends, totals, and outliers. Show calculations.')); });
     } else if (tool.form === 'artifact') {
-      panel.innerHTML = h + '<div class="muted small">Paste HTML or ask in chat for a ```html block, then use Preview artifact on the message.</div>' + ta('tHtml', 'HTML artifact', 6) + '<div class="row">' + btn('tGo', 'Preview') + '</div>';
+      setGeneratedHtml(panel, h + '<div class="muted small">Paste HTML or ask in chat for a ```html block, then use Preview artifact on the message.</div>' + ta('tHtml', 'HTML artifact', 6) + '<div class="row">' + btn('tGo', 'Preview') + '</div>');
       $('tGo').addEventListener('click', function () { showArtifact($('tHtml').value); });
     } else { // generic text tool
-      panel.innerHTML = h + ta('tText', 'Input') + '<div class="row">' + btn('tGo', 'Run') + '</div>';
+      setGeneratedHtml(panel, h + ta('tText', 'Input') + '<div class="row">' + btn('tGo', 'Run') + '</div>');
       $('tGo').addEventListener('click', function () { runToolPrompt(applyPrompt(tool, $('tText').value)); });
     }
     panel.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
@@ -1312,7 +1342,7 @@
       event.preventDefault();
       seekActiveVideo(seconds);
     });
-    $('messages').innerHTML = '<div class="empty-note">Attach a page, YouTube video, or file - or just ask.</div>';
+    var initMsgBox = $('messages'); initMsgBox.textContent = ''; initMsgBox.appendChild(emptyNoteEl('Attach a page, YouTube video, or file - or just ask.'));
     renderTools();
     loadSettings().then(function () { refreshPageChip(); checkPendingAction(); });
   }

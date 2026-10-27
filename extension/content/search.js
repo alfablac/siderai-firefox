@@ -47,6 +47,23 @@
     }).join('');
   }
 
+  function setGeneratedHtml(el, html) {
+    var doc = new DOMParser().parseFromString(String(html || ''), 'text/html');
+    var blocked = doc.querySelectorAll('script, style, iframe, object, embed, form, input, img, svg, math, link, meta, title, base');
+    for (var i = blocked.length - 1; i >= 0; i--) blocked[i].remove();
+    var els = doc.querySelectorAll('*');
+    for (var j = 0; j < els.length; j++) {
+      var attrs = Array.from(els[j].attributes || []);
+      for (var k = 0; k < attrs.length; k++) {
+        var name = attrs[k].name.toLowerCase();
+        if (name !== 'href' && name !== 'title' && name !== 'class') els[j].removeAttribute(attrs[k].name);
+        else if (name === 'href' && !/^(https?:|mailto:|#|\/|\.)/i.test(attrs[k].value)) els[j].removeAttribute(attrs[k].name);
+      }
+    }
+    while (el.firstChild) el.removeChild(el.firstChild);
+    while (doc.body.firstChild) el.appendChild(doc.body.firstChild);
+  }
+
   async function chatSync(messages, action) {
     const raw = await runtime.sendMessage({ type: 'chatSync', messages, action });
     if (!raw) throw new Error('No response from background');
@@ -137,23 +154,40 @@
   function buildCard(query, results) {
     const card = document.createElement('section');
     card.className = 'gs-search-card';
-    card.innerHTML =
-      '<div class="gs-search-head">' +
-        '<span class="gs-search-title">\u25C6 Graphite AI Answer</span>' +
-      '</div>' +
-      '<div class="gs-search-body">' +
-        '<p class="gs-search-sources">Answer "' + escapeHtml(query) + '" using the top ' +
-        results.length + ' ' + engineName() + ' results as context. Generated only when you ask.</p>' +
-      '</div>' +
-      '<div class="gs-search-foot">' +
-        '<button class="gs-yt-btn gs-search-generate" type="button">Generate answer</button>' +
-      '</div>';
-    const body = card.querySelector('.gs-search-body');
-    const button = card.querySelector('.gs-search-generate');
+    const head = document.createElement('div');
+    head.className = 'gs-search-head';
+    const title = document.createElement('span');
+    title.className = 'gs-search-title';
+    title.textContent = '◆ Graphite AI Answer';
+    head.appendChild(title);
+    const body = document.createElement('div');
+    body.className = 'gs-search-body';
+    const sources = document.createElement('p');
+    sources.className = 'gs-search-sources';
+    sources.textContent = 'Answer "' + query + '" using the top ' +
+      results.length + ' ' + engineName() + ' results as context. Generated only when you ask.';
+    body.appendChild(sources);
+    const foot = document.createElement('div');
+    foot.className = 'gs-search-foot';
+    const button = document.createElement('button');
+    button.className = 'gs-yt-btn gs-search-generate';
+    button.type = 'button';
+    button.textContent = 'Generate answer';
+    foot.appendChild(button);
+    card.appendChild(head);
+    card.appendChild(body);
+    card.appendChild(foot);
     button.addEventListener('click', async () => {
       button.disabled = true;
       button.textContent = 'Generating...';
-      body.innerHTML = '<span class="gs-yt-status"><span class="gs-spinner"></span>Thinking...</span>';
+      while (body.firstChild) body.removeChild(body.firstChild);
+      const status = document.createElement('span');
+      status.className = 'gs-yt-status';
+      const spinner = document.createElement('span');
+      spinner.className = 'gs-spinner';
+      status.appendChild(spinner);
+      status.appendChild(document.createTextNode('Thinking...'));
+      body.appendChild(status);
       const context = results.map((r, i) =>
         (i + 1) + '. ' + r.title + (r.snippet ? '\n   ' + r.snippet : '') + (r.url ? '\n   ' + r.url : '')
       ).join('\n');
@@ -162,11 +196,22 @@
         query + '\n\nSearch results:\n' + context;
       try {
         const answer = await chatSync([{ role: 'user', content: prompt }], 'search-answer');
-        body.innerHTML = markdownLite(answer) +
-          '<div class="gs-search-foot">' +
-            '<button class="gs-yt-btn" type="button" data-gs-open-sidebar>Open in sidebar</button>' +
-            '<button class="gs-yt-btn" type="button" data-gs-copy>Copy</button>' +
-          '</div>';
+        setGeneratedHtml(body, markdownLite(answer));
+        const ansFoot = document.createElement('div');
+        ansFoot.className = 'gs-search-foot';
+        const sidebarBtnEl = document.createElement('button');
+        sidebarBtnEl.className = 'gs-yt-btn';
+        sidebarBtnEl.type = 'button';
+        sidebarBtnEl.setAttribute('data-gs-open-sidebar', '');
+        sidebarBtnEl.textContent = 'Open in sidebar';
+        const copyBtnEl = document.createElement('button');
+        copyBtnEl.className = 'gs-yt-btn';
+        copyBtnEl.type = 'button';
+        copyBtnEl.setAttribute('data-gs-copy', '');
+        copyBtnEl.textContent = 'Copy';
+        ansFoot.appendChild(sidebarBtnEl);
+        ansFoot.appendChild(copyBtnEl);
+        body.appendChild(ansFoot);
         const sidebarBtn = body.querySelector('[data-gs-open-sidebar]');
         if (sidebarBtn) sidebarBtn.addEventListener('click', () => {
           runtime.sendMessage({
@@ -182,8 +227,11 @@
           try { await navigator.clipboard.writeText(answer); copyBtn.textContent = 'Copied'; } catch (e) { /* ignore */ }
         });
       } catch (error) {
-        body.innerHTML = '<p style="color:#e88a8a">' +
-          escapeHtml(error && error.message ? error.message : 'Request failed') + '</p>';
+        while (body.firstChild) body.removeChild(body.firstChild);
+        const errP = document.createElement('p');
+        errP.style.color = '#e88a8a';
+        errP.textContent = error && error.message ? error.message : 'Request failed';
+        body.appendChild(errP);
         button.disabled = false;
         button.textContent = 'Try again';
       }
