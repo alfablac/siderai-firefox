@@ -8,7 +8,7 @@
 *An AI sidebar for Firefox that runs on your own API keys*
 
 [![Firefox](https://img.shields.io/badge/Firefox->=140-FF7139?style=flat-square&logo=firefoxbrowser&logoColor=white)](https://www.mozilla.org/firefox/)
-[![Version](https://img.shields.io/badge/version-1.0.9-blue?style=flat-square)](https://addons.mozilla.org/en-US/firefox/addon/graphite-sider-ai-sidebar-byo-/)
+[![Version](https://img.shields.io/badge/version-1.0.14-blue?style=flat-square)](https://addons.mozilla.org/en-US/firefox/addon/graphite-sider-ai-sidebar-byo-/)
 [![License](https://img.shields.io/badge/License-MIT-yellow?style=flat-square)](LICENSE)
 
 [Features](#features) • [Screenshots](#screenshots) • [Install](#install) • [Setup](#setup) • [Privacy](#privacy) • [Troubleshooting](#troubleshooting)
@@ -26,8 +26,8 @@ OpenAI, Anthropic, OpenRouter, Groq, DeepSeek, Together, Fireworks, Mistral, and
 
 - **Sidebar chat** with streaming answers. Keep several providers on file, and send one prompt to a few models at once when you want to compare replies.
 - **Page chat.** Summarize the page in the current tab or ask questions about its readable text. With text selected, the same actions work on the selection.
-- **YouTube summaries** built from the video captions, with headings and themes, chapters, and subtitle translation. Every timestamp in an answer is a button that seeks the player, and a range seeks to its start.
-- **Writing help anywhere.** Highlight a draft and rewrite it in one of 15 tones, shorten it, expand it, or fix the grammar. The toolbar that appears is a row of icons with the names on hover, Copy first, and it can be dragged by its logo. A small diamond icon next to text fields opens the same menu.
+- **YouTube summaries** built from the full video captions (long videos included), with headings and themes, chapters, and subtitle translation. Every timestamp in an answer is a button that seeks the player, and a range seeks to its start. Slow or reasoning-heavy models show a waiting state while they think instead of dropping the connection, and an answer the provider cut off at its length limit is flagged as truncated.
+- **Writing help anywhere.** Highlight a draft and rewrite it in one of 15 tones, shorten it, expand it, or fix the grammar. The toolbar that appears is a row of icons with the names on hover, Copy first and a Close (×) button last to dismiss it without losing your selection. Drag it out of the way by the grip handle at its left end, or by the empty space between icons. A small diamond icon next to text fields opens the same menu.
 - **Search answers** in the right rail on Google, Bing, and DuckDuckGo. The card stays idle until you press Generate, so normal searches cost nothing.
 - **Translation with your own language list.** The picker offers the languages you keep in Settings, one per line, so Brazilian Portuguese is there if that is the Portuguese you read.
 - **A tools grid** for the one-off jobs: OCR an image, chat with a PDF or a picture, transcribe audio, generate an image with a separate image model, read text aloud, outlines, essays, mind maps, CSV questions, and HTML artifacts.
@@ -58,7 +58,7 @@ From source:
 > [!NOTE]
 > Temporary add-ons vanish when Firefox restarts. For everyday use, install the signed build from AMO.
 
-To package an XPI yourself, zip the contents of `extension/` with `manifest.json` at the root and rename the file to `.xpi`.
+To package an XPI yourself, run `python tools/build-xpi.py`. It writes `dist/graphite-sider-<version>.xpi` with `manifest.json` at the root.
 
 ## Setup
 
@@ -67,7 +67,7 @@ To package an XPI yourself, zip the contents of `extension/` with `manifest.json
 3. Press Test Connection.
 4. Open the sidebar with `Ctrl+Shift+Y` and start asking.
 
-Two fields are worth knowing about. Image model is separate from the chat model and only matters if your gateway can generate images. Active model override replaces the provider default for chat without editing the provider.
+Three fields are worth knowing about. Image model is separate from the chat model and only matters if your gateway can generate images. Active model override replaces the provider default for chat without editing the provider. Max tokens is the per-reply length cap sent to your provider, and the value you set is the value that goes out, for sidebar chat, YouTube summaries, chapters, and subtitle translation alike. Leave it at 0 (or blank) and no cap is sent, so your provider uses its own default. If a gateway silently substitutes a smaller default of its own when the field is omitted, set the number yourself.
 
 For a local model, run Ollama with `OLLAMA_ORIGINS=*` so the extension origin is allowed, add the Ollama preset, and leave the key blank.
 
@@ -97,6 +97,8 @@ The extension never reads another service's session or cookies. It calls officia
 | `extension/content/` | Page toolbar and cards, the YouTube panel, the search answer card |
 | `extension/options/` | The Settings page |
 | `screenshots/` | The pictures above |
+| `tests/` | Dependency-free Node checks (`node tests/smoke.test.js`, `node tests/manifest.test.js`) |
+| `tools/` | `build-xpi.py`, which packages the extension into `dist/` |
 
 No build step and no dependencies. The files in `extension/` are the source, exactly as shipped.
 
@@ -112,5 +114,7 @@ No build step and no dependencies. The files in `extension/` are the source, exa
 
 - **Reload old tabs after an update.** YouTube and search tabs opened before an update still run the old content script. Reload the tab and the new one takes over.
 - **Provider errors are shown as returned.** If your gateway answers HTTP 503, that text is what you see. The extension does not hide it behind a silent retry.
+- **Slow models that look "disconnected."** The panel distinguishes a dead background connection from a slow provider. Reasoning models can take a minute or more before the first answer text; while the provider is still working you see a waiting state, and only a genuinely stalled provider (no activity for 10 minutes) reports that it stalled.
+- **Summaries or replies that end mid-sentence.** Your provider stopped at its output limit. Raise Max tokens in Settings (see Setup), or leave it at 0 and check what default your gateway applies. A summary that was cut this way is marked as truncated.
 - **The sidebar sits on the left.** Firefox decides which side the sidebar uses. Move it with Firefox's own sidebar menu; an extension cannot set the side itself.
 - **Ollama refuses the connection.** Start it with `OLLAMA_ORIGINS=*` and leave the API key blank.

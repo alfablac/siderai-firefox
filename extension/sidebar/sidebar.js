@@ -469,6 +469,14 @@
       }
       port.onMessage.addListener(function (msg) {
         if (!msg) return;
+        // Background heartbeat: proof the request is alive while a slow
+        // provider (e.g. 9Router + reasoning model) produces nothing yet.
+        // Never rendered, never appended to the answer text.
+        if (msg.type === 'ping') {
+          if (!text && msg.stage === 'waiting') status('Waiting for the model...');
+          else if (!text && msg.stage === 'streaming') status('Generating...');
+          return;
+        }
         if (msg.type === 'chunk') { text += msg.text || ''; if (targetEl) setMessageBody(targetEl, text); }
         else if (msg.type === 'done') finish(null);
         else if (msg.type === 'error') finish(msg.message || 'Stream error');

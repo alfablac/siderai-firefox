@@ -127,17 +127,61 @@
   color: #5ec8c0;
 }
 
+/* Dedicated drag handle: a ≥24px grip target so the drag start does not
+   depend on hitting a 12px glyph exactly. */
 .gs-toolbar-logo {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  min-width: 28px;
+  height: 30px;
+  padding: 0 5px;
   color: #5ec8c0;
-  font-size: 12px;
-  padding: 0 4px 0 7px;
   user-select: none;
+  -webkit-user-select: none;
+  cursor: grab;
+  touch-action: none;
+  border-radius: 8px;
+}
+
+.gs-toolbar-logo svg {
+  display: block;
+  pointer-events: none;
+}
+
+.gs-toolbar-logo:hover {
+  background: #33373f;
+}
+
+.gs-toolbar-logo:active,
+.gs-toolbar-dragging,
+.gs-toolbar-dragging .gs-toolbar-logo {
+  cursor: grabbing;
+}
+
+/* Empty toolbar background (padding/gaps) is also a drag surface; action
+   buttons opt out by handling their own pointer events. */
+.gs-toolbar {
   cursor: grab;
   touch-action: none;
 }
 
-.gs-toolbar-logo:active {
+.gs-toolbar:active,
+.gs-toolbar-dragging {
   cursor: grabbing;
+}
+
+/* Close (dismiss) button: same chrome as a toolbar button, muted until
+   hovered so it does not compete with the action icons. */
+.gs-toolbar-close {
+  color: #9aa1ab;
+}
+
+.gs-toolbar-close:hover,
+.gs-toolbar-close:focus-visible {
+  color: #e88a8a;
+  background: #33373f;
 }
 
 /* ---------- Result popover card ---------- */

@@ -363,9 +363,24 @@
   // port message is posted, and there is no automatic resend — a failed
   // request is dispatched exactly once, so the provider dashboard never
   // shows a duplicate POST for one click.
+  //
+  // Slow-model heartbeat (do not collapse these timers back into one):
+  // gateways such as 9Router fronting a reasoning model routinely need
+  // minutes before the first visible token on a 160k-char transcript, and
+  // can pause between tokens while thinking. The background proves it is
+  // alive with {type:'ping'} every ~15s (accepted / waiting / streaming).
+  // Pings — and any provider byte, including SSE keepalives and reasoning
+  // deltas forwarded as ping activity — reset only the background-liveness
+  // watchdog below. They do NOT reset the provider no-activity ceiling:
+  // that bounds a genuinely hung request. Expiring liveness (no ping at
+  // all) means the background really is gone; expiring the activity
+  // ceiling means the provider stopped producing anything, which is
+  // reported honestly — never as a lost extension connection.
   const CONNECTION_LOST_MESSAGE = 'Connection to the extension background was lost. Reload the page and try again.';
-  const SUMMARY_FIRST_CHUNK_TIMEOUT_MS = 120000; // ceiling for connect + first byte
-  const SUMMARY_STALL_TIMEOUT_MS = 120000;       // ceiling for a mid-stream stall
+  const PROVIDER_STALLED_MESSAGE = 'The model has not responded for several minutes. It may still be busy — check your provider, or try again.';
+  const SUMMARY_BACKGROUND_TIMEOUT_MS = 45000;   // no ping/chunk from the background at all
+  const SUMMARY_FIRST_ACTIVITY_TIMEOUT_MS = 600000; // no provider byte before the first token
+  const SUMMARY_STALL_TIMEOUT_MS = 600000;       // no provider byte between tokens
 
   function isConnectionLostError(error) {
     const text = String((error && error.message) || error || '');
@@ -398,28 +413,48 @@
   }
 
   // Stream one chat over a fresh 'graphite-chat' port (background contract:
-  // post {type:'start', requestId, messages} -> {type:'chunk', text}* ->
-  // {type:'done', text} | {type:'error', error}). Resolves with the full
-  // text; rejects with the provider error, or with CONNECTION_LOST_MESSAGE
-  // when the background vanishes before any chunk. Sent exactly once.
-  function runSummaryStream(messages, onUpdate) {
+  // post {type:'start', requestId, messages} -> {type:'ping'}* ->
+  // {type:'chunk', text}* -> {type:'done', text} | {type:'error', error}).
+  // Resolves with the full text; rejects with the provider error, with
+  // PROVIDER_STALLED_MESSAGE when the provider goes silent past the
+  // no-activity ceiling, or with CONNECTION_LOST_MESSAGE only when the
+  // background itself stops pinging / the port closes before any chunk.
+  // Sent exactly once. `onWaiting(elapsedMs)` (optional) fires on 'waiting'
+  // heartbeats so callers can show a still-working state pre-first-token.
+  // `opts.markTruncated` appends a visible notice when the provider reports
+  // a length cut-off (finish_reason 'length'); leave it off for chapters /
+  // subtitle translation, whose parsers expect pure model text.
+  function runSummaryStream(messages, onUpdate, onWaiting, opts) {
     const startedAt = Date.now();
     const requestId = 'yt-' + startedAt + '-' + Math.floor(Math.random() * 1e6);
     ytLog('chatStream open', { requestId: requestId });
     return new Promise((resolve, reject) => {
       let sawChunk = false;
+      let sawActivity = false;
       let done = false;
       let full = '';
       let port = null;
-      let progressTimer = 0;
-      const startWatchdog = setTimeout(() => finish(new Error(CONNECTION_LOST_MESSAGE)), SUMMARY_FIRST_CHUNK_TIMEOUT_MS);
-      function armProgressTimer() {
-        clearTimeout(progressTimer);
-        progressTimer = setTimeout(() => finish(new Error(CONNECTION_LOST_MESSAGE)), SUMMARY_STALL_TIMEOUT_MS);
+      let backgroundTimer = 0;
+      let activityTimer = 0;
+      // Background liveness: reset by ANY port traffic (ping or chunk).
+      // Only this timer may produce CONNECTION_LOST_MESSAGE.
+      function armBackgroundTimer() {
+        clearTimeout(backgroundTimer);
+        backgroundTimer = setTimeout(() => finish(new Error(CONNECTION_LOST_MESSAGE)), SUMMARY_BACKGROUND_TIMEOUT_MS);
       }
+      // Provider activity: reset by chunks and by 'streaming' pings (raw
+      // provider bytes / reasoning). 'waiting' pings leave it running, so a
+      // provider that never answers still fails — with the honest message.
+      function armActivityTimer() {
+        clearTimeout(activityTimer);
+        activityTimer = setTimeout(() => finish(new Error(PROVIDER_STALLED_MESSAGE)),
+          sawChunk ? SUMMARY_STALL_TIMEOUT_MS : SUMMARY_FIRST_ACTIVITY_TIMEOUT_MS);
+      }
+      armBackgroundTimer();
+      armActivityTimer();
       function cleanup() {
-        clearTimeout(startWatchdog);
-        clearTimeout(progressTimer);
+        clearTimeout(backgroundTimer);
+        clearTimeout(activityTimer);
         if (!port) return;
         try { port.onMessage.removeListener(onMsg); } catch (e) {}
         try { port.onDisconnect.removeListener(onDisc); } catch (e) {}
@@ -436,18 +471,39 @@
       function onMsg(msg) {
         if (!msg) return;
         if (msg.requestId != null && msg.requestId !== requestId) return; // shared ports: ignore other flows
+        if (msg.type === 'ping') {
+          // Heartbeat: the background owns this request. Any ping resets
+          // background liveness; only provider activity ('streaming', or a
+          // recent lastActivityMs) resets the provider ceiling. A ping is
+          // never rendered and never counts as a chunk.
+          armBackgroundTimer();
+          if (msg.stage === 'streaming' ||
+              (typeof msg.lastActivityMs === 'number' && msg.lastActivityMs < SUMMARY_STALL_TIMEOUT_MS)) {
+            if (!sawActivity) { sawActivity = true; ytLog('chatStream first activity', { durationMs: Date.now() - startedAt }); }
+            armActivityTimer();
+          } else if (msg.stage === 'waiting' && !sawChunk && onWaiting) {
+            try { onWaiting(typeof msg.elapsedMs === 'number' ? msg.elapsedMs : (Date.now() - startedAt)); } catch (e) {}
+          }
+          return;
+        }
         if (msg.type === 'chunk') {
           const chunkText = (typeof msg.text === 'string') ? msg.text
             : (typeof msg.chunk === 'string' ? msg.chunk : '');
           if (!chunkText && typeof msg.full !== 'string') return;
-          if (!sawChunk) { sawChunk = true; clearTimeout(startWatchdog); ytLog('chatStream first chunk', { durationMs: Date.now() - startedAt }); }
+          armBackgroundTimer();
+          sawActivity = true;
+          if (!sawChunk) { sawChunk = true; ytLog('chatStream first chunk', { durationMs: Date.now() - startedAt }); }
           if (typeof msg.full === 'string' && msg.full) full = msg.full;
           else full += chunkText;
           if (onUpdate) { try { onUpdate(full); } catch (e) {} }
-          armProgressTimer();
+          armActivityTimer();
         } else if (msg.type === 'done') {
-          finish(null, (typeof msg.text === 'string' && msg.text)
-            || (typeof msg.full === 'string' && msg.full) || full);
+          let text = (typeof msg.text === 'string' && msg.text)
+            || (typeof msg.full === 'string' && msg.full) || full;
+          if (msg.truncated && opts && opts.markTruncated && text) {
+            text += '\n\n> \u26A0\uFE0F Resposta cortada pelo limite de tokens do modelo/provedor (finish_reason: length). Aumente o Max tokens nas op\u00E7\u00F5es ou use um modelo com sa\u00EDda maior. / Response cut off by the model/provider token limit.';
+          }
+          finish(null, text);
         } else if (msg.type === 'error') {
           // Provider failure relayed by the background: surface it as-is.
           finish(new Error(String(msg.error || msg.message || 'Request failed')));
@@ -702,6 +758,17 @@
     panelBody().innerHTML = '<span class="gs-yt-status"><span class="gs-spinner"></span>' + escapeHtml(label) + '</span>';
   }
 
+  // Shown once a background heartbeat reports the provider has not sent
+  // anything yet (slow 9Router/reasoning TTFT), so a multi-minute wait reads
+  // as "still working" instead of a frozen panel. Streaming progress keeps
+  // the existing partial renderer; this only covers the pre-first-token gap.
+  function setPanelWaiting(elapsedMs) {
+    cancelPendingPartial();
+    const secs = Math.max(1, Math.round((elapsedMs || 0) / 1000));
+    panelBody().innerHTML = '<span class="gs-yt-status"><span class="gs-spinner"></span>' +
+      'Waiting for the model\u2026 (' + secs + 's \u2014 large transcripts can take a few minutes)</span>';
+  }
+
   function setPanelError(message) {
     cancelPendingPartial();
     ytLog('panel error shown', { name: (message && message.name) || '' });
@@ -746,7 +813,10 @@
       const result = await runSummaryStream([{ role: 'user', content: prompt }], (partial) => {
         if (runId !== runSeq) return;
         renderSummaryPartial(partial);
-      });
+      }, (elapsedMs) => {
+        if (runId !== runSeq) return;
+        setPanelWaiting(elapsedMs);
+      }, { markTruncated: true });
       if (runId !== runSeq) return '';
       summaryCache = { videoId, text: result };
       renderSummary(result);

@@ -291,33 +291,47 @@ async function resolveProvider(msg, opts) {
   return copy;
 }
 
-/* Ceiling for YouTube panel summary requests. The detailed 6-section
- * summary format needs a few thousand output tokens; an outsized stored
- * settings.maxTokens (the options page allows up to 131072) is forwarded
- * verbatim otherwise, and some gateways reserve / schedule against the
- * requested ceiling, inflating time-to-first-token for no benefit. 16384
- * leaves roughly 2x headroom over a full-length detailed summary, so a
- * legitimate long-video output is never cut off mid-format.
- * Applied only to YouTube summary streams: an explicit msg.maxTokens
- * always wins, and sidebar chat (no purpose marker) keeps the user's
- * setting untouched. */
-var YOUTUBE_SUMMARY_MAX_TOKENS = 16384;
-function youtubeSummaryMaxTokens(msg, settings) {
-  if (msg && typeof msg.maxTokens === 'number') return msg.maxTokens;
-  var stored = settings && settings.settings ? settings.settings.maxTokens : undefined;
-  return (typeof stored === 'number' && stored > 0) ? Math.min(stored, YOUTUBE_SUMMARY_MAX_TOKENS) : stored;
+/* Output-token budget — one rule for every chat flow (sidebar, YouTube
+ * summaries/chapters/translations, page/search prompts):
+ *   1. an explicit positive numeric msg.maxTokens wins;
+ *   2. else the stored settings.maxTokens wins, exactly as saved;
+ *   3. 0 / missing / non-numeric => undefined => providers send NO
+ *      max_tokens and the provider/model default applies.
+ * There is deliberately no per-purpose special case and no hidden
+ * ceiling/floor: the 1.0.11 summary-only rule (ignore stored values at or
+ * below the old 2048 default) meant a user's setting had invisible
+ * exceptions, and a gateway default (e.g. 8192) silently replaced the
+ * omitted parameter. What the user sets is what goes on the wire. */
+function resolveMaxTokens(msg, settings) {
+  if (msg && typeof msg.maxTokens === 'number' && msg.maxTokens > 0) return Math.floor(msg.maxTokens);
+  var stored = settings && settings.settings ? Number(settings.settings.maxTokens) : NaN;
+  if (isFinite(stored) && stored > 0) return Math.floor(stored);
+  return undefined; // providers omit max_tokens -> provider/model default applies
 }
 
-async function chatRequest(msg, onChunk, signal) {
+async function chatRequest(msg, onChunk, signal, onActivity) {
   var started = Date.now();
   var provider = await resolveProvider(msg || {});
   gsLog('chat', 'start', { provider: provider.label || provider.kind || '', host: gsHost(provider.baseUrl), model: (msg && msg.model) || provider.model || '', stream: !!(msg && msg.stream) || !!onChunk });
-  var settings = await GraphiteStorage.loadSettings();
+  // Fresh read per request: the non-persistent background caches settings
+  // in memory, so an option saved seconds ago must not be masked by a
+  // stale cache (that is how a 32000 setting could be ignored).
+  var settings = await GraphiteStorage.loadSettings({ fresh: true });
   var messages = (msg && msg.messages) || [];
   if (settings.settings && settings.settings.systemPrompt &&
       !messages.some(function (m) { return m.role === 'system'; })) {
     messages = [{ role: 'system', content: settings.settings.systemPrompt }].concat(messages);
   }
+  var resolvedMaxTokens = resolveMaxTokens(msg, settings);
+  // Metadata only (no prompt/body): makes the effective budget greppable in
+  // the background console when GS_DEBUG / settings.debugLog is on.
+  gsLog('chat', 'maxTokens', {
+    purpose: (msg && msg.purpose) || '',
+    explicit: (msg && typeof msg.maxTokens === 'number') ? msg.maxTokens : null,
+    stored: settings.settings ? settings.settings.maxTokens : null,
+    resolved: resolvedMaxTokens == null ? 'provider-default' : resolvedMaxTokens,
+    sentMaxTokens: resolvedMaxTokens == null ? 'omitted' : resolvedMaxTokens
+  });
   try {
     var result = await GraphiteProviders.chat({
       provider: provider,
@@ -325,12 +339,11 @@ async function chatRequest(msg, onChunk, signal) {
       messages: messages,
       stream: !!(msg && msg.stream) || !!onChunk,
       onChunk: onChunk,
+      onActivity: onActivity,
       signal: signal,
       temperature: msg && typeof msg.temperature === 'number' ? msg.temperature
         : (settings.settings ? settings.settings.temperature : undefined),
-      maxTokens: (msg && msg.purpose === 'youtube-summary') ? youtubeSummaryMaxTokens(msg, settings)
-        : (msg && typeof msg.maxTokens === 'number' ? msg.maxTokens
-          : (settings.settings ? settings.settings.maxTokens : undefined))
+      maxTokens: resolvedMaxTokens
     });
     gsLog('chat', 'done', { durationMs: Date.now() - started, ok: true, model: result && result.model || '' });
     return result;
@@ -369,13 +382,30 @@ function errorMessage(e) { return (e && e.message) ? e.message : String(e); }
  * ('chat-stream' also accepted) and posts { type: 'chatStream', requestId, ... }
  * (legacy { type: 'chat', ... } on the port works too).
  * Background replies: {type:'chunk',requestId,chunk,full}
+ *                     {type:'ping', requestId, stage, elapsedMs}
  *                     {type:'done', requestId,text,model,usage}
  *                     {type:'error',requestId,error}
- * Send {type:'abort', requestId} or disconnect to cancel. */
+ * Send {type:'abort', requestId} or disconnect to cancel.
+ *
+ * Heartbeat: slow gateways (e.g. 9Router fronting a reasoning model) can
+ * take minutes to produce the first visible token on a large YouTube
+ * transcript. The background therefore posts {type:'ping'} every
+ * CHAT_HEARTBEAT_INTERVAL_MS: an immediate 'accepted' ping once the request
+ * is taken, a 'waiting' ping while the provider has sent nothing at all,
+ * and a 'streaming' ping whenever provider bytes (SSE keepalives, reasoning
+ * deltas — anything) have flowed since the last beat. Pings prove the
+ * background + provider request are alive so clients never mistake a slow
+ * model for a lost connection; a separate, longer no-activity ceiling in
+ * the client still bounds a genuinely hung request. */
+var CHAT_HEARTBEAT_INTERVAL_MS = 15000;
 if (ext.runtime && ext.runtime.onConnect) {
   ext.runtime.onConnect.addListener(function (port) {
     if (port.name !== 'graphite-chat' && port.name !== 'chat-stream') return;
     var controllers = {};
+    var heartbeats = {};
+    function stopHeartbeat(requestId) {
+      if (heartbeats[requestId]) { clearInterval(heartbeats[requestId].timer); delete heartbeats[requestId]; }
+    }
     port.onMessage.addListener(function (msg) {
       if (!msg) return;
       if (msg.type === 'abort' && msg.requestId && controllers[msg.requestId]) {
@@ -386,16 +416,40 @@ if (ext.runtime && ext.runtime.onConnect) {
       var requestId = msg.requestId || ('req-' + Date.now());
       var controller = (typeof AbortController !== 'undefined') ? new AbortController() : null;
       if (controller) controllers[requestId] = controller;
+      var startedAt = Date.now();
+      var providerActivityAt = 0; // last raw provider byte / reasoning delta
+      var beat = { timer: 0 };
+      heartbeats[requestId] = beat;
+      function postPing(stage) {
+        try {
+          port.postMessage({
+            type: 'ping', requestId: requestId, stage: stage,
+            elapsedMs: Date.now() - startedAt,
+            lastActivityMs: providerActivityAt ? (Date.now() - providerActivityAt) : null
+          });
+        } catch (e) {}
+      }
+      // Proof of acceptance: the client learns the background is alive and
+      // owns this request long before the provider answers.
+      postPing('accepted');
+      beat.timer = setInterval(function () {
+        postPing(providerActivityAt ? 'streaming' : 'waiting');
+      }, CHAT_HEARTBEAT_INTERVAL_MS);
+      if (beat.timer && typeof beat.timer.unref === 'function') beat.timer.unref();
       chatRequest(msg, function (chunk, full) {
+        providerActivityAt = Date.now();
         try { port.postMessage({ type: 'chunk', requestId: requestId, chunk: chunk, text: chunk, full: full }); } catch (e) {}
-      }, controller ? controller.signal : undefined).then(function (result) {
-        try { port.postMessage({ type: 'done', requestId: requestId, text: result.text, chunk: result.text, full: result.text, model: result.model, usage: result.usage || null }); } catch (e) {}
+      }, controller ? controller.signal : undefined, function () {
+        providerActivityAt = Date.now();
+      }).then(function (result) {
+        try { port.postMessage({ type: 'done', requestId: requestId, text: result.text, chunk: result.text, full: result.text, model: result.model, usage: result.usage || null, finishReason: result.finishReason || null, truncated: !!result.truncated }); } catch (e) {}
       }).catch(function (e) {
         try { port.postMessage({ type: 'error', requestId: requestId, error: errorMessage(e), message: errorMessage(e) }); } catch (ignored) {}
-      }).then(function () { delete controllers[requestId]; });
+      }).then(function () { stopHeartbeat(requestId); delete controllers[requestId]; });
     });
     port.onDisconnect.addListener(function () {
       Object.keys(controllers).forEach(function (k) { try { controllers[k].abort(); } catch (e) {} });
+      Object.keys(heartbeats).forEach(function (k) { stopHeartbeat(k); });
     });
   });
 }
@@ -548,5 +602,16 @@ if (ext.runtime && ext.runtime.onMessage) {
       sendResponse({ ok: false, error: errorMessage(e), status: e && e.status || undefined });
     });
     return true; // async response
+  });
+}
+
+// Never serve a stale in-memory settings copy after any context saves:
+// the background is non-persistent but can outlive an options-page edit.
+if (ext.storage && ext.storage.onChanged) {
+  ext.storage.onChanged.addListener(function (changes, area) {
+    if ((area === 'local' || area === 'sync') &&
+        typeof GraphiteStorage !== 'undefined' && GraphiteStorage.clearCache) {
+      GraphiteStorage.clearCache();
+    }
   });
 }

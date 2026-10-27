@@ -32,10 +32,15 @@
     try { return await res.text(); } catch (e) { return ''; }
   }
 
-  /** Consume an SSE byte stream; calls onDataLine for each `data:` payload string. */
-  async function consumeSSE(res, onDataLine, signal) {
+  /** Consume an SSE byte stream; calls onDataLine for each `data:` payload string.
+   *  `onActivity` (optional) fires for every raw byte chunk the provider sends —
+   *  including SSE comment/keepalive lines and reasoning-only or role-only
+   *  deltas that never become visible content. Callers use it as proof the
+   *  provider connection is alive even while no text is being produced. */
+  async function consumeSSE(res, onDataLine, signal, onActivity) {
     if (!res.body || typeof res.body.getReader !== 'function') {
       var text = await readBody(res);
+      if (text && onActivity) onActivity();
       text.split(/\r?\n/).forEach(function (line) {
         if (line.indexOf('data:') === 0) onDataLine(line.slice(5).trim());
       });
@@ -48,6 +53,7 @@
       if (signal && signal.aborted) { try { await reader.cancel(); } catch (e) {} throw abortErr(); }
       var chunk = await reader.read();
       if (chunk.done) break;
+      if (onActivity) onActivity();
       buf += decoder.decode(chunk.value, { stream: true });
       var idx;
       while ((idx = buf.indexOf('\n')) >= 0) {
@@ -130,19 +136,33 @@
     if (!opts.stream) {
       var json = await res.json();
       var c = json.choices && json.choices[0] && json.choices[0].message && json.choices[0].message.content;
-      return { text: c || '', model: json.model || body.model, usage: json.usage || null, raw: json };
+      var fr = json.choices && json.choices[0] && json.choices[0].finish_reason;
+      return { text: c || '', model: json.model || body.model, usage: json.usage || null, raw: json, finishReason: fr || null, truncated: fr === 'length' };
     }
     var full = '';
+    var finishReason = null;
     await consumeSSE(res, function (data) {
       if (data === '[DONE]') return;
       try {
         var j = JSON.parse(data);
+        if (j.choices && j.choices[0] && j.choices[0].finish_reason) finishReason = j.choices[0].finish_reason;
         var delta = j.choices && j.choices[0] && (j.choices[0].delta || j.choices[0].message);
+        // Some gateways (e.g. 9Router/Muse) stream reasoning before — or
+        // instead of interleaved — visible content. It is not summary text,
+        // but it is proof of life: surface it via onActivity so callers do
+        // not mistake a thinking model for a dead connection.
+        var reasoning = (delta && (delta.reasoning_content || delta.reasoning)) ||
+          (j.choices && j.choices[0] && j.choices[0].message &&
+            (j.choices[0].message.reasoning_content || j.choices[0].message.reasoning)) || '';
+        if (!reasoning && j.delta && (j.delta.reasoning_content || j.delta.reasoning)) {
+          reasoning = j.delta.reasoning_content || j.delta.reasoning;
+        }
+        if (reasoning && opts.onActivity) opts.onActivity();
         var piece = (delta && delta.content) || '';
         if (piece) { full += piece; if (opts.onChunk) opts.onChunk(piece, full); }
       } catch (e) { /* keepalive / non-JSON line */ }
-    }, opts.signal);
-    return { text: full, model: body.model, usage: null, raw: null };
+    }, opts.signal, opts.onActivity);
+    return { text: full, model: body.model, usage: null, raw: null, finishReason: finishReason, truncated: finishReason === 'length' };
   }
 
   async function chatAnthropic(provider, opts) {
@@ -158,7 +178,9 @@
     var body = {
       model: opts.model || provider.model,
       messages: toAnthropicMessages(split.messages),
-      max_tokens: typeof opts.maxTokens === 'number' && opts.maxTokens > 0 ? opts.maxTokens : 2048,
+      // Anthropic requires max_tokens; when unset use a high ceiling so the
+      // model stops naturally instead of truncating long summaries at 2048.
+      max_tokens: typeof opts.maxTokens === 'number' && opts.maxTokens > 0 ? opts.maxTokens : 16384,
       temperature: typeof opts.temperature === 'number' ? opts.temperature : 0.7,
       stream: !!opts.stream
     };
@@ -177,27 +199,33 @@
       var json = await res.json();
       var text = (json.content || []).filter(function (b) { return b.type === 'text'; })
         .map(function (b) { return b.text; }).join('');
-      return { text: text, model: json.model || body.model, usage: json.usage || null, raw: json };
+      return { text: text, model: json.model || body.model, usage: json.usage || null, raw: json, finishReason: json.stop_reason || null, truncated: json.stop_reason === 'max_tokens' };
     }
     var full = '';
+    var stopReason = null;
     await consumeSSE(res, function (data) {
       try {
         var j = JSON.parse(data);
+        if (j.type === 'message_delta' && j.delta && j.delta.stop_reason) stopReason = j.delta.stop_reason;
         if (j.type === 'content_block_delta' && j.delta && j.delta.type === 'text_delta') {
           full += j.delta.text;
           if (opts.onChunk) opts.onChunk(j.delta.text, full);
+        } else if (j.type === 'content_block_delta' && j.delta && j.delta.type === 'thinking_delta') {
+          // Thinking is not answer text, but it is proof of life.
+          if (opts.onActivity) opts.onActivity();
         } else if (j.type === 'error') {
           throw new Error('Anthropic stream error: ' + JSON.stringify(j.error || j).slice(0, 300));
         }
       } catch (e) { if (e.message && e.message.indexOf('Anthropic stream') === 0) throw e; }
-    }, opts.signal);
-    return { text: full, model: body.model, usage: null, raw: null };
+    }, opts.signal, opts.onActivity);
+    return { text: full, model: body.model, usage: null, raw: null, finishReason: stopReason, truncated: stopReason === 'max_tokens' };
   }
 
   /**
    * Chat completion.
    * @param {{provider:object, model?:string, messages:Array, stream?:boolean,
-   *          onChunk?:function(string,string), signal?:AbortSignal,
+   *          onChunk?:function(string,string), onActivity?:function(),
+   *          signal?:AbortSignal,
    *          temperature?:number, maxTokens?:number}} opts
    * @returns {Promise<{text:string, model:string, usage:object|null}>}
    * Ollama (kind 'ollama', baseUrl …:11434/v1) uses the OpenAI-compatible

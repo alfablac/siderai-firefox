@@ -193,7 +193,9 @@
       'Japanese', 'Korean', 'Swahili', 'Catalan', 'Afrikaans'
     ],
     temperature: 0.7,
-    maxTokens: 2048,
+    // Output-token budget: 0 = provider/model default (no max_tokens sent).
+    // Any positive number is sent exactly, for every chat flow.
+    maxTokens: 0,
     systemPrompt: 'You are a helpful assistant in the Graphite Sider sidebar. Be concise and use Markdown.',
     youtubeAutoSummary: false,
     searchEnhance: true,
@@ -273,6 +275,11 @@
         out.settings.sidebarSide = 'right';
       }
       out.settings.translationLanguages = normalizeLangList(out.settings.translationLanguages);
+      // Coerce a string maxTokens (older/options saves) to a number so the
+      // background's numeric check never silently drops the user's value.
+      // 0 / invalid => provider default (no cap sent).
+      var mt = Number(out.settings.maxTokens);
+      out.settings.maxTokens = (isFinite(mt) && mt > 0) ? Math.floor(mt) : 0;
     }
     if (Array.isArray(input.prompts)) out.prompts = input.prompts;
     if (Array.isArray(input.history)) out.history = input.history.slice(0, HISTORY_LIMIT);
@@ -383,6 +390,17 @@
 
     return Promise.all(jobs).then(function () {
       candidates.sort(function (a, b) { return b.savedAt - a.savedAt; });
+      // storage.sync is size-shed (coreForSync) and refreshes by re-saving:
+      // its envelope savedAt can look newest while carrying an older
+      // settings core. Never let it outrank the durable local copy, or a
+      // stale maxTokens (etc.) resurrects. The localStorage mirror keeps
+      // its savedAt ordering (it is the recovery path when local is lost).
+      var local = null;
+      candidates.forEach(function (c) { if (c.source === 'local') local = c; });
+      if (local && candidates[0] && candidates[0].source === 'sync') {
+        candidates = candidates.filter(function (c) { return c.source !== 'sync'; })
+          .concat(candidates.filter(function (c) { return c.source === 'sync'; }));
+      }
       return candidates;
     });
   }
@@ -463,9 +481,11 @@
     });
   }
 
-  /** @returns {Promise<object>} normalized settings (cached after first load). */
-  function loadSettings() {
-    if (cache) return Promise.resolve(clone(cache));
+  /** @returns {Promise<object>} normalized settings (cached after first load).
+   *  Pass { fresh:true } to bypass the in-memory cache (used per chat request
+   *  so a just-saved option is honoured by an already-running background). */
+  function loadSettings(opts) {
+    if (cache && !(opts && opts.fresh)) return Promise.resolve(clone(cache));
     return collectPersisted().then(function (candidates) {
       if (!candidates.length) {
         cache = DEFAULT_SETTINGS();

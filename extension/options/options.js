@@ -98,7 +98,7 @@ function libDefaults() {
 }
 
 var DEFAULT_SETTINGS = {
-  targetLang: "English", temperature: 0.7, maxTokens: 2048,
+  targetLang: "English", temperature: 0.7, maxTokens: 0, // 0 = provider default
   systemPrompt: "", youtubeAutoSummary: false, searchEnhance: true,
   selectionToolbar: true, bilingualSubtitles: false
 };
@@ -562,8 +562,10 @@ function renderDefaults() {
   el("targetLang").value = state.settings.targetLang || "";
   el("temperature").value = String(state.settings.temperature != null ? state.settings.temperature : 0.7);
   el("temperatureValue").textContent = Number(el("temperature").value).toFixed(1);
-  el("maxTokens").value = String(state.settings.maxTokens || 4096);
-  el("maxTokensValue").textContent = "(current: " + (state.settings.maxTokens || 4096) + ")";
+  el("maxTokens").value = String(state.settings.maxTokens || 0);
+  el("maxTokensValue").textContent = state.settings.maxTokens > 0
+    ? "(current: " + state.settings.maxTokens + ")"
+    : "(0 = provider default)";
   el("systemPrompt").value = state.settings.systemPrompt || "";
   el("featSelectionToolbar").checked = !!state.settings.selectionToolbar;
   el("featSearchEnhance").checked = !!state.settings.searchEnhance;
@@ -577,7 +579,10 @@ function readDefaultsFromUI() {
   state.activeModel = el("activeModel").value.trim();
   state.settings.targetLang = el("targetLang").value;
   state.settings.temperature = Math.min(2, Math.max(0, Number(el("temperature").value) || 0));
-  state.settings.maxTokens = Math.max(64, parseInt(el("maxTokens").value, 10) || 4096);
+  state.settings.maxTokens = (function (v) {
+    var n = parseInt(v, 10);
+    return (isFinite(n) && n > 0) ? n : 0; // blank/0 = provider default, no floor rewrite
+  })(el("maxTokens").value);
   state.settings.systemPrompt = el("systemPrompt").value;
   if (el("translationLanguages")) {
     state.settings.translationLanguages = parseLanguageLines(el("translationLanguages").value);

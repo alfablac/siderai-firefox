@@ -1,0 +1,24 @@
+{
+  "name": "siderai-firefox",
+  "version": "1.0.0",
+  "description": "A clean-room, bring-your-own-key AI sidebar for Firefox — chat, page and video summaries, translation, writing help and more, powered entirely by **model providers you configure yourself** (OpenAI, Anthropic, OpenRouter, Groq, DeepSeek, Together, Fireworks, Mistral, xAI, or local Ollama / LM Studio).",
+  "main": "index.js",
+  "directories": {
+    "doc": "docs",
+    "test": "tests"
+  },
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/alfablac/siderai-firefox.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "MIT",
+  "bugs": {
+    "url": "https://github.com/alfablac/siderai-firefox/issues"
+  },
+  "homepage": "https://github.com/alfablac/siderai-firefox#readme"
+}

@@ -323,48 +323,97 @@
     return shadowRoot;
   }
 
-  // Draggable selection toolbar: the logo (.gs-toolbar-logo) is the handle,
-  // mirroring wireCard's header drag (pointerdown -> dx/dy, pointermove ->
-  // clampRect, pointerup/cancel -> end). Buttons are siblings of the logo,
-  // so their clicks are unaffected; a click on the logo itself after a real
-  // drag is suppressed. showToolbar() repositions on each new selection.
+  // Draggable selection toolbar: drag by the seven-character logo
+  // (.gs-toolbar-logo, which carries a visible grab handle) or by the
+  // toolbar's own empty background (padding between buttons). Action
+  // buttons are never a drag handle, so their clicks are unaffected;
+  // showToolbar() repositions on each new selection.
+  //
+  // Implementation note: move/up are tracked on window (with a pointerId
+  // filter), NOT via setPointerCapture on the logo. Capturing on the logo
+  // and listening for pointermove on the toolbar looks equivalent but
+  // failed in Firefox + Shadow DOM: the grab cursor showed (pure CSS) yet
+  // the toolbar never moved and most pointer cycles never even started a
+  // drag (the empty-background target check compared event.target to the
+  // toolbar, but in a shadow tree the toolbar is not the target of most
+  // empty-space presses, and the button mousedown preventDefault that
+  // preserves the page selection suppressed the pointerdown itself).
+  // Window-level mouse + pointer listeners in both phases keep the drag
+  // alive for the whole gesture regardless of pointer capture.
   function wireToolbarDrag(root) {
     const toolbar = root.querySelector('[data-gs="toolbar"]');
     if (!toolbar || toolbar.__gsDragWired) return;
     toolbar.__gsDragWired = true;
-    let drag = null;
+    let drag = null;    // { pointerId, dx, dy, w, h }
     let moved = false;
-    toolbar.addEventListener('pointerdown', (event) => {
-      const logo = event.target && event.target.closest ? event.target.closest('.gs-toolbar-logo') : null;
-      if (!logo) { drag = null; moved = false; return; }
-      const rect = toolbar.getBoundingClientRect();
-      drag = { dx: event.clientX - rect.left, dy: event.clientY - rect.top, pointerId: event.pointerId };
-      moved = false;
-      try { logo.setPointerCapture(event.pointerId); } catch (e) { /* ignore */ }
-      event.preventDefault();
-    });
-    toolbar.addEventListener('pointermove', (event) => {
+
+    const isHandle = (event) => {
+      const path = event.composedPath ? event.composedPath() : [];
+      const els = path.length ? path : [event.target];
+      const inToolbar = els.includes(toolbar);
+      const onButton = els.some((el) => el && el.classList && el.classList.contains('gs-toolbar-btn'));
+      if (onButton) return false;
+      if (inToolbar) return true;
+      const t = event.target;
+      return !!(t && t.closest && (t.closest('.gs-toolbar-logo') || t.closest('[data-gs="toolbar"]')));
+    };
+
+    const startDrag = (event) => {
+      try {
+        if (drag) return;
+        if (typeof event.button === 'number' && event.button !== 0) return;
+        if (!isHandle(event)) return;
+        const rect = toolbar.getBoundingClientRect();
+        drag = {
+          pointerId: event.pointerId != null ? event.pointerId : 'mouse',
+          dx: event.clientX - rect.left,
+          dy: event.clientY - rect.top,
+          w: rect.width,
+          h: rect.height
+        };
+        moved = false;
+        toolbar.classList.add('gs-toolbar-dragging');
+        event.preventDefault();
+        event.stopPropagation();
+      } catch (e) { /* dragging is best-effort; never break the page */ }
+    };
+
+    const moveDrag = (event) => {
       if (!drag) return;
-      // The pointer was captured on the logo; keep moving the toolbar itself.
-      const rect = toolbar.getBoundingClientRect();
+      if (event.pointerId != null && event.pointerId !== drag.pointerId) return;
       const nextLeft = event.clientX - drag.dx;
       const nextTop = event.clientY - drag.dy;
-      if (Math.abs(nextLeft - rect.left) > 3 || Math.abs(nextTop - rect.top) > 3) moved = true;
-      const pos = clampRect(nextLeft, nextTop, rect.width, rect.height);
+      const pos = clampRect(nextLeft, nextTop, drag.w || toolbar.offsetWidth || 300, drag.h || toolbar.offsetHeight || 38);
+      if (Math.abs(pos.left - parseFloat(toolbar.style.left || '0')) > 1 ||
+          Math.abs(pos.top - parseFloat(toolbar.style.top || '0')) > 1) moved = true;
       toolbar.style.left = pos.left + 'px';
       toolbar.style.top = pos.top + 'px';
-    });
-    const endDrag = () => { drag = null; };
-    toolbar.addEventListener('pointerup', endDrag);
-    toolbar.addEventListener('pointercancel', endDrag);
-    // Suppress the click that follows a real drag on the logo so it cannot
-    // trigger anything; plain logo clicks are harmless (no handler) anyway.
-    toolbar.addEventListener('click', (event) => {
-      if (!moved) return;
-      const logo = event.target && event.target.closest ? event.target.closest('.gs-toolbar-logo') : null;
-      if (logo) { event.preventDefault(); event.stopPropagation(); }
+      event.preventDefault();
+    };
+
+    const endDrag = (event) => {
+      if (!drag) return;
+      if (event && event.pointerId != null && event.pointerId !== drag.pointerId) return;
+      drag = null;
+      toolbar.classList.remove('gs-toolbar-dragging');
+      // Suppress the click that follows a real drag on the logo so it
+      // cannot trigger anything; plain logo clicks are harmless anyway.
+      if (moved) {
+        const swallow = (ev) => { ev.preventDefault(); ev.stopPropagation(); };
+        window.addEventListener('click', swallow, { capture: true, once: true });
+        setTimeout(() => window.removeEventListener('click', swallow, { capture: true }), 400);
+      }
       moved = false;
-    }, true);
+    };
+
+    toolbar.addEventListener('pointerdown', startDrag, true);
+    toolbar.addEventListener('mousedown', startDrag, true);
+    window.addEventListener('pointermove', moveDrag, { capture: true, passive: false });
+    window.addEventListener('mousemove', moveDrag, true);
+    window.addEventListener('pointerup', endDrag, true);
+    window.addEventListener('mouseup', endDrag, true);
+    window.addEventListener('pointercancel', endDrag, true);
+    window.addEventListener('blur', () => endDrag(null));
   }
 
   function qs(selector) {
@@ -797,7 +846,8 @@
     grammar: '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M18 6 7 17l-5-5"/><path d="m22 10-7.5 7.5L13 16"/></svg>',
     rewrite: '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/></svg>',
     ask: '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"/></svg>',
-    speak: '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M11 5 6 9H2v6h4l5 4z"/><path d="M15.54 8.46a5 5 0 0 1 0 7.07"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14"/></svg>'
+    speak: '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M11 5 6 9H2v6h4l5 4z"/><path d="M15.54 8.46a5 5 0 0 1 0 7.07"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14"/></svg>',
+    close: '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>'
   };
 
   function toolbarButton(label, iconName) {
@@ -807,6 +857,11 @@
     button.innerHTML = TOOLBAR_ICONS[iconName] || '';
     button.setAttribute('aria-label', label);
     button.dataset.label = label;
+    // Preserve the page selection when an action button is pressed, but do
+    // NOT stopPropagation/preventDefault on pointerdown: that suppression
+    // can swallow the toolbar-level drag start and, on some surfaces, the
+    // activation itself. draggable=false kills image/element native drag.
+    button.draggable = false;
     button.addEventListener('mousedown', (event) => event.preventDefault());
     return button;
   }
@@ -817,8 +872,12 @@
     toolbar.innerHTML = '';
     const logo = document.createElement('span');
     logo.className = 'gs-toolbar-logo';
-    logo.textContent = '\u25C6';
+    logo.setAttribute('data-gs', 'toolbar-drag');
     logo.title = 'Drag to move';
+    logo.setAttribute('aria-label', 'Drag to move');
+    // Grab handle: a small grip-pill with three dots, tinted so it reads as
+    // a move handle rather than a seventh action button.
+    logo.innerHTML = '<svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor" aria-hidden="true" focusable="false"><circle cx="9" cy="6" r="1.6"/><circle cx="15" cy="6" r="1.6"/><circle cx="9" cy="12" r="1.6"/><circle cx="15" cy="12" r="1.6"/><circle cx="9" cy="18" r="1.6"/><circle cx="15" cy="18" r="1.6"/></svg>';
     toolbar.appendChild(logo);
 
     // First action: copy the selection. copyText() runs on a snapshot of
@@ -862,6 +921,14 @@
     const speak = toolbarButton('Read aloud', 'speak');
     speak.addEventListener('click', () => { hideToolbar(); readAloud(text); });
     toolbar.appendChild(speak);
+
+    // Dismiss the toolbar without losing the page selection (Escape and
+    // outside clicks also hide it). Rendered last so it sits at the end.
+    const closeBtn = toolbarButton('Close', 'close');
+    closeBtn.classList.add('gs-toolbar-close');
+    closeBtn.setAttribute('data-gs', 'toolbar-close');
+    closeBtn.addEventListener('click', hideToolbar);
+    toolbar.appendChild(closeBtn);
 
     // Measure hidden but laid out, position with the real size, then reveal,
     // so the first paint cannot overflow the right/bottom edge.
