@@ -228,6 +228,31 @@
     return out.length ? out : fallback;
   }
 
+  function normalizeModelList(input, defaultModel) {
+    var out = [];
+    var seen = {};
+    if (Array.isArray(input)) {
+      input.forEach(function (entry) {
+        var id = '';
+        if (typeof entry === 'string') id = entry.trim();
+        else if (entry && typeof entry === 'object') {
+          var keys = ['id', 'name', 'model'];
+          for (var i = 0; i < keys.length; i++) {
+            var v = entry[keys[i]];
+            if (typeof v === 'string' && v.trim()) { id = v.trim(); break; }
+          }
+        }
+        if (id && !seen[id]) { seen[id] = true; out.push(id); }
+      });
+    }
+    var def = typeof defaultModel === 'string' ? defaultModel.trim() : '';
+    if (def) {
+      if (out.indexOf(def) !== -1) out = out.filter(function (m) { return m !== def; });
+      out.unshift(def);
+    }
+    return out.slice(0, 250);
+  }
+
   /** Factory-default full settings object. */
   function DEFAULT_SETTINGS() {
     return {
@@ -248,13 +273,15 @@
     var out = clone(d);
     if (Array.isArray(input.providers) && input.providers.length) {
       out.providers = input.providers.map(function (p) {
+        var model = String(p.model || '');
         return {
           id: String(p.id || uid('prov')),
           label: String(p.label || 'Provider'),
           kind: ['openai-compatible', 'anthropic', 'ollama', 'custom-openai'].indexOf(p.kind) >= 0 ? p.kind : 'openai-compatible',
           baseUrl: String(p.baseUrl || '').replace(/\/+$/, ''),
           apiKey: String(p.apiKey || ''),
-          model: String(p.model || ''),
+          model: model,
+          models: normalizeModelList(p.models, model),
           visionModel: p.visionModel ? String(p.visionModel) : undefined,
           imageModel: p.imageModel ? String(p.imageModel) : undefined,
           enabled: p.enabled !== false

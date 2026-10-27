@@ -55,12 +55,30 @@
     if (!Array.isArray(list) && typeof list === 'object') list = Object.keys(list).map(function (k) { var v = list[k]; v.id = v.id || k; return v; });
     (list || []).forEach(function (p) {
       if (!p) return;
-      var models = p.models || (p.model ? [p.model] : []);
-      if (typeof models === 'string') models = [models];
+      var rawModels = p.models || [];
+      if (typeof rawModels === 'string') rawModels = [rawModels];
+      if (!Array.isArray(rawModels)) rawModels = [];
+      var models = [];
+      rawModels.forEach(function (m) {
+        var id = '';
+        if (typeof m === 'string') id = m.trim();
+        else if (m && typeof m === 'object') {
+          var keys = ['id', 'name', 'model'];
+          for (var i = 0; i < keys.length; i++) {
+            var v = m[keys[i]];
+            if (typeof v === 'string' && v.trim()) { id = v.trim(); break; }
+          }
+        }
+        if (id && models.indexOf(id) === -1) models.push(id);
+      });
+      var configured = String(p.model || p.defaultModel || '').trim();
+      if (configured) {
+        models = [configured].concat(models.filter(function (m) { return m !== configured; }));
+      }
       out.push({
         id: p.id || p.name || 'provider',
         label: p.label || p.name || p.id || 'Provider',
-        model: p.model || p.defaultModel || (models[0] || ''),
+        model: configured || (models[0] || ''),
         models: models,
         enabled: p.enabled !== false,
         hasKey: !!(p.apiKey || p.key || p.noKey)
@@ -1128,7 +1146,7 @@
     $('settingsBtn').addEventListener('click', openSettings);
     $('bannerSettingsBtn').addEventListener('click', openSettings);
     $('newChatBtn').addEventListener('click', newChat);
-    $('providerSelect').addEventListener('change', function () { state.activeProviderId = this.value; state.activeModel = ''; renderModelSelect(); renderGroupModels(); });
+    $('providerSelect').addEventListener('change', function () { state.activeProviderId = this.value; var np = state.providers.find(function (x) { return x.id === state.activeProviderId; }); state.activeModel = np && np.model ? np.model : ''; renderModelSelect(); renderGroupModels(); });
     $('modelSelect').addEventListener('change', function () { state.activeModel = this.value; });
     $('sendBtn').addEventListener('click', function () { sendCurrent(); });
     $('stopBtn').addEventListener('click', stopGeneration);

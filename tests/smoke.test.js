@@ -649,12 +649,12 @@ check("background prompt path guarded and loads settings", () => {
   assert.ok(!/(^|[^\w.$])global\./.test(bg), "background.js must not use the bare global object");
 });
 
-check("manifest background order and release version 1.0.14", () => {
+check("manifest background order and release version 1.0.15", () => {
   assert.ok(manifest, "manifest required");
   const scripts = (manifest.background && manifest.background.scripts) || [];
   const iP = scripts.indexOf("lib/prompts.js"), iY = scripts.indexOf("lib/youtube.js"), iB = scripts.indexOf("background.js");
   assert.ok(iP >= 0 && iY >= 0 && iB > iP && iB > iY, "lib/prompts.js + lib/youtube.js load before background.js");
-  assert.strictEqual(manifest.version, "1.0.14", "release version");
+  assert.strictEqual(manifest.version, "1.0.15", "release version");
 });
 
 /* ---------- 1.0.6 bug: transcript truncated at 22:52 of a 44:59 video -----
@@ -1003,8 +1003,122 @@ check("selection toolbar drag: window-tracked drag that actually moves", () => {
   assert.deepStrictEqual(pos, { left: 1024 - 300 - 8, top: 768 - 38 - 8 }, "drag clamps to the bottom-right margin");
 });
 
+/* ---------- 1.0.15: /models parsing, persisted catalogue, default model ----
+   The gatekeepers: 1) listModels must extract ids from every shape a gateway
+   (9Router included) actually returns, 2) the options handler must accept the
+   bare array listModels returns (the old code read resp.models only, so every
+   successful fetch reported "No models returned"), 3) fetched lists persist
+   per-provider with the configured model as default and all others available
+   in the sidebar/group menus. */
+let modelsDone = Promise.resolve();
+{
+  const runModelListTests = async () => {
+    const fakeJsonResp = (body) => ({
+      ok: true, status: 200,
+      text: async () => body,
+      json: async () => { throw new Error("listModels must read text, not res.json()"); },
+    });
+    let fetchedUrl = null;
+    let sbFetchBody = "9router";
+    const sb = loadLibInSandbox("lib/providers.js", {
+      fetch: async (url) => {
+        fetchedUrl = url;
+        if (sbFetchBody === "9router") return fakeJsonResp(
+          '{"object":"list","data":[{"id":"gpt-5.6-sol","object":"model"},' +
+          '{"id":"gpt-5.6-sol","object":"model"},{"id":"claude-sonnet-4-5","object":"model"}]}');
+        if (sbFetchBody === "embedded") return fakeJsonResp(
+          'callback({"data":[{"id":"m-embedded"}]});');
+        if (sbFetchBody === "noids") return fakeJsonResp('{"object":"list","data":[]}');
+        return fakeJsonResp('{"data":[]}');
+      },
+    });
+    const GP = sb.GraphiteProviders;
+    assert.strictEqual(typeof GP._parseModelList, "function", "_parseModelList export missing");
+    const P = GP._parseModelList;
+    // Arrays returned from the vm sandbox are cross-realm: compare via join.
+    const idsEq = (actual, expected, msg) =>
+      assert.strictEqual(Array.from(actual || []).join(""), expected.join(""), msg + ": " + JSON.stringify(actual));
+
+    // 9Router shape: {object:"list", data:[{id,...}]} — deduped, order kept.
+    idsEq(P('{"object":"list","data":[{"id":"gpt-5.6-sol","object":"model"}]}'),
+      ["gpt-5.6-sol"], "9Router data[].id");
+    idsEq(P('[{"id":"a"},{"name":"b"},{"model":"c"},"d"]'),
+      ["a", "b", "c", "d"], "bare array of id/name/model/string");
+    idsEq(P('{"models":[{"name":"llama3.1"}]}'), ["llama3.1"], "Ollama models[].name");
+    idsEq(P('{"result":["r1","r1","r2"]}'), ["r1", "r2"], "result[] dedupe");
+    idsEq(P('{"items":[{"id":"i1"}]}'), ["i1"], "items[].id");
+    idsEq(P('{"data":"solo-model"}'), ["solo-model"], "data as bare string id");
+    // JSON embedded in surrounding text / JSONP-ish wrapper.
+    idsEq(P('callback({"data":[{"id":"m-embedded"}]});'), ["m-embedded"], "embedded JSON");
+    // Strings containing braces/escapes must not break balanced extraction.
+    idsEq(P('pre {"data":[{"id":"a}b"}]} post'), ["a}b"], "braces inside strings");
+    // SSE framing and double-encoded JSON.
+    idsEq(P('data: {"data":[{"id":"sse-1"}]}\n\ndata: [DONE]\n'),
+      ["sse-1"], "SSE data: payload");
+    idsEq(P(JSON.stringify(JSON.stringify({ data: [{ id: "double" }] }))),
+      ["double"], "double-encoded JSON");
+    idsEq(P('{"data":[{"id":"j1"}]}\n{"data":[{"id":"j2"}]}'),
+      ["j1", "j2"], "concatenated JSON payloads");
+    idsEq(P('{"data":[]}'), [], "parsed but empty stays []");
+    assert.throws(() => P('   '), /empty model list response/, "blank body throws");
+    assert.throws(() => P('<html>not json</html>'), /Could not parse model list response/, "garbage throws");
+
+    // listModels end-to-end (fetch stubbed): 9Router body -> ids.
+    sbFetchBody = "9router";
+    const ids = await GP.listModels({ label: "9router", kind: "openai-compatible",
+      baseUrl: "https://gw.test/v1/", apiKey: "k", model: "configured-1" });
+    assert.strictEqual(fetchedUrl, "https://gw.test/v1/models", "GET {base}/models, slash-trimmed");
+    idsEq(ids, ["gpt-5.6-sol", "claude-sonnet-4-5"], "listModels 9Router ids");
+    // JSON embedded in text still parses; empty-ids body falls back to configured model.
+    sbFetchBody = "embedded";
+    idsEq(await GP.listModels({ label: "t", kind: "openai-compatible",
+      baseUrl: "https://gw.test/v1", apiKey: "k", model: "configured-1" }), ["m-embedded"], "listModels embedded JSON");
+    sbFetchBody = "noids";
+    idsEq(await GP.listModels({ label: "t", kind: "openai-compatible",
+      baseUrl: "https://gw.test/v1", apiKey: "k", model: "configured-1" }), ["configured-1"],
+      "200 with no usable ids keeps the configured model selectable");
+    // Anthropic never fetches; returns the configured model.
+    idsEq(await GP.listModels({ label: "a", kind: "anthropic",
+      baseUrl: "https://api.anthropic.com", apiKey: "k", model: "claude-x" }), ["claude-x"], "Anthropic early return");
+
+    // Storage: fetched list persists; configured default stays first; idempotent.
+    const sbS = loadLibInSandbox("lib/storage.js");
+    const GS = sbS.GraphiteStorage;
+    assert.strictEqual(typeof GS.normalize, "function", "GraphiteStorage.normalize export missing");
+    const baseSettings = {
+      version: 1, activeProviderId: "p1", activeModel: "",
+      providers: [{ id: "p1", label: "9Router", kind: "openai-compatible",
+        baseUrl: "https://gw.test/v1", apiKey: "k", model: "configured-1",
+        models: [" fetched-1 ", { id: "fetched-2" }, "fetched-1", ""], enabled: true }],
+      settings: {}, prompts: [], history: [],
+    };
+    const norm = GS.normalize(baseSettings);
+    idsEq(norm.providers[0].models, ["configured-1", "fetched-1", "fetched-2"],
+      "persisted models: default first, deduped, trimmed");
+    idsEq(GS.normalize(norm).providers[0].models, Array.from(norm.providers[0].models),
+      "normalize idempotent (sync round-trip)");
+
+    // Wiring guards: the bare-array consumer and persistence must not regress.
+    const opt = fs.readFileSync(path.join(EXT, "options/options.js"), "utf8");
+    assert.ok(/Array\.isArray\(resp\)/.test(opt), "options fetch-models accepts the bare listModels array");
+    assert.ok(!/\(resp && \(resp\.models/.test(opt), "old resp.models-only unpacking is gone");
+    assert.ok(/p\.models = idList/.test(opt), "fetch-models persists p.models");
+    assert.ok(/p\.models\) \? p\.models : \[\]/.test(opt.replace(/\s+/g, " ")) || /Array\.isArray\(p\.models\)/.test(opt),
+      "renderProviders lists persisted models in the datalist");
+    const side = fs.readFileSync(path.join(EXT, "sidebar/sidebar.js"), "utf8");
+    assert.ok(/p\.models/.test(side), "sidebar reads persisted provider models");
+    assert.ok(!/listModels/.test(side), "sidebar never fetches the model list itself");
+    const storeSrc = fs.readFileSync(path.join(EXT, "lib/storage.js"), "utf8");
+    assert.ok(/models: normalizeModelList\(p\.models, model\)/.test(storeSrc),
+      "storage normalize emits persisted models with the default first");
+  };
+  modelsDone = runModelListTests().then(
+    () => ok("1.0.15: /models parsing (9Router/embedded/SSE), persisted catalogue, default first"),
+    (e) => fail("1.0.15: /models parsing (9Router/embedded/SSE), persisted catalogue, default first", e));
+}
+
 /* The async SSE + image tests above must settle before the summary/exit. */
-Promise.all([Promise.resolve(sseDone), Promise.resolve(imageDone), Promise.resolve(activityDone)]).then(() => {
+Promise.all([Promise.resolve(sseDone), Promise.resolve(imageDone), Promise.resolve(activityDone), Promise.resolve(modelsDone)]).then(() => {
   console.log(`\n${failures} failure(s), ${pending} pending (core not present yet)`);
   if (pending) console.warn("note: pending checks become hard failures under STRICT=1 once core files land");
   process.exit(failures ? 1 : 0);

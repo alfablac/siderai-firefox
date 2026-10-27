@@ -238,6 +238,158 @@
     return chatOpenAI(opts.provider, opts);
   }
 
+  function modelIdFromItem(item) {
+    if (typeof item === 'string') return item.trim();
+    if (item && typeof item === 'object') {
+      var keys = ['id', 'name', 'model'];
+      for (var i = 0; i < keys.length; i++) {
+        var v = item[keys[i]];
+        if (typeof v === 'string' && v.trim()) return v.trim();
+      }
+    }
+    return '';
+  }
+
+  function collectModelIds(value, out, seen) {
+    if (typeof value === 'string') {
+      var sv = value.trim();
+      if (sv && !seen[sv]) { seen[sv] = true; out.push(sv); }
+      return;
+    }
+    if (Array.isArray(value)) {
+      value.forEach(function (item) {
+        var id = modelIdFromItem(item);
+        if (id && !seen[id]) { seen[id] = true; out.push(id); }
+      });
+      return;
+    }
+    if (value && typeof value === 'object') {
+      var keys = ['data', 'models', 'result', 'items'];
+      var found = false;
+      keys.forEach(function (k) {
+        if (Array.isArray(value[k])) {
+          found = true;
+          value[k].forEach(function (item) {
+            var id = modelIdFromItem(item);
+            if (id && !seen[id]) { seen[id] = true; out.push(id); }
+          });
+        } else if (typeof value[k] === 'string' && value[k].trim()) {
+          found = true;
+          var sid = value[k].trim();
+          if (!seen[sid]) { seen[sid] = true; out.push(sid); }
+        } else if (value[k] && typeof value[k] === 'object') {
+          found = true;
+          var oid = modelIdFromItem(value[k]);
+          if (oid && !seen[oid]) { seen[oid] = true; out.push(oid); }
+        }
+      });
+      if (found) return;
+      var single = modelIdFromItem(value);
+      if (single && !seen[single]) { seen[single] = true; out.push(single); }
+    }
+  }
+
+  function extractBalancedJson(text, start) {
+    var open = text.charAt(start);
+    var stack = [open === '{' ? '}' : ']'];
+    var inString = false;
+    var escaped = false;
+    for (var i = start + 1; i < text.length; i++) {
+      var ch = text.charAt(i);
+      if (inString) {
+        if (escaped) escaped = false;
+        else if (ch === '\\') escaped = true;
+        else if (ch === '"') inString = false;
+        continue;
+      }
+      if (ch === '"') { inString = true; continue; }
+      if (ch === '{') stack.push('}');
+      else if (ch === '[') stack.push(']');
+      else if (ch === '}' || ch === ']') {
+        if (!stack.length || stack[stack.length - 1] !== ch) return null;
+        stack.pop();
+        if (!stack.length) return text.slice(start, i + 1);
+      }
+    }
+    return null;
+  }
+
+  function collectBalancedPayloads(text) {
+    var payloads = [];
+    var i = 0;
+    while (i < text.length) {
+      var ch = text.charAt(i);
+      if (ch === '{' || ch === '[') {
+        var candidate = extractBalancedJson(text, i);
+        if (candidate) {
+          try {
+            payloads.push(JSON.parse(candidate));
+            i += candidate.length;
+            continue;
+          } catch (e) { i++; continue; }
+        }
+      }
+      i++;
+    }
+    return payloads;
+  }
+
+  function parseModelList(text) {
+    var raw = String(text == null ? '' : text);
+    if (!raw.trim()) throw new Error('Provider returned an empty model list response');
+    var trimmed = raw.trim();
+    var payloads = [];
+    var parsed = false;
+
+    var dataPayloads = [];
+    trimmed.split(/\r?\n/).forEach(function (line) {
+      var t = line.trim();
+      if (t.indexOf('data:') === 0) {
+        var payload = t.slice(5).trim();
+        if (payload && payload !== '[DONE]') dataPayloads.push(payload);
+      }
+    });
+    if (dataPayloads.length) {
+      try {
+        payloads.push(JSON.parse(dataPayloads.join('')));
+        parsed = true;
+      } catch (e) {
+        dataPayloads.forEach(function (payload) {
+          try { payloads.push(JSON.parse(payload)); parsed = true; }
+          catch (e2) {
+            var bal = collectBalancedPayloads(payload);
+            if (bal.length) {
+              bal.forEach(function (p) { payloads.push(p); });
+              parsed = true;
+            }
+          }
+        });
+      }
+    }
+
+    if (!parsed) {
+      try { payloads = [JSON.parse(trimmed)]; parsed = true; } catch (e) { /* fall through */ }
+    }
+    if (!parsed) {
+      var balanced = collectBalancedPayloads(trimmed);
+      if (balanced.length) { payloads = balanced; parsed = true; }
+    }
+    if (!parsed) {
+      var snippet = raw.replace(/\s+/g, ' ').trim().slice(0, 200);
+      throw new Error('Could not parse model list response: ' + snippet);
+    }
+    // Double-encoded JSON: the body parsed to a string that is itself JSON.
+    for (var pi = 0; pi < payloads.length; pi++) {
+      if (typeof payloads[pi] === 'string') {
+        try { payloads[pi] = JSON.parse(payloads[pi]); } catch (e) { /* plain model id string */ }
+      }
+    }
+    var out = [];
+    var seen = {};
+    payloads.forEach(function (p) { collectModelIds(p, out, seen); });
+    return out;
+  }
+
   /** GET {base}/models for OpenAI-compatible; Anthropic has no public list → ping fallback. */
   async function listModels(provider) {
     if (!provider || !provider.baseUrl) throw new Error('Provider baseUrl is empty');
@@ -252,9 +404,12 @@
     try { res = await fetch(base + '/models', { method: 'GET', headers: headers }); }
     catch (e) { throw networkError(e, provider); }
     if (!res.ok) throw providerError(res.status, await readBody(res), provider);
-    var json = await res.json();
-    var data = Array.isArray(json.data) ? json.data : (Array.isArray(json.models) ? json.models : []);
-    return data.map(function (m) { return typeof m === 'string' ? m : (m.id || m.name || ''); }).filter(Boolean);
+    var text = await readBody(res);
+    var ids = parseModelList(text);
+    // 9Router-style gateways may answer 200 with no usable IDs: keep the
+    // configured model selectable instead of reporting "No models returned".
+    if (!ids.length) ids = [provider.model].filter(Boolean);
+    return ids;
   }
 
   /** Connectivity check: list models, else a 1-token chat ping. */
@@ -411,6 +566,7 @@
     generateImage: generateImage,
     providerError: providerError,
     _consumeSSE: consumeSSE,
-    _splitSystem: splitSystem
+    _splitSystem: splitSystem,
+    _parseModelList: parseModelList
   };
 })(typeof globalThis !== 'undefined' ? globalThis : this);

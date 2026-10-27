@@ -231,6 +231,31 @@ function storageGetAll() {
 
 var PROVIDER_KINDS = ["openai-compatible", "anthropic", "ollama", "custom-openai"];
 
+function normalizeModels(input, defaultModel) {
+  var out = [];
+  var seen = {};
+  if (Array.isArray(input)) {
+    input.forEach(function (entry) {
+      var id = "";
+      if (typeof entry === "string") id = entry.trim();
+      else if (entry && typeof entry === "object") {
+        var keys = ["id", "name", "model"];
+        for (var i = 0; i < keys.length; i++) {
+          var v = entry[keys[i]];
+          if (typeof v === "string" && v.trim()) { id = v.trim(); break; }
+        }
+      }
+      if (id && !seen[id]) { seen[id] = true; out.push(id); }
+    });
+  }
+  var def = typeof defaultModel === "string" ? defaultModel.trim() : "";
+  if (def) {
+    if (out.indexOf(def) !== -1) out = out.filter(function (m) { return m !== def; });
+    out.unshift(def);
+  }
+  return out.slice(0, 250);
+}
+
 function normalizeState(raw) {
   var s = defaultState();
   if (!raw || typeof raw !== "object") return s;
@@ -243,6 +268,7 @@ function normalizeState(raw) {
         baseUrl: String(p.baseUrl || ""),
         apiKey: String(p.apiKey || ""),
         model: String(p.model || ""),
+        models: normalizeModels(p.models, String(p.model || "")),
         enabled: p.enabled !== false
       };
       if (p.visionModel) out.visionModel = String(p.visionModel); // preserve lib field
@@ -346,8 +372,8 @@ function sendMessage(msg) {
 }
 
 /* Background wraps one-shot results as { ok, result } / { ok:false, error };
-   handlers (testProvider/listModels) return { ok, models, detail } themselves,
-   which the envelope result preserves. */
+   which the envelope result preserves. After unwrapping: listModels returns
+   a bare string[], testProvider returns {ok, models, detail}. */
 function unwrapEnvelope(resp) {
   if (resp && typeof resp === "object" && "ok" in resp && ("result" in resp || "error" in resp)) {
     if (resp.ok) return resp.result;
@@ -482,7 +508,12 @@ function renderProviders() {
       "</div>" +
       '<label class="field"><span>Model</span>' +
         '<input type="text" data-field="model" list="models-' + esc(p.id) + '" value="' + esc(p.model) + '" placeholder="model id" spellcheck="false">' +
-        '<datalist id="models-' + esc(p.id) + '"></datalist>' +
+        '<datalist id="models-' + esc(p.id) + '">' +
+          (Array.isArray(p.models) ? p.models : []).map(function (m) {
+            var mid = typeof m === "string" ? m : (m && (m.id || m.name || m.model)) || "";
+            return mid ? '<option value="' + esc(String(mid)) + '"></option>' : "";
+          }).join("") +
+        '</datalist>' +
       "</label>" +
       '<label class="field"><span>Image model <em class="hint">(used by /images/generations, e.g. gpt-image-1 — not the chat model; Anthropic providers may leave blank)</em></span>' +
         '<input type="text" data-field="imageModel" value="' + esc(p.imageModel || "") + '" placeholder="e.g. gpt-image-1" spellcheck="false">' +
@@ -945,12 +976,37 @@ function bindEvents() {
     } else if (action === "fetch-models") {
       btn.disabled = true;
       sendMessage({ type: "listModels", provider: p }).then(function (resp) {
-        var models = (resp && (resp.models || (resp.ok ? resp.models : null))) || null;
+        // listModels returns a bare string[]; accept an object with a models array too.
+        var models = null;
+        if (Array.isArray(resp)) models = resp;
+        else if (resp && Array.isArray(resp.models)) models = resp.models;
+        else if (resp && Array.isArray(resp.result)) models = resp.result;
         if (models && models.length) {
-          fillModelDatalist(card, models);
-          showTestResult(card, true, "✓ " + models.length + " model(s) available — pick one in the Model field.");
+          var idList = [];
+          models.forEach(function (m) {
+            var id = typeof m === "string" ? m : (m && (m.id || m.name || m.model));
+            if (id) idList.push(String(id));
+          });
+          if (idList.length) {
+            fillModelDatalist(card, idList);
+            var currentModel = String(p.model || "").trim();
+            // Keep the configured default first so it stays the sidebar default.
+            if (currentModel && idList.indexOf(currentModel) === -1) idList.unshift(currentModel);
+            else if (currentModel) idList = [currentModel].concat(idList.filter(function (m) { return m !== currentModel; }));
+            p.models = idList.slice();
+            if (!currentModel) {
+              p.model = idList[0];
+              var modelInput = card.querySelector('[data-field="model"]');
+              if (modelInput) modelInput.value = idList[0];
+              currentModel = idList[0];
+            }
+            schedulePersist();
+            showTestResult(card, true, "✓ " + idList.length + " model(s) saved. Default: " + currentModel + " — pick any in the sidebar Model menu.");
+          } else {
+            showTestResult(card, false, "✗ No models returned by the provider");
+          }
         } else {
-          showTestResult(card, false, "✗ " + ((resp && resp.message) || "No models returned"));
+          showTestResult(card, false, "✗ No models returned by the provider");
         }
       }).catch(function (err) {
         showTestResult(card, false, "✗ " + (err && err.message ? err.message : err));
