@@ -649,12 +649,12 @@ check("background prompt path guarded and loads settings", () => {
   assert.ok(!/(^|[^\w.$])global\./.test(bg), "background.js must not use the bare global object");
 });
 
-check("manifest background order and release version 1.0.15", () => {
+check("manifest background order and release version 1.0.16", () => {
   assert.ok(manifest, "manifest required");
   const scripts = (manifest.background && manifest.background.scripts) || [];
   const iP = scripts.indexOf("lib/prompts.js"), iY = scripts.indexOf("lib/youtube.js"), iB = scripts.indexOf("background.js");
   assert.ok(iP >= 0 && iY >= 0 && iB > iP && iB > iY, "lib/prompts.js + lib/youtube.js load before background.js");
-  assert.strictEqual(manifest.version, "1.0.15", "release version");
+  assert.strictEqual(manifest.version, "1.0.16", "release version");
 });
 
 /* ---------- 1.0.6 bug: transcript truncated at 22:52 of a 44:59 video -----
@@ -983,7 +983,7 @@ check("selection toolbar drag: window-tracked drag that actually moves", () => {
   assert.ok(drag.includes("clampRect"), "drag clamps to the viewport");
   assert.ok(css.includes(".gs-toolbar-dragging"), "dragging cursor styled");
   const logoCss = css.match(/\.gs-toolbar-logo\s*\{([^}]*)\}/);
-  assert.ok(logoCss && /min-width:\s*28px/.test(logoCss[1]), "handle is a >=28px target");
+  assert.ok(logoCss && /min-width:\s*(2[89]|[3-9]\d)px/.test(logoCss[1]), "handle is a >=28px target");
   const logoSvg = css.match(/\.gs-toolbar-logo svg\s*\{([^}]*)\}/);
   assert.ok(logoSvg && /pointer-events:\s*none/.test(logoSvg[1]), "handle SVG never steals the press");
 
@@ -1001,6 +1001,189 @@ check("selection toolbar drag: window-tracked drag that actually moves", () => {
   assert.deepStrictEqual(pos, { left: 8, top: 8 }, "drag clamps to the top-left margin");
   pos = sim.clampRect(5000 - dx, 5000 - dy, start.width, start.height);
   assert.deepStrictEqual(pos, { left: 1024 - 300 - 8, top: 768 - 38 - 8 }, "drag clamps to the bottom-right margin");
+});
+
+/* ---------- 1.0.16a: searchable sidebar model picker -------------------
+   The native <select id="modelSelect"> popup was browser-rendered and
+   capped on-screen, so a long fetched catalogue looked cut off and had
+   no search. 1.0.16 replaces it with a custom DOM picker: every matching
+   model renders (no 8/12 slice), a filter input narrows the list, and
+   picking a row sets state.activeModel. */
+check("1.0.16: searchable sidebar model picker renders every match", () => {
+  const html = fs.readFileSync(path.join(EXT, "sidebar/sidebar.html"), "utf8");
+  assert.ok(html.includes('id="modelPicker"'), "picker container in header");
+  assert.ok(html.includes('id="modelButton"'), "picker button shows the current model");
+  assert.ok(html.includes('id="modelSearch"'), "search input in the model menu");
+  assert.ok(html.includes('id="modelList"'), "listbox container");
+  assert.ok(!html.includes('id="modelSelect"'), "native select removed");
+  const css = fs.readFileSync(path.join(EXT, "sidebar/sidebar.css"), "utf8");
+  assert.ok(/\.model-list\s*\{[^}]*max-height/.test(css) &&
+    /\.model-list\s*\{[^}]*overflow-y:\s*auto/.test(css), "model list scrolls inside the menu");
+  assert.ok(/\.model-search\s*\{[^}]*max-width:\s*none/.test(css), "search input is not capped at 150px");
+  const js = fs.readFileSync(path.join(EXT, "sidebar/sidebar.js"), "utf8");
+  assert.ok(!js.includes("$('modelSelect')"), "no stale native-select references");
+  const picker = js.slice(js.indexOf("function renderModelSelect"), js.indexOf("function renderGroupModels"));
+  assert.ok(picker.includes("function renderModelList"), "list renderer present");
+  assert.ok(!/\.slice\(/.test(picker), "picker never truncates the model list");
+  assert.ok(/toLowerCase\(\)\.indexOf\(query\)/.test(picker.replace(/\s+/g, " ")),
+    "filter is a case-insensitive substring match");
+  assert.ok(picker.includes("textContent = m"), "model labels rendered as safe text");
+  assert.ok(picker.includes("state.activeModel = m"), "picking a row sets state.activeModel");
+
+  // Behavioural: the filter itself — all matches, case-insensitively.
+  const models = ["gpt-5.6-sol", "claude-sonnet-4-5", "GPT-4o-mini", "llama-3.1-8b"];
+  const matches = (q) => models.filter((m) => !q || m.toLowerCase().indexOf(String(q).toLowerCase()) !== -1);
+  assert.strictEqual(matches("gpt").length, 2, "substring filter is case-insensitive");
+  assert.deepStrictEqual(matches(""), models, "empty query renders every model");
+  assert.deepStrictEqual(matches("zzz"), [], "no-match filter renders the empty state");
+});
+
+/* ---------- 1.0.16b: toolbar drag must survive the release mouseup -----
+   1.0.14 fixed the drag start/move, but releasing off the toolbar fired
+   document `mouseup` -> onMouseUp -> showToolbar(selection rect), which
+   rebuilt and re-anchored the toolbar, annulling the drag (H1). A second
+   release mouseup can follow (pointerup + mouseup), so the suppression
+   window must be timestamp-guarded, never consumed/cleared by the first
+   suppressed mouseup (H1b). This runs the real wireToolbarDrag/onMouseUp
+   logic — extracted from content.js — against a stub shadow DOM and a
+   stubbed document that records every listener registration, then fires
+   real-shaped pointer/mouse events through the recorded handlers. */
+check("1.0.16: dragged toolbar stays where released (no snap-back)", () => {
+  const src = fs.readFileSync(path.join(EXT, "content/content.js"), "utf8");
+  const drag = src.slice(src.indexOf("function wireToolbarDrag"), src.indexOf("function qs("));
+  assert.ok(drag.includes("window.addEventListener('pointerdown', startDrag"), "drag start also on window capture");
+  assert.ok(drag.includes("buttons === 0"), "missed-release move ends the drag");
+  assert.ok(drag.includes("toolbarDragSuppressUntil = Date.now()"), "moved drag opens a suppression window");
+  const mouseUp = src.slice(src.indexOf("function onMouseUp"), src.indexOf("// ------------------------------------------------------------- read aloud"));
+  assert.ok(mouseUp.includes("toolbarDragActive"), "onMouseUp sits out an active drag");
+  assert.ok(mouseUp.includes("toolbarDragSuppressUntil"), "onMouseUp respects the suppression window");
+  assert.ok(!/toolbarDragSuppressUntil\s*=\s*0/.test(mouseUp),
+    "onMouseUp must not consume the suppression window (H1b)");
+
+  const winL = {}, docL = {};
+  const rec = (bag) => (t, h) => { (bag[t] = bag[t] || []).push(h); };
+  class El {
+    constructor() {
+      this.classList = { _s: new Set(), add: (c) => this.classList._s.add(c),
+        remove: (c) => this.classList._s.delete(c), contains: (c) => this.classList._s.has(c),
+        toggle: (c, f) => (f ? this.classList._s.add(c) : this.classList._s.delete(c)) };
+      this.style = {}; this.__gsDragWired = false; this.offsetWidth = 300; this.offsetHeight = 38;
+    }
+    addEventListener(t, h) { rec(this._l || (this._l = {}))(t, h); }
+    removeEventListener() {}
+    getBoundingClientRect() {
+      return { left: parseFloat(this.style.left || "0"), top: parseFloat(this.style.top || "0"), width: 300, height: 38 };
+    }
+    querySelector() { return this._tb; }
+  }
+  const toolbar = new El();
+  toolbar._tb = toolbar;
+  toolbar.style.left = "100px"; toolbar.style.top = "50px";
+  const grip = new El(); grip.classList.add("gs-toolbar-logo");
+  const btn = new El(); btn.classList.add("gs-toolbar-btn");
+  const page = new El();
+  const innerWindow = { innerWidth: 1024, innerHeight: 768,
+    addEventListener: rec(winL), removeEventListener: () => {} };
+  let showToolbarCalls = 0;
+  const timers = [];
+  const sandbox = {
+    console, Math, Date, JSON,
+    window: innerWindow,
+    document: { addEventListener: rec(docL) },
+    clamp: new Function("return function clamp(v, a, b) { return Math.max(a, Math.min(b, v)); }")(),
+    clampRect: new Function("window",
+      "return function clampRect(left, top, width, height) { const margin = 8; " +
+      "const clamp = (v, a, b) => Math.max(a, Math.min(b, v)); return { " +
+      "left: clamp(left, margin, Math.max(margin, window.innerWidth - width - margin)), " +
+      "top: clamp(top, margin, Math.max(margin, window.innerHeight - height - margin)) }; }",
+    )(innerWindow),
+    settings: { selectionToolbar: true },
+    getSelectionInfo: () => ({ text: "selected text",
+      rect: { left: 50, top: 600, width: 200, height: 20, bottom: 620 } }),
+    showToolbar: () => { showToolbarCalls++; },
+    hideToolbar: () => { showToolbarCalls += 100; },
+    qs: () => toolbar,
+    setTimeout: (fn) => { timers.push(fn); return timers.length; },
+    clearTimeout: () => {},
+  };
+  const fire = (hs, ev) => (hs || []).slice().forEach((h) => h(ev));
+  const ev = (type, target, path, x, y, extra) => Object.assign({
+    type, target, clientX: x, clientY: y, button: 0, buttons: 1,
+    composedPath: () => path, preventDefault() {}, stopPropagation() {},
+  }, extra || {});
+  // The stub toolbar lives in the host realm; properties set there are
+  // not visible inside the vm context, so expose it as a sandbox global
+  // before the generated script runs.
+  sandbox.__gsToolbar = toolbar;
+  vm.createContext(sandbox);
+  vm.runInContext("var toolbar = __gsToolbar;", sandbox);
+  vm.runInContext(
+    "let toolbarDragActive = false;\nlet toolbarDragSuppressUntil = 0;\n" +
+    src.slice(src.indexOf("function clamp("), src.indexOf("function truncate(")) +
+    "\n" + drag + "\n" + mouseUp +
+    "\ndocument.addEventListener('mouseup', onMouseUp, true);\n" +
+    "wireToolbarDrag({ querySelector: () => toolbar });",
+    sandbox);
+
+  // Show + anchor pass, mirroring showToolbar()'s clampRect placement.
+  toolbar.style.left = "100px"; toolbar.style.top = "50px";
+  assert.strictEqual(toolbar.style.left, "100px", "toolbar starts selection-anchored");
+
+  // Press the grip (path: grip -> toolbar -> root), move +200/+150, release off-toolbar.
+  fire(winL.pointerdown, ev("pointerdown", grip, [grip, toolbar], 130, 65, { pointerId: 7 }));
+  fire(winL.pointermove, ev("pointermove", page, [page], 330, 215, { pointerId: 7 }));
+  assert.strictEqual(toolbar.style.left, "300px", "drag follows the pointer (left)");
+  assert.strictEqual(toolbar.style.top, "200px", "drag follows the pointer (top)");
+  fire(winL.pointerup, ev("pointerup", page, [page], 330, 215, { pointerId: 7 }));
+  // The release mouseup reaches document (off the toolbar) AFTER pointerup:
+  // onMouseUp must sit it out, and its 10ms callback must not re-anchor.
+  fire(docL.mouseup, ev("mouseup", page, [page], 330, 215));
+  timers.splice(0).forEach((fn) => fn());
+  assert.strictEqual(showToolbarCalls, 0, "release mouseup did not re-anchor the toolbar");
+  assert.strictEqual(toolbar.style.left, "300px", "toolbar stays at the dragged left");
+  assert.strictEqual(toolbar.style.top, "200px", "toolbar stays at the dragged top");
+
+  // The duplicate release mouseup (same gesture) must ALSO be suppressed:
+  // the first suppressed mouseup must not have consumed the window (H1b).
+  fire(docL.mouseup, ev("mouseup", page, [page], 330, 215));
+  timers.splice(0).forEach((fn) => fn());
+  assert.strictEqual(showToolbarCalls, 0, "duplicate release mouseup still suppressed (H1b)");
+  assert.strictEqual(toolbar.style.left, "300px", "toolbar still at the dragged position");
+
+  // After the window expires, a fresh selection mouseup shows the toolbar.
+  const realNow = Date.now;
+  Date.now = () => realNow() + 1000;
+  try {
+    fire(docL.mouseup, ev("mouseup", page, [page], 400, 640));
+    timers.splice(0).forEach((fn) => fn());
+    assert.strictEqual(showToolbarCalls, 1, "new selection after the window shows the toolbar");
+  } finally { Date.now = realNow; }
+
+  // A press on an action button never starts a drag.
+  fire(winL.pointerdown, ev("pointerdown", btn, [btn, toolbar], 160, 65, { pointerId: 8 }));
+  fire(winL.pointermove, ev("pointermove", page, [page], 400, 400, { pointerId: 8 }));
+  assert.strictEqual(toolbar.style.left, "300px", "action buttons are not drag handles");
+
+  // A plain click (no >3px movement) does not suppress the next selection.
+  // The drag-suppression window from the drag above may still be open in
+  // real time (and must not be consumed by the release mouseup), so let
+  // it expire first — plain clicks must behave as before.
+  const realNow2 = Date.now;
+  Date.now = () => realNow2() + 1000;
+  try {
+    fire(winL.pointerdown, ev("pointerdown", grip, [grip, toolbar], 330, 215, { pointerId: 9 }));
+    fire(winL.pointermove, ev("pointermove", page, [page], 331, 216, { pointerId: 9 }));
+    fire(winL.pointerup, ev("pointerup", page, [page], 331, 216, { pointerId: 9 }));
+    fire(docL.mouseup, ev("mouseup", page, [page], 331, 216));
+    timers.splice(0).forEach((fn) => fn());
+    assert.strictEqual(showToolbarCalls, 2, "plain click without movement keeps normal behavior");
+  } finally { Date.now = realNow2; }
+
+  // A move with buttons===0 (missed release) ends the drag instead of sticking.
+  // (Current left is 301px: the 1px plain-click nudge above.)
+  fire(winL.pointerdown, ev("pointerdown", grip, [grip, toolbar], 330, 215, { pointerId: 11 }));
+  fire(winL.pointermove, ev("pointermove", page, [page], 500, 300, { pointerId: 11, buttons: 0 }));
+  assert.strictEqual(toolbar.style.left, "301px", "buttons===0 ends the drag without sticking");
 });
 
 /* ---------- 1.0.15: /models parsing, persisted catalogue, default model ----

@@ -133,8 +133,16 @@
     return combos;
   }
 
+  var modelPickerState = { open: false, highlight: -1, filtered: [] };
+
+  function activeProvider() { return state.providers.find(function (x) { return x.id === state.activeProviderId; }); }
+  function currentModels() {
+    var p = activeProvider();
+    return p ? ((p.models && p.models.length) ? p.models : (p.model ? [p.model] : [])) : [];
+  }
+
   function renderProviderSelects() {
-    var ps = $('providerSelect'), ms = $('modelSelect');
+    var ps = $('providerSelect');
     ps.innerHTML = '';
     if (!state.providers.length) { var o = document.createElement('option'); o.textContent = 'No provider'; ps.appendChild(o); }
     state.providers.forEach(function (p) {
@@ -144,13 +152,85 @@
     renderModelSelect();
   }
   function renderModelSelect() {
-    var ms = $('modelSelect'); ms.innerHTML = '';
-    var p = state.providers.find(function (x) { return x.id === state.activeProviderId; });
-    var models = p ? ((p.models && p.models.length) ? p.models : (p.model ? [p.model] : [])) : [];
-    if (!models.length) { var o = document.createElement('option'); o.textContent = 'Default model'; ms.appendChild(o); state.activeModel = ''; return; }
-    models.forEach(function (m) { var o = document.createElement('option'); o.value = m; o.textContent = m; ms.appendChild(o); });
+    // Preserved API: now renders the custom model picker button + list.
+    var btnLabel = $('modelButtonLabel');
+    if (!btnLabel) return;
+    var p = activeProvider();
+    var models = currentModels();
+    if (!models.length) {
+      state.activeModel = '';
+      btnLabel.textContent = 'Default model';
+      var bb = $('modelButton'); if (bb) bb.title = 'Default model';
+      if (modelPickerState.open) renderModelList();
+      return;
+    }
     if (!state.activeModel || models.indexOf(state.activeModel) === -1) state.activeModel = modelOf(p) || models[0];
-    ms.value = state.activeModel;
+    btnLabel.textContent = state.activeModel || 'Default model';
+    var btn = $('modelButton'); if (btn) btn.title = state.activeModel || 'Default model';
+    if (modelPickerState.open) renderModelList();
+  }
+  function renderModelList() {
+    var list = $('modelList');
+    if (!list) return;
+    var models = currentModels();
+    var query = ($('modelSearch') ? $('modelSearch').value : '').toLowerCase();
+    var filtered = models.filter(function (m) { return !query || m.toLowerCase().indexOf(query) !== -1; });
+    modelPickerState.filtered = filtered;
+    list.innerHTML = '';
+    if (!models.length) { var e = document.createElement('div'); e.className = 'model-empty'; e.textContent = 'No models available'; list.appendChild(e); modelPickerState.highlight = -1; return; }
+    if (!filtered.length) { var n = document.createElement('div'); n.className = 'model-empty'; n.textContent = 'No matching models'; list.appendChild(n); modelPickerState.highlight = -1; return; }
+    // Highlight current model if present, else first match.
+    var hl = filtered.indexOf(state.activeModel);
+    modelPickerState.highlight = hl !== -1 ? hl : 0;
+    filtered.forEach(function (m, i) {
+      var el = document.createElement('div');
+      el.className = 'model-item' + (m === state.activeModel ? ' selected' : '') + (i === modelPickerState.highlight ? ' highlighted' : '');
+      el.setAttribute('role', 'option');
+      el.id = 'model-opt-' + i;
+      el.setAttribute('aria-selected', m === state.activeModel ? 'true' : 'false');
+      el.textContent = m;
+      el.title = m;
+      el.addEventListener('pointerdown', function (e) { e.preventDefault(); });
+      el.addEventListener('click', function () { selectModel(m); });
+      list.appendChild(el);
+    });
+    var search = $('modelSearch'); if (search) search.setAttribute('aria-activedescendant', filtered[modelPickerState.highlight] ? ('model-opt-' + modelPickerState.highlight) : '');
+  }
+  function setHighlight(idx) {
+    var filtered = modelPickerState.filtered;
+    if (!filtered.length) return;
+    modelPickerState.highlight = Math.max(0, Math.min(idx, filtered.length - 1));
+    Array.prototype.forEach.call($('modelList').querySelectorAll('.model-item'), function (el, i) { el.classList.toggle('highlighted', i === modelPickerState.highlight); });
+    var search = $('modelSearch'); if (search) search.setAttribute('aria-activedescendant', 'model-opt-' + modelPickerState.highlight);
+    var el = $('modelList').children[modelPickerState.highlight]; if (el && el.scrollIntoView) el.scrollIntoView({ block: 'nearest' });
+  }
+  function openModelPicker() {
+    var menu = $('modelMenu'), btn = $('modelButton');
+    if (!menu || !btn) return;
+    modelPickerState.open = true;
+    var s = $('modelSearch'); if (s) s.value = '';
+    renderModelList();
+    menu.classList.remove('hidden');
+    btn.setAttribute('aria-expanded', 'true');
+    var hEl = $('modelList') && $('modelList').children[modelPickerState.highlight];
+    if (hEl && hEl.scrollIntoView) hEl.scrollIntoView({ block: 'nearest' });
+    if (s) { s.focus(); s.select(); }
+  }
+  function closeModelPicker() {
+    var menu = $('modelMenu'), btn = $('modelButton');
+    if (!menu) return;
+    modelPickerState.open = false;
+    modelPickerState.highlight = -1;
+    var s = $('modelSearch'); if (s) s.value = '';
+    menu.classList.add('hidden');
+    if (btn) btn.setAttribute('aria-expanded', 'false');
+  }
+  function toggleModelPicker() { if (modelPickerState.open) closeModelPicker(); else openModelPicker(); }
+  function selectModel(m) {
+    state.activeModel = m;
+    renderModelSelect();
+    closeModelPicker();
+    var btn = $('modelButton'); if (btn) btn.focus();
   }
   function renderGroupModels() {
     var box = $('groupModels'); box.innerHTML = '';
@@ -1146,8 +1226,22 @@
     $('settingsBtn').addEventListener('click', openSettings);
     $('bannerSettingsBtn').addEventListener('click', openSettings);
     $('newChatBtn').addEventListener('click', newChat);
-    $('providerSelect').addEventListener('change', function () { state.activeProviderId = this.value; var np = state.providers.find(function (x) { return x.id === state.activeProviderId; }); state.activeModel = np && np.model ? np.model : ''; renderModelSelect(); renderGroupModels(); });
-    $('modelSelect').addEventListener('change', function () { state.activeModel = this.value; });
+    $('providerSelect').addEventListener('change', function () { closeModelPicker(); state.activeProviderId = this.value; var np = state.providers.find(function (x) { return x.id === state.activeProviderId; }); state.activeModel = np && np.model ? np.model : ''; renderModelSelect(); renderGroupModels(); });
+    if ($('modelButton')) $('modelButton').addEventListener('click', function () { toggleModelPicker(); });
+    if ($('modelSearch')) {
+      $('modelSearch').addEventListener('input', function () { renderModelList(); });
+      $('modelSearch').addEventListener('keydown', function (e) {
+        if (e.key === 'ArrowDown') { e.preventDefault(); setHighlight(modelPickerState.highlight + 1); }
+        else if (e.key === 'ArrowUp') { e.preventDefault(); setHighlight(modelPickerState.highlight - 1); }
+        else if (e.key === 'Enter') { e.preventDefault(); var m = modelPickerState.filtered[modelPickerState.highlight]; if (m) selectModel(m); }
+        else if (e.key === 'Escape') { e.preventDefault(); closeModelPicker(); var b = $('modelButton'); if (b) b.focus(); }
+      });
+    }
+    document.addEventListener('pointerdown', function (e) {
+      if (!modelPickerState.open) return;
+      var picker = $('modelPicker');
+      if (picker && e.target !== picker && !picker.contains(e.target)) closeModelPicker();
+    });
     $('sendBtn').addEventListener('click', function () { sendCurrent(); });
     $('stopBtn').addEventListener('click', stopGeneration);
     $('composer').addEventListener('keydown', function (e) {

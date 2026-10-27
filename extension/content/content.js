@@ -28,6 +28,13 @@
   let overlayCssText = '';
   let lastSelectionText = '';
   let lastSelectionRect = null;
+  // Shared selection-toolbar drag state (H1): wireToolbarDrag() writes
+  // this, onMouseUp() reads it. While a drag is active, and for a short
+  // window after a *moved* drag ends, onMouseUp must not re-anchor the
+  // toolbar to the selection rect, or the release mouseup (fired off the
+  // toolbar, over page content) annuls the drag via showToolbar().
+  let toolbarDragActive = false;
+  let toolbarDragSuppressUntil = 0;
   let popoverState = { lastText: '', action: '' };
   // Current rewrite tone (id from GraphitePrompts.REWRITE_TONES). In-memory
   // only; the shared table in lib/prompts.js is the source of truth.
@@ -323,28 +330,28 @@
     return shadowRoot;
   }
 
-  // Draggable selection toolbar: drag by the seven-character logo
-  // (.gs-toolbar-logo, which carries a visible grab handle) or by the
-  // toolbar's own empty background (padding between buttons). Action
-  // buttons are never a drag handle, so their clicks are unaffected;
-  // showToolbar() repositions on each new selection.
+  // Draggable selection toolbar: drag by the grip handle
+  // (.gs-toolbar-logo, data-gs="toolbar-drag") or by the toolbar's own
+  // empty background (padding between buttons). Action buttons are never
+  // a drag handle, so their clicks are unaffected; showToolbar()
+  // repositions on each new selection.
   //
-  // Implementation note: move/up are tracked on window (with a pointerId
-  // filter), NOT via setPointerCapture on the logo. Capturing on the logo
-  // and listening for pointermove on the toolbar looks equivalent but
-  // failed in Firefox + Shadow DOM: the grab cursor showed (pure CSS) yet
-  // the toolbar never moved and most pointer cycles never even started a
-  // drag (the empty-background target check compared event.target to the
-  // toolbar, but in a shadow tree the toolbar is not the target of most
-  // empty-space presses, and the button mousedown preventDefault that
-  // preserves the page selection suppressed the pointerdown itself).
-  // Window-level mouse + pointer listeners in both phases keep the drag
-  // alive for the whole gesture regardless of pointer capture.
+  // 1.0.16 history: 1.0.13 showed the grab cursor but the toolbar never
+  // moved (start depended on hitting a 12px glyph exactly, move/up hung
+  // off setPointerCapture). 1.0.14 fixed the start/move path, yet a
+  // completed drag was annulled on release: the release `mouseup` fires on
+  // `document` (the pointer is off the toolbar by then) and `onMouseUp`
+  // re-anchored the toolbar to the live selection rect via showToolbar(),
+  // snapping it back. The shared toolbarDragActive/toolbarDragSuppressUntil
+  // state (top of this IIFE) lets onMouseUp sit out the release mouseup,
+  // and the drag start also lives on window (capture) so shadow/page
+  // propagation differences cannot swallow the press. `buttons === 0`
+  // during a move is treated as a missed release. No setPointerCapture.
   function wireToolbarDrag(root) {
     const toolbar = root.querySelector('[data-gs="toolbar"]');
     if (!toolbar || toolbar.__gsDragWired) return;
     toolbar.__gsDragWired = true;
-    let drag = null;    // { pointerId, dx, dy, w, h }
+    let drag = null;    // { pointerId, dx, dy, w, h, startX, startY }
     let moved = false;
 
     const isHandle = (event) => {
@@ -358,34 +365,52 @@
       return !!(t && t.closest && (t.closest('.gs-toolbar-logo') || t.closest('[data-gs="toolbar"]')));
     };
 
+    // 'mouse' is the sentinel for a drag started by a mouse event, which
+    // carries no pointerId. Treat it as a wildcard: fallback mouse events
+    // (pointerId undefined) and numeric pointer events must both be able
+    // to move/end such a drag, and vice versa. Only a mismatch between
+    // two real numeric pointerIds is a different pointer.
+    const isDragPointer = (event) => {
+      if (!event || event.pointerId == null) return true;
+      if (!drag || drag.pointerId === 'mouse') return true;
+      return event.pointerId === drag.pointerId;
+    };
+
     const startDrag = (event) => {
-      try {
-        if (drag) return;
-        if (typeof event.button === 'number' && event.button !== 0) return;
-        if (!isHandle(event)) return;
-        const rect = toolbar.getBoundingClientRect();
-        drag = {
-          pointerId: event.pointerId != null ? event.pointerId : 'mouse',
-          dx: event.clientX - rect.left,
-          dy: event.clientY - rect.top,
-          w: rect.width,
-          h: rect.height
-        };
-        moved = false;
-        toolbar.classList.add('gs-toolbar-dragging');
-        event.preventDefault();
-        event.stopPropagation();
-      } catch (e) { /* dragging is best-effort; never break the page */ }
+      if (drag) return;
+      if (typeof event.button === 'number' && event.button !== 0) return;
+      if (!isHandle(event)) return;
+      const rect = toolbar.getBoundingClientRect();
+      drag = {
+        pointerId: event.pointerId != null ? event.pointerId : 'mouse',
+        dx: event.clientX - rect.left,
+        dy: event.clientY - rect.top,
+        w: rect.width,
+        h: rect.height,
+        startX: event.clientX,
+        startY: event.clientY
+      };
+      moved = false;
+      toolbarDragActive = true;
+      toolbar.classList.add('gs-toolbar-dragging');
+      event.preventDefault();
+      event.stopPropagation();
     };
 
     const moveDrag = (event) => {
       if (!drag) return;
-      if (event.pointerId != null && event.pointerId !== drag.pointerId) return;
+      if (!isDragPointer(event)) return;
+      // Missed release: the button is already up but no up event was
+      // seen (e.g. released outside the window). End the drag instead
+      // of leaving it stuck to the pointer.
+      if (typeof event.buttons === 'number' && event.buttons === 0) {
+        endDrag(event);
+        return;
+      }
+      if (Math.hypot(event.clientX - drag.startX, event.clientY - drag.startY) > 3) moved = true;
       const nextLeft = event.clientX - drag.dx;
       const nextTop = event.clientY - drag.dy;
       const pos = clampRect(nextLeft, nextTop, drag.w || toolbar.offsetWidth || 300, drag.h || toolbar.offsetHeight || 38);
-      if (Math.abs(pos.left - parseFloat(toolbar.style.left || '0')) > 1 ||
-          Math.abs(pos.top - parseFloat(toolbar.style.top || '0')) > 1) moved = true;
       toolbar.style.left = pos.left + 'px';
       toolbar.style.top = pos.top + 'px';
       event.preventDefault();
@@ -393,21 +418,34 @@
 
     const endDrag = (event) => {
       if (!drag) return;
-      if (event && event.pointerId != null && event.pointerId !== drag.pointerId) return;
+      if (event && !isDragPointer(event)) return;
+      const wasMoved = moved;
       drag = null;
+      moved = false;
+      toolbarDragActive = false;
       toolbar.classList.remove('gs-toolbar-dragging');
-      // Suppress the click that follows a real drag on the logo so it
-      // cannot trigger anything; plain logo clicks are harmless anyway.
-      if (moved) {
+      if (wasMoved) {
+        // H1: the release mouseup lands on document (off the toolbar)
+        // and would re-anchor via onMouseUp/showToolbar. Suppress that
+        // one mouseup and its 10ms callback so the dragged left/top
+        // survives; new selections after the window are unaffected.
+        toolbarDragSuppressUntil = Date.now() + 400;
+        // Suppress the click that follows a real drag on the logo so it
+        // cannot trigger anything; plain logo clicks are harmless anyway.
         const swallow = (ev) => { ev.preventDefault(); ev.stopPropagation(); };
         window.addEventListener('click', swallow, { capture: true, once: true });
         setTimeout(() => window.removeEventListener('click', swallow, { capture: true }), 400);
       }
-      moved = false;
     };
 
     toolbar.addEventListener('pointerdown', startDrag, true);
     toolbar.addEventListener('mousedown', startDrag, true);
+    // H2: also catch the press at window in capture phase. Toolbar-only
+    // listeners can miss when shadow/page propagation differs; resolving
+    // the handle via composedPath() keeps buttons (.gs-toolbar-btn)
+    // excluded, and the `if (drag) return` guard prevents duplicates.
+    window.addEventListener('pointerdown', startDrag, true);
+    window.addEventListener('mousedown', startDrag, true);
     window.addEventListener('pointermove', moveDrag, { capture: true, passive: false });
     window.addEventListener('mousemove', moveDrag, true);
     window.addEventListener('pointerup', endDrag, true);
@@ -986,8 +1024,18 @@
 
   function onMouseUp(event) {
     if (event.target && event.target.closest && event.target.closest('#graphite-sider-root')) return;
+    // H1: while a toolbar drag is active, or in the short window after a
+    // moved drag released, this mouseup (off the toolbar) must not show,
+    // hide, or reposition the toolbar. A plain click without movement
+    // sets neither flag, so normal selection behavior is unchanged.
+    // Do NOT clear toolbarDragSuppressUntil here: a second release
+    // mouseup can follow (a press produces both pointerup and mouseup)
+    // and its 10ms callback may run after the window closed; the window
+    // simply expiring by timestamp is the guard, not consumption.
+    if (toolbarDragActive || Date.now() < toolbarDragSuppressUntil) return;
     setTimeout(() => {
       if (settings.selectionToolbar === false) return;
+      if (toolbarDragActive || Date.now() < toolbarDragSuppressUntil) return;
       const info = getSelectionInfo();
       if (info) {
         lastSelectionText = info.text;

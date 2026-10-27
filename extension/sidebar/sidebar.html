@@ -15,7 +15,13 @@
   </div>
   <div class="header-controls">
     <select id="providerSelect" title="Provider / model" aria-label="Provider"></select>
-    <select id="modelSelect" title="Model" aria-label="Model"></select>
+    <div id="modelPicker" class="model-picker">
+      <button id="modelButton" class="model-button" type="button" title="Model" aria-label="Model" aria-haspopup="listbox" aria-expanded="false" aria-controls="modelMenu"><span id="modelButtonLabel" class="model-button-label">Default model</span><span class="model-caret" aria-hidden="true">&#9662;</span></button>
+      <div id="modelMenu" class="model-menu hidden">
+        <input id="modelSearch" class="model-search" type="text" placeholder="Search models..." aria-label="Search models" aria-controls="modelList" autocomplete="off">
+        <div id="modelList" class="model-list" role="listbox" aria-label="Models"></div>
+      </div>
+    </div>
     <button id="newChatBtn" class="icon-btn" title="New chat">+ New</button>
     <button id="settingsBtn" class="icon-btn" title="Settings" aria-label="Settings">&#9881;</button>
   </div>

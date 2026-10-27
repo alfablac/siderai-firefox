@@ -8,7 +8,7 @@
 *An AI sidebar for Firefox that runs on your own API keys*
 
 [![Firefox](https://img.shields.io/badge/Firefox->=140-FF7139?style=flat-square&logo=firefoxbrowser&logoColor=white)](https://www.mozilla.org/firefox/)
-[![Version](https://img.shields.io/badge/version-1.0.15-blue?style=flat-square)](https://addons.mozilla.org/en-US/firefox/addon/graphite-sider-ai-sidebar-byo-/)
+[![Version](https://img.shields.io/badge/version-1.0.16-blue?style=flat-square)](https://addons.mozilla.org/en-US/firefox/addon/graphite-sider-ai-sidebar-byo-/)
 [![License](https://img.shields.io/badge/License-MIT-yellow?style=flat-square)](LICENSE)
 
 [Features](#features) • [Screenshots](#screenshots) • [Install](#install) • [Setup](#setup) • [Privacy](#privacy) • [Troubleshooting](#troubleshooting)
@@ -64,7 +64,7 @@ To package an XPI yourself, run `python tools/build-xpi.py`. It writes `dist/gra
 
 1. Open Settings from the gear in the sidebar, or from the extension entry in `about:addons`.
 2. Add a provider from a preset, or choose Custom and enter a base URL, then paste your key.
-3. Press Test Connection, then Fetch models. The list your key can access is saved with the provider: the model in the Model field stays the default, and every fetched model becomes selectable in the sidebar's Model menu (and in group chat). If the Model field is empty, the first fetched model becomes the default.
+3. Press Test Connection, then Fetch models. The list your key can access is saved with the provider: the model in the Model field stays the default, and every fetched model becomes selectable in the sidebar's Model menu (and in group chat). If the Model field is empty, the first fetched model becomes the default. The sidebar Model menu has a search box at the top — type to filter a long list — and it scrolls through every model your provider returned.
 4. Open the sidebar with `Ctrl+Shift+Y` and start asking.
 
 Three fields are worth knowing about. Image model is separate from the chat model and only matters if your gateway can generate images. Active model override replaces the provider default for chat without editing the provider. Max tokens is the per-reply length cap sent to your provider, and the value you set is the value that goes out, for sidebar chat, YouTube summaries, chapters, and subtitle translation alike. Leave it at 0 (or blank) and no cap is sent, so your provider uses its own default. If a gateway silently substitutes a smaller default of its own when the field is omitted, set the number yourself.
@@ -117,5 +117,6 @@ No build step and no dependencies. The files in `extension/` are the source, exa
 - **Provider errors are shown as returned.** If your gateway answers HTTP 503, that text is what you see. The extension does not hide it behind a silent retry.
 - **Slow models that look "disconnected."** The panel distinguishes a dead background connection from a slow provider. Reasoning models can take a minute or more before the first answer text; while the provider is still working you see a waiting state, and only a genuinely stalled provider (no activity for 10 minutes) reports that it stalled.
 - **Summaries or replies that end mid-sentence.** Your provider stopped at its output limit. Raise Max tokens in Settings (see Setup), or leave it at 0 and check what default your gateway applies. A summary that was cut this way is marked as truncated.
+- **The selection toolbar does not move when dragged.** Reload the tab: pages opened before an update keep the old content script. Then drag by the seven-dot grip handle at the toolbar's left end (or by the empty space between icons) and release the mouse anywhere — the toolbar stays where you left it. Clicking an action icon still runs that action; icons are not drag handles.
 - **The sidebar sits on the left.** Firefox decides which side the sidebar uses. Move it with Firefox's own sidebar menu; an extension cannot set the side itself.
 - **Ollama refuses the connection.** Start it with `OLLAMA_ORIGINS=*` and leave the API key blank.
