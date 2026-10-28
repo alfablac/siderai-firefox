@@ -2199,6 +2199,15 @@
         });
       } catch (e) { /* attributes not readable */ }
     }
+    // Watch-store first: content/manifest-watch.js (document_start) kept
+    // the URLs the page actually requested, most-recent-first. The one-shot
+    // resource-timing read below expires old entries, so by the time the
+    // user asks to transcribe the manifest that STARTED playback is often
+    // already gone from it — the store survives from page load until now.
+    try {
+      var watched = window.__graphiteManifestUrls;
+      if (Array.isArray(watched)) watched.forEach((u) => push(u));
+    } catch (e) { /* watcher not loaded (pre-1.0.28 tab) */ }
     try {
       var entries = (window.performance && performance.getEntriesByType)
         ? performance.getEntriesByType('resource') : [];
@@ -2243,7 +2252,7 @@
             if (!mediaResp.ok) { lastError = 'HTTP ' + mediaResp.status + ' fetching the audio playlist'; continue; }
             const media = GM.parseHlsMedia(await mediaResp.text(), master.url);
             if (media && media.segments.length) {
-              return { ok: true, kind: 'hls', manifestUrl: url, audioPlaylistUrl: master.url, init: media.init, segments: media.segments, lang: master.lang || '', name: master.name || '', source: 'page-manifest' };
+              return { ok: true, kind: 'hls', manifestUrl: url, audioPlaylistUrl: master.url, init: media.init, segments: media.segments, segmentDurations: media.segmentDurations || null, segmentStarts: media.segmentStarts || null, lang: master.lang || '', name: master.name || '', source: 'page-manifest' };
             }
             lastError = 'The audio playlist in the manifest has no segments';
             continue;
@@ -2251,7 +2260,7 @@
           const direct = GM.parseHlsMedia(text, url);
           if (direct && direct.segments.length) {
             // Media playlist directly (audio-only or muxed stream).
-            return { ok: true, kind: 'hls', manifestUrl: url, audioPlaylistUrl: url, init: direct.init, segments: direct.segments, lang: '', name: '', source: 'page-manifest' };
+            return { ok: true, kind: 'hls', manifestUrl: url, audioPlaylistUrl: url, init: direct.init, segments: direct.segments, segmentDurations: direct.segmentDurations || null, segmentStarts: direct.segmentStarts || null, lang: '', name: '', source: 'page-manifest' };
           }
           lastError = 'No audio rendition or segments in the HLS manifest';
           continue;
@@ -2259,7 +2268,7 @@
         if (GM.looksLikeDashUrl(url, ct) || text.indexOf('<MPD') !== -1) {
           const dash = GM.parseDashAudio(text, url);
           if (dash && dash.segments.length) {
-            return { ok: true, kind: 'dash', manifestUrl: url, init: dash.init, segments: dash.segments, mimeType: dash.mimeType || '', lang: dash.lang || '', source: 'page-manifest' };
+            return { ok: true, kind: 'dash', manifestUrl: url, init: dash.init, segments: dash.segments, segmentDurations: dash.segmentDurations || null, segmentStarts: dash.segmentStarts || null, mimeType: dash.mimeType || '', lang: dash.lang || '', source: 'page-manifest' };
           }
           lastError = 'No separate audio adaptation in the DASH manifest';
           continue;
@@ -2433,26 +2442,37 @@
   /* Capture the media element's own output via captureStream +
    * MediaRecorder. This is the ONLY route for true MSE players whose
    * segments the page never exposes as a fetchable URL: the element is
-   * already decoding the stream, so we record its audio track in real
-   * time (seeking to 0 first) into compressed WebM/Opus (or MP4/AAC)
-   * chunks — no WAV involved at all. Resolves { ok:false } when the
-   * element cannot be captured (DRM / cross-origin protected), letting
-   * the caller fall back to fetch+decode. Never throws. */
-  function captureElementAudio(video, maxSeconds) {
+   * already decoding the stream, so we record its audio track as it plays.
+   * Playback runs muted at `captureRate` (default 2x, clamped 1-4) with
+   * pitch preservation, so a full-video capture takes about 1/rate of the
+   * media duration instead of the whole thing. The recorder is restarted
+   * per window so each chunk carries real media-time start/dur instead of
+   * being a byte-slice, and every exit path stops the capture tracks.
+   * Resolves { ok:false } when the element cannot be captured (DRM /
+   * cross-origin protected), letting the caller fall back. Never throws. */
+  function captureElementAudio(video, opts) {
+    opts = opts || {};
     return new Promise((resolve) => {
+      var rate = Number(opts.captureRate);
+      if (!isFinite(rate) || rate <= 0) rate = 2;
+      rate = Math.min(4, Math.max(1, rate));
+      var maxChunkSec = Number(opts.maxChunkSeconds) > 0 ? Number(opts.maxChunkSeconds) : 120;
+      var maxChunkMB = Number(opts.maxChunkMB) > 0 ? Number(opts.maxChunkMB) : 25;
+      var stream = null;
+      var tracks = [];
       try {
         var capture = video.captureStream || video.mozCaptureStream;
         if (typeof capture !== 'function' || typeof MediaRecorder === 'undefined') {
           resolve({ ok: false, error: 'This browser cannot capture the player stream (no captureStream/MediaRecorder).' });
           return;
         }
-        var stream = capture.call(video);
-        var audioTracks = stream && stream.getAudioTracks ? stream.getAudioTracks() : [];
-        if (!audioTracks.length) {
+        stream = capture.call(video);
+        tracks = stream && stream.getAudioTracks ? stream.getAudioTracks().slice() : [];
+        if (!tracks.length) {
           resolve({ ok: false, error: 'The player stream has no audio track to capture.' });
           return;
         }
-        var audioOnly = new MediaStream(audioTracks);
+        var audioOnly = new MediaStream(tracks);
         var mime = '';
         ['audio/webm;codecs=opus', 'audio/webm', 'audio/mp4', 'audio/ogg;codecs=opus', 'audio/ogg'].forEach((c) => {
           if (!mime && MediaRecorder.isTypeSupported && MediaRecorder.isTypeSupported(c)) mime = c;
@@ -2461,55 +2481,147 @@
         try {
           recorder = new MediaRecorder(audioOnly, mime ? { mimeType: mime, audioBitsPerSecond: 64000 } : { audioBitsPerSecond: 64000 });
         } catch (e) {
+          tracks.forEach((t) => { try { t.stop(); } catch (err) { /* ignore */ } });
           resolve({ ok: false, error: 'MediaRecorder refused the player stream (protected/DRM content cannot be captured).' });
           return;
         }
-        var blobs = [];
-        var startedAt = 0;
+        var chunks = []; // [{ blob, start, dur, mimeType }]
+        var windowParts = [];
+        var windowStart = 0;
+        var windowTimer = null;
+        var done = false;
         var wasPaused = !!video.paused;
         var prevTime = Number(video.currentTime) || 0;
+        var prevRate = Number(video.playbackRate) || 1;
+        var prevMuted = !!video.muted;
         var duration = isFinite(video.duration) && video.duration > 0 ? video.duration : 0;
-        var budget = Math.min(maxSeconds || 3600, duration > 0 ? duration : 3600);
-        var timer = null;
-        var done = false;
-        function finish(ok, error) {
-          if (done) return;
-          done = true;
-          if (timer) clearTimeout(timer);
-          try { video.removeEventListener('ended', onEnded); } catch (e) { /* ignore */ }
-          try { if (recorder.state !== 'inactive') recorder.stop(); } catch (e) { /* ignore */ }
+        var maxSeconds = Number(opts.maxSeconds) > 0 ? Number(opts.maxSeconds) : 3600;
+        var budget = Math.min(maxSeconds, duration > 0 ? duration : maxSeconds);
+        var type = mime || 'audio/webm';
+        var ceilingTimer = null;
+        function stopTracks() {
+          tracks.forEach((t) => { try { t.stop(); } catch (e) { /* ignore */ } });
+          try { if (stream && stream.getTracks) stream.getTracks().forEach((t) => { try { t.stop(); } catch (e) { /* ignore */ } }); } catch (e) { /* ignore */ }
+        }
+        function restore() {
+          try { video.playbackRate = prevRate; } catch (e) { /* ignore */ }
+          try { video.muted = prevMuted; } catch (e) { /* ignore */ }
           try { if (wasPaused) video.pause(); } catch (e) { /* ignore */ }
           try { video.currentTime = prevTime; } catch (e) { /* ignore */ }
-          if (!ok) { resolve({ ok: false, error: error || 'Capture failed.' }); return; }
-          var type = mime || recorder.mimeType || 'audio/webm';
-          var blob = new Blob(blobs, { type: type.split(';')[0] });
-          resolve({ ok: true, blob: blob, mimeType: blob.type, duration: Math.round((Date.now() - startedAt) / 1000) });
+        }
+        function mediaTime() {
+          return isFinite(video.currentTime) ? Math.max(0, video.currentTime) : 0;
+        }
+        function flushWindow() {
+          if (!windowParts.length) return;
+          var blob = new Blob(windowParts, { type: type.split(';')[0] });
+          var end = mediaTime();
+          chunks.push({
+            blob: blob,
+            start: windowStart,
+            dur: Math.max(0, end - windowStart),
+            mimeType: blob.type
+          });
+          windowParts = [];
+        }
+        var finishing = null;
+        var finalizeTimer = null;
+        function finalize() {
+          if (done) return;
+          done = true;
+          if (finalizeTimer) clearTimeout(finalizeTimer);
+          flushWindow();
+          stopTracks();
+          restore();
+          var req = finishing || { ok: true };
+          if (!req.ok) { resolve({ ok: false, error: req.error || 'Capture failed.' }); return; }
+          if (!chunks.length) { resolve({ ok: false, error: 'No audio could be captured from the player.' }); return; }
+          resolve({
+            ok: true, chunks: chunks,
+            mimeType: type.split(';')[0],
+            duration: Math.round(budget),
+            captureRate: rate
+          });
+        }
+        function finish(ok, error) {
+          if (done || finishing) return;
+          finishing = { ok: !!ok, error: error };
+          if (windowTimer) clearTimeout(windowTimer);
+          if (ceilingTimer) clearTimeout(ceilingTimer);
+          try { video.removeEventListener('ended', onEnded); } catch (e) { /* ignore */ }
+          // recorder.stop() is async: the final dataavailable/onstop pair
+          // carries the tail of the recording, so resolve from onstop
+          // (finalize) instead of flushing synchronously here.
+          var wasActive = false;
+          try { wasActive = recorder.state !== 'inactive'; if (wasActive) recorder.stop(); } catch (e) { /* ignore */ }
+          if (!wasActive) finalize();
+          else finalizeTimer = setTimeout(finalize, 800);
         }
         function onEnded() { finish(true); }
-        recorder.ondataavailable = (ev) => { if (ev.data && ev.data.size) blobs.push(ev.data); };
-        recorder.onstop = () => { if (!done) finish(blobs.length > 0); };
+        function scheduleWindow() {
+          if (done) return;
+          windowStart = mediaTime();
+          // Window length in WALL time: maxChunkSec of media at `rate`
+          // elapses in maxChunkSec/rate seconds. The MB cap maps to
+          // ~8000 B/s at 64 kbps Opus and only shortens the window.
+          var wallSec = maxChunkSec / rate;
+          if (maxChunkMB > 0) wallSec = Math.min(wallSec, (maxChunkMB * 1024 * 1024) / 8000);
+          if (!isFinite(wallSec) || wallSec < 5) wallSec = 5;
+          windowTimer = setTimeout(function () {
+            if (done) return;
+            flushWindow();
+            try { if (recorder.state !== 'inactive') recorder.stop(); } catch (e) { /* ignore */ }
+            // onstop restarts the recorder for the next window.
+          }, wallSec * 1000);
+        }
+        recorder.ondataavailable = (ev) => { if (ev.data && ev.data.size) windowParts.push(ev.data); };
+        recorder.onstop = () => {
+          if (done) return;
+          if (finishing) { finalize(); return; }
+          try { recorder.start(1000); } catch (e) { finish(false, 'Could not restart the player audio recording.'); return; }
+          scheduleWindow();
+        };
         recorder.onerror = () => finish(false, 'Recording the player audio failed.');
         try { video.currentTime = 0; } catch (e) { /* not seekable yet */ }
+        try {
+          video.muted = true;
+          try { video.preservesPitch = true; } catch (e) { /* older engines */ }
+          try { video.mozPreservesPitch = true; } catch (e) { /* older engines */ }
+          video.playbackRate = rate;
+        } catch (e) { /* keep playing at 1x if rate/mute is refused */ }
         video.addEventListener('ended', onEnded);
         var playPromise = null;
         try { playPromise = video.play(); } catch (e) { /* handled below */ }
-        Promise.resolve(playPromise).catch(() => {}).then(() => {
-          startedAt = Date.now();
+        var playSettled = false;
+        Promise.resolve(playPromise).then(() => { playSettled = true; }, () => { playSettled = true; });
+        // Fail fast when play() is refused (autoplay policy / DRM): there
+        // is nothing to record, so don't sit out the whole budget.
+        setTimeout(() => {
+          if (done) return;
+          if (!playSettled || video.paused) {
+            finish(false, 'The player refused to play for capture (autoplay policy or protected content). Play the video once, then try again.');
+            return;
+          }
           try { recorder.start(1000); } catch (e) { finish(false, 'Could not start recording the player audio.'); return; }
-          timer = setTimeout(() => finish(true), Math.max(1000, budget * 1000 + 500));
-        });
+          scheduleWindow();
+          ceilingTimer = setTimeout(() => finish(true), Math.max(1000, (budget / rate) * 1000 + 1000));
+        }, 600);
       } catch (e) {
+        tracks.forEach((t) => { try { t.stop(); } catch (err) { /* ignore */ } });
         resolve({ ok: false, error: String(e && e.message || e) });
       }
     });
   }
 
   /* Split a captured/extracted Blob into base64 chunks that each fit the
-   * ~900k-char runtime-message ceiling. Slices cut on byte boundaries;
-   * MP3/WebM decoders resync per chunk when the sidebar transcribes the
-   * pieces one by one (same contract as the old WAV chunks). */
-  async function blobToBase64Chunks(blob, mimeType) {
+   * ~900k-char runtime-message ceiling AND the provider's per-request MB
+   * cap. Slices cut on byte boundaries; MP3/WebM decoders resync per chunk
+   * when the sidebar transcribes the pieces one by one. */
+  async function blobToBase64Chunks(blob, mimeType, opts) {
+    opts = opts || {};
     var maxBytes = Math.floor(900000 * 3 / 4) - 1024;
+    var mbCap = Number(opts.maxChunkMB) > 0 ? Math.floor(Number(opts.maxChunkMB) * 1024 * 1024) : 0;
+    if (mbCap > 0 && mbCap < maxBytes) maxBytes = mbCap;
     var out = [];
     for (var off = 0; off < blob.size; off += maxBytes) {
       var part = blob.slice(off, Math.min(blob.size, off + maxBytes), mimeType || blob.type || '');
@@ -2523,15 +2635,16 @@
   }
 
   /* Fetch + decode the player's audio IN THIS PAGE and return chunked
-   * base64 pieces. A blob:/MSE element exposes no URL the background
-   * can fetch, but fetch(currentSrc) works here because the blob lives
-   * in this origin. Decoded audio is converted to MP3 (lib/audio-
-   * extract.js, ~0.24 MB/min at 32 kbps) instead of WAV (~1.9 MB/min);
-   * WAV survives only when MP3 encoding itself fails. When no source is
-   * fetchable at all (pure MSE), the element's own output is captured
-   * with captureStream as a final resort. Chunk payloads stay below
-   * the ~900k-char base64 ceiling. Never throws: failures resolve as
-   * { ok:false, error } so the sidebar can fall back further. */
+   * base64 pieces. NOTE: an MSE player's `blob:` currentSrc is a
+   * MediaSource object URL — fetching it returns the empty MediaSource
+   * placeholder, NOT the media bytes, so blob/blob-MSE elements skip the
+   * fetch path entirely and go straight to captureStream (the element is
+   * already decoding the stream). Only plain file URLs are fetched.
+   * Decoded audio is converted to MP3 (lib/audio-extract.js, ~0.24 MB/min
+   * at 32 kbps) instead of WAV (~1.9 MB/min); WAV survives only when MP3
+   * encoding itself fails. Chunk payloads stay below the ~900k-char
+   * base64 ceiling and the provider's chunk limits. Never throws:
+   * failures resolve as { ok:false, error } so the sidebar can fall back. */
   async function extractPageVideoAudio(payload) {
     const video = findIndexedVideo(payload || {});
     if (!video) return { ok: false, error: 'Video not found — rescan the page, then try again.' };
@@ -2541,27 +2654,54 @@
     pushSrc(video.src);
     Array.from(video.querySelectorAll('source[src]')).forEach((s) => pushSrc(s.src || s.getAttribute('src')));
     (Array.isArray(payload.srcs) ? payload.srcs : []).forEach(pushSrc);
-    // Drop page URLs that are not media (MSE players often have none).
-    srcCandidates = srcCandidates.filter((u) => !/^https?:/i.test(u) || u !== location.href);
+    // Drop page URLs that are not media, and blob: URLs: an MSE blob:
+    // currentSrc is a MediaSource object URL whose fetch yields no media
+    // bytes (see the doc block above), so it must not enter the fetch loop.
+    srcCandidates = srcCandidates.filter((u) => !/^blob:/i.test(u) && (!/^https?:/i.test(u) || u !== location.href));
+    const chunkLimits = { maxChunkSeconds: payload.maxChunkSeconds, maxChunkMB: payload.maxChunkMB };
+    // Encode the capture result's per-window chunks (each already carries
+    // real media-time start/dur) into base64 message payloads.
+    const encodeCapture = async (captured, fallbackDuration) => {
+      const out = [];
+      let maxB64 = 0;
+      for (const capChunk of (captured.chunks || [])) {
+        if (!capChunk.blob || !capChunk.blob.size) continue;
+        const pieces = await blobToBase64Chunks(capChunk.blob, capChunk.mimeType, chunkLimits);
+        for (const piece of pieces) {
+          if (piece.audioBase64.length > maxB64) maxB64 = piece.audioBase64.length;
+          // A blob at/under both caps is a single piece; wider splits
+          // share the window's start (decoders resync per piece).
+          piece.start = capChunk.start || 0;
+          piece.dur = capChunk.dur || 0;
+          out.push(piece);
+        }
+      }
+      const mime = (captured.mimeType || 'audio/webm');
+      return {
+        ok: true, chunks: out, chunkCount: out.length,
+        maxB64Chars: maxB64,
+        duration: captured.duration || Math.round(fallbackDuration || 0),
+        format: mime.split('/')[1] || 'webm',
+        captureRate: captured.captureRate || 1,
+        label: videoLabel(video, Number(payload.index) || 0),
+        source: 'capture'
+      };
+    };
     const GA = (typeof GraphiteAudioExtract !== 'undefined') ? GraphiteAudioExtract : null;
     if (!GA || typeof GA.renderWavBlobInChunks !== 'function') {
       return { ok: false, error: 'Audio extraction library is not loaded on this page. Reload the page and try again.' };
     }
     if (!srcCandidates.length) {
       // Pure MSE with no fetchable URL: record the element's own decoded
-      // output (compressed WebM/Opus) in real time.
-      const capturedOnly = await captureElementAudio(video, Number(payload.maxSeconds) || 3600);
-      if (capturedOnly.ok && capturedOnly.blob && capturedOnly.blob.size) {
-        const capChunks = await blobToBase64Chunks(capturedOnly.blob, capturedOnly.mimeType);
-        return {
-          ok: true, chunks: capChunks, chunkCount: capChunks.length,
-          maxB64Chars: capChunks.reduce((m, c) => Math.max(m, c.audioBase64.length), 0),
-          duration: capturedOnly.duration || Math.round(video.duration || 0),
-          sampleRate: GA.DEFAULT_SAMPLE_RATE || 16000,
-          format: (capturedOnly.mimeType || 'audio/webm').split('/')[1] || 'webm',
-          label: videoLabel(video, Number(payload.index) || 0),
-          source: 'capture'
-        };
+      // output (compressed WebM/Opus), accelerated and chunk-windowed.
+      const capturedOnly = await captureElementAudio(video, {
+        maxSeconds: Number(payload.maxSeconds) || 3600,
+        captureRate: payload.captureRate,
+        maxChunkSeconds: payload.maxChunkSeconds,
+        maxChunkMB: payload.maxChunkMB
+      });
+      if (capturedOnly.ok && capturedOnly.chunks && capturedOnly.chunks.length) {
+        return encodeCapture(capturedOnly, video.duration || 0);
       }
       return { ok: false, error: 'This player exposes no fetchable media source in the page (pure MSE with no blob/file URL), and stream capture failed: ' + (capturedOnly.error || 'unknown error') };
     }
@@ -2589,10 +2729,10 @@
         let format = 'mp3';
         try {
           if (typeof GA.renderMp3BlobInChunks !== 'function') throw new Error('mp3 path not loaded');
-          chunks = GA.renderMp3BlobInChunks(decoded, {});
+          chunks = GA.renderMp3BlobInChunks(decoded, chunkLimits);
           if (!chunks.length || !chunks[0].blob || !chunks[0].blob.size) throw new Error('empty mp3');
         } catch (mp3Err) {
-          chunks = GA.renderWavBlobInChunks(decoded, {});
+          chunks = GA.renderWavBlobInChunks(decoded, chunkLimits);
           format = 'wav';
         }
         const encoded = [];
@@ -2620,26 +2760,22 @@
           sampleRate: GA.DEFAULT_SAMPLE_RATE || 16000,
           format: format,
           label: videoLabel(video, Number(payload.index) || 0),
-          source: /^blob:/i.test(src) ? 'blob' : 'file'
+          source: 'file'
         };
       } catch (e) {
         lastError = String(e && e.message || e);
       }
     }
     // Fetch+decode failed for every candidate; last resort is recording
-    // the element's own output in real time.
-    const captured = await captureElementAudio(video, Number(payload.maxSeconds) || 3600);
-    if (captured.ok && captured.blob && captured.blob.size) {
-      const capChunks2 = await blobToBase64Chunks(captured.blob, captured.mimeType);
-      return {
-        ok: true, chunks: capChunks2, chunkCount: capChunks2.length,
-        maxB64Chars: capChunks2.reduce((m, c) => Math.max(m, c.audioBase64.length), 0),
-        duration: captured.duration || Math.round(video.duration || 0),
-        sampleRate: GA.DEFAULT_SAMPLE_RATE || 16000,
-        format: (captured.mimeType || 'audio/webm').split('/')[1] || 'webm',
-        label: videoLabel(video, Number(payload.index) || 0),
-        source: 'capture'
-      };
+    // the element's own output (accelerated, chunk-windowed).
+    const captured = await captureElementAudio(video, {
+      maxSeconds: Number(payload.maxSeconds) || 3600,
+      captureRate: payload.captureRate,
+      maxChunkSeconds: payload.maxChunkSeconds,
+      maxChunkMB: payload.maxChunkMB
+    });
+    if (captured.ok && captured.chunks && captured.chunks.length) {
+      return encodeCapture(captured, video.duration || 0);
     }
     return { ok: false, error: 'Audio extraction failed: ' + (lastError || 'no usable media source') + (captured.error ? ' Capture also failed: ' + captured.error : '') };
   }

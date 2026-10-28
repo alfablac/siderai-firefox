@@ -103,7 +103,10 @@
   /**
    * Encode `seconds`-sized slices of a decoded AudioBuffer as WAV blobs,
    * each small enough that its base64 form fits `maxB64Chars`.
-   * Options: { secondsPerChunk, sampleRate, maxB64Chars, mime }.
+   * Options: { secondsPerChunk, sampleRate, maxB64Chars, mime,
+   * maxChunkSeconds, maxChunkMB } — the last two are the caller's
+   * provider-side per-request limits (0/blank = unlimited); both shrink
+   * the chunk length, never grow it past the message ceiling.
    * Returns [{ blob, start, dur, size }] — `start`/`dur` in seconds at the
    * TARGET sample rate so the caller can offset chunk timestamps.
    */
@@ -115,6 +118,16 @@
     if (!perChunk) {
       var bytesLeft = Math.floor(maxB64 * 3 / 4) - HEADER_BYTES - 8;
       perChunk = Math.max(1, Math.floor(bytesLeft / 2 / sr));
+    }
+    // Provider per-request limits (seconds / MB) only ever shrink chunks:
+    // 16-bit PCM bytes/sec = sr*2, so the MB limit is an exact seconds cap.
+    var maxSec = Number(opts.maxChunkSeconds) > 0 ? Number(opts.maxChunkSeconds) : 0;
+    if (maxSec && maxSec < perChunk) perChunk = Math.max(1, Math.floor(maxSec));
+    var maxMB = Number(opts.maxChunkMB) > 0 ? Number(opts.maxChunkMB) : 0;
+    if (maxMB) {
+      var mbSeconds = Math.floor((maxMB * 1024 * 1024 - HEADER_BYTES) / 2 / sr);
+      if (mbSeconds < 1) mbSeconds = 1;
+      if (mbSeconds < perChunk) perChunk = mbSeconds;
     }
     var mono = downmixDecodeAudioBuffer(buffer);
     var resampled = resampleMonoSamples(mono, Number(buffer.sampleRate) || sr, sr);
@@ -307,7 +320,9 @@
     return new Blob([new Uint8Array(out)], { type: 'audio/mpeg' });
   }
 
-  /** Encode a decoded AudioBuffer to MP3 chunks sized like the WAV path. */
+  /** Encode a decoded AudioBuffer to MP3 chunks sized like the WAV path.
+   * Options add { maxChunkSeconds, maxChunkMB }: the caller's provider
+   * per-request limits (0/blank = unlimited); both only shrink chunks. */
   function renderMp3BlobInChunks(buffer, opts) {
     opts = opts || {};
     var sr = Number(opts.sampleRate) > 0 ? Math.floor(Number(opts.sampleRate)) : DEFAULT_SAMPLE_RATE;
@@ -316,6 +331,14 @@
     var bytesBudget = Math.floor(maxB64 * 3 / 4) - 1024;
     var perChunk = Number(opts.secondsPerChunk) > 0 ? Number(opts.secondsPerChunk)
       : Math.max(10, Math.floor(bytesBudget / (kbps * 1000 / 8)));
+    var maxSec = Number(opts.maxChunkSeconds) > 0 ? Number(opts.maxChunkSeconds) : 0;
+    if (maxSec && maxSec < perChunk) perChunk = Math.max(1, Math.floor(maxSec));
+    var maxMB = Number(opts.maxChunkMB) > 0 ? Number(opts.maxChunkMB) : 0;
+    if (maxMB) {
+      var mbSeconds = Math.floor(maxMB * 1024 * 1024 / (kbps * 1000 / 8));
+      if (mbSeconds < 1) mbSeconds = 1;
+      if (mbSeconds < perChunk) perChunk = mbSeconds;
+    }
     var mono = downmixDecodeAudioBuffer(buffer);
     var resampled = resampleMonoSamples(mono, Number(buffer.sampleRate) || sr, sr);
     var framesPerChunk = Math.max(1, Math.floor(perChunk * sr));

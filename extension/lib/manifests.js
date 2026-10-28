@@ -75,26 +75,52 @@
 
   /** If the playlist is a media playlist (has segments), it IS the audio
    * rendition when its segments look like audio. Returns the ordered
-   * segment list (with EXT-X-MAP init segment first when present). */
+   * segment list (with EXT-X-MAP init segment first when present). Each
+   * segment also carries its #EXTINF duration (seconds, 0 when unknown)
+   * and the running start time, so callers can group segments into
+   * time-bounded transcription chunks without re-reading the playlist. */
   function parseHlsMedia(text, baseUrl) {
     var lines = String(text || '').split(/\r?\n/);
     var init = null;
     var segments = [];
+    var segmentDurations = [];
+    var segmentStarts = [];
     var sawTarget = false;
+    var pendingDur = 0;
+    var cursor = 0;
+    var targetDur = 0;
     for (var i = 0; i < lines.length; i++) {
       var line = lines[i].trim();
       if (!line) continue;
-      if (line.indexOf('#EXT-X-TARGETDURATION') === 0) sawTarget = true;
+      if (line.indexOf('#EXT-X-TARGETDURATION') === 0) {
+        sawTarget = true;
+        var td = Number(line.slice(line.indexOf(':') + 1));
+        if (isFinite(td) && td > 0) targetDur = td;
+      }
+      if (line.indexOf('#EXTINF:') === 0) {
+        var inf = Number(line.slice('#EXTINF:'.length).split(',')[0]);
+        if (isFinite(inf) && inf > 0) pendingDur = inf;
+      }
       if (line.indexOf('#EXT-X-MAP:') === 0) {
         var attrs = parseAttrs(line.slice('#EXT-X-MAP:'.length));
         if (attrs.URI) init = resolveUrl(baseUrl, attrs.URI);
         continue;
       }
       if (line.charAt(0) === '#') continue;
+      var dur = pendingDur > 0 ? pendingDur : targetDur;
       segments.push(resolveUrl(baseUrl, line));
+      segmentDurations.push(dur);
+      segmentStarts.push(cursor);
+      cursor += dur;
+      pendingDur = 0;
     }
     if (!segments.length) return null;
-    return { init: init, segments: segments, isMedia: sawTarget || segments.length > 0 };
+    return {
+      init: init, segments: segments,
+      segmentDurations: segmentDurations, segmentStarts: segmentStarts,
+      totalDuration: cursor,
+      isMedia: sawTarget || segments.length > 0
+    };
   }
 
   /** Does this text look like an HLS playlist at all? */
@@ -123,11 +149,14 @@
 
   /* Expand a SegmentTemplate into concrete segment URLs. Supports
    * $RepresentationID$, $Number$, $Number%0Nd$, $Bandwidth$, $Time$ lists
-   * via SegmentTimeline, and plain duration-based numbering. */
+   * via SegmentTimeline, and plain duration-based numbering. Returns
+   * { urls, durations, starts } so callers can chunk by time. */
   function expandDashSegments(tpl, baseUrl, repId, bandwidth, durationSec) {
     var media = tpl.media || '';
-    if (!media) return [];
+    if (!media) return { urls: [], durations: [], starts: [] };
     var out = [];
+    var durs = [];
+    var starts = [];
     function fill(tplStr, num, time) {
       var s = String(tplStr);
       s = s.replace(/\$RepresentationID\$/g, repId || '');
@@ -142,6 +171,7 @@
       s = s.replace(/\$\$/g, '$');
       return resolveUrl(baseUrl, s);
     }
+    var timescale = Number(tpl.timescale) > 0 ? Number(tpl.timescale) : 1;
     var start = Number(tpl.startNumber) || 1;
     if (tpl.timeline && tpl.timeline.length) {
       var t = 0;
@@ -151,23 +181,31 @@
         var count = 1 + (Number(entry.r) > 0 ? Number(entry.r) : 0);
         for (var k = 0; k < count; k++) {
           out.push(fill(media, num, t));
+          durs.push((Number(entry.d) || 0) / timescale);
+          starts.push(t / timescale);
           num++;
           t += Number(entry.d) || 0;
         }
       });
-      return out;
+      return { urls: out, durations: durs, starts: starts };
     }
     var segDur = Number(tpl.duration) && Number(tpl.timescale)
       ? Number(tpl.duration) / Number(tpl.timescale) : 0;
     if (segDur > 0 && durationSec > 0) {
       var count2 = Math.min(2000, Math.ceil(durationSec / segDur));
-      for (var n = 0; n < count2; n++) out.push(fill(media, start + n, Math.round((start + n - start) * Number(tpl.duration))));
-      return out;
+      for (var n = 0; n < count2; n++) {
+        out.push(fill(media, start + n, Math.round(n * Number(tpl.duration))));
+        durs.push(segDur);
+        starts.push(n * segDur);
+      }
+      return { urls: out, durations: durs, starts: starts };
     }
     // Unknown length: emit the first segment only; caller transcribes
     // what it can get rather than failing outright.
     out.push(fill(media, start, 0));
-    return out;
+    durs.push(segDur || 0);
+    starts.push(0);
+    return { urls: out, durations: durs, starts: starts };
   }
 
   function parseSegmentTemplate(block, inherited) {
@@ -256,6 +294,8 @@
       if (segBaseInit) {
         return {
           init: null, segments: [resolveUrl(repBase, segBaseInit[1])],
+          segmentDurations: [durationSec || 0], segmentStarts: [0],
+          durationSec: durationSec || 0,
           lang: attrOf(set.tag, 'lang') || '', mimeType: repMime, bandwidth: bandwidth, singleFile: true
         };
       }
@@ -265,10 +305,12 @@
           .replace(/\$RepresentationID\$/g, repId || '')
           .replace(/\$Bandwidth\$/g, String(bandwidth || 0)));
       }
-      var segments = expandDashSegments(repTpl, repBase, repId, bandwidth, durationSec);
-      if (!segments.length) continue;
+      var expanded = expandDashSegments(repTpl, repBase, repId, bandwidth, durationSec);
+      if (!expanded.urls.length) continue;
       return {
-        init: init, segments: segments,
+        init: init, segments: expanded.urls,
+        segmentDurations: expanded.durations, segmentStarts: expanded.starts,
+        durationSec: durationSec || 0,
         lang: attrOf(set.tag, 'lang') || '', mimeType: repMime, bandwidth: bandwidth
       };
     }

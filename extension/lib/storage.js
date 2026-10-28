@@ -260,6 +260,20 @@
     return out;
   }
 
+  /* Per-provider transcription chunk limits. cx/transcribe-class endpoints
+   * cap one request at ~25 MB or ~120 s, so the defaults enforce both; a
+   * stored 0/null/'' means the user explicitly disabled that limit. */
+  function transcriptionChunkSeconds(p) {
+    if (!p || p.transcriptionMaxChunkSeconds == null || p.transcriptionMaxChunkSeconds === '') return 120;
+    var n = Number(p.transcriptionMaxChunkSeconds);
+    return isFinite(n) && n >= 0 ? Math.floor(n) : 120;
+  }
+  function transcriptionChunkMB(p) {
+    if (!p || p.transcriptionMaxChunkMB == null || p.transcriptionMaxChunkMB === '') return 25;
+    var n = Number(p.transcriptionMaxChunkMB);
+    return isFinite(n) && n >= 0 ? n : 25;
+  }
+
   /** Factory-default full settings object. */
   function DEFAULT_SETTINGS() {
     return {
@@ -292,6 +306,8 @@
           visionModel: p.visionModel ? String(p.visionModel) : undefined,
           imageModel: p.imageModel ? String(p.imageModel) : undefined,
           transcriptionModel: p.transcriptionModel ? String(p.transcriptionModel) : undefined,
+          transcriptionMaxChunkSeconds: transcriptionChunkSeconds(p),
+          transcriptionMaxChunkMB: transcriptionChunkMB(p),
           enabled: p.enabled !== false
         };
       });

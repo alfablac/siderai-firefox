@@ -292,6 +292,8 @@ function normalizeState(raw) {
       if (p.visionModel) out.visionModel = String(p.visionModel); // preserve lib field
       if (p.imageModel) out.imageModel = String(p.imageModel); // preserve lib field
       if (p.transcriptionModel) out.transcriptionModel = String(p.transcriptionModel); // preserve lib field
+      if (p.transcriptionMaxChunkSeconds != null && p.transcriptionMaxChunkSeconds !== "") out.transcriptionMaxChunkSeconds = Number(p.transcriptionMaxChunkSeconds);
+      if (p.transcriptionMaxChunkMB != null && p.transcriptionMaxChunkMB !== "") out.transcriptionMaxChunkMB = Number(p.transcriptionMaxChunkMB);
       return out;
     });
   }
@@ -570,6 +572,14 @@ function renderProviders() {
       '<label class="field"><span>Transcription model <em class="hint">(used by /audio/transcriptions, e.g. whisper-1 — or cx/transcribe on 9Router; blank = whisper-1; not the chat model)</em></span>' +
         '<input type="text" data-field="transcriptionModel" value="' + esc(p.transcriptionModel || "") + '" placeholder="e.g. whisper-1 or cx/transcribe" spellcheck="false">' +
       "</label>" +
+      '<div class="grid-2">' +
+        '<label class="field"><span>Max chunk seconds <em class="hint">(per /audio/transcriptions request; 120 = cx/transcribe default; 0 = no time limit)</em></span>' +
+          '<input type="number" min="0" step="1" data-field="transcriptionMaxChunkSeconds" value="' + esc(p.transcriptionMaxChunkSeconds == null ? 120 : p.transcriptionMaxChunkSeconds) + '">' +
+        "</label>" +
+        '<label class="field"><span>Max chunk MB <em class="hint">(per request; 25 = cx/transcribe default; 0 = no size limit)</em></span>' +
+          '<input type="number" min="0" step="0.1" data-field="transcriptionMaxChunkMB" value="' + esc(p.transcriptionMaxChunkMB == null ? 25 : p.transcriptionMaxChunkMB) + '">' +
+        "</label>" +
+      "</div>" +
       '<div class="row-actions wrap">' +
         '<button type="button" class="btn btn-small" data-action="test">Test Connection</button>' +
         '<button type="button" class="btn btn-small" data-action="fetch-models">Fetch models</button>' +
@@ -593,6 +603,11 @@ function readProviderCard(card, provider) {
   card.querySelectorAll("[data-field]").forEach(function (input) {
     var f = input.getAttribute("data-field");
     if (f === "enabled") provider.enabled = !!input.checked;
+    else if (f === "transcriptionMaxChunkSeconds" || f === "transcriptionMaxChunkMB") {
+      // Number(value): normalizeState keeps them numeric ('' would be
+      // re-saved as NaN by the lib normalizer). 0 = limit disabled.
+      provider[f] = Number(input.value);
+    }
     else provider[f] = input.value;
   });
 }

@@ -322,6 +322,13 @@ async function resolveProvider(msg, opts) {
     // back to copy.transcriptionModel (Options page) or whisper-1.
     if (msg && msg.provider && msg.provider.transcriptionModel) copy.transcriptionModel = msg.provider.transcriptionModel;
     if (msg && msg.transcriptionModel) copy.transcriptionModel = msg.transcriptionModel;
+    // Chunk limits resolve with the provider, same rule: a stored
+    // transcriptionMaxChunkSeconds/MB (Options page; defaults 120s/25MB,
+    // 0 = disabled) wins, explicit message fields only when present.
+    if (msg && msg.provider && msg.provider.transcriptionMaxChunkSeconds != null) copy.transcriptionMaxChunkSeconds = Number(msg.provider.transcriptionMaxChunkSeconds);
+    if (msg && msg.transcriptionMaxChunkSeconds != null) copy.transcriptionMaxChunkSeconds = Number(msg.transcriptionMaxChunkSeconds);
+    if (msg && msg.provider && msg.provider.transcriptionMaxChunkMB != null) copy.transcriptionMaxChunkMB = Number(msg.provider.transcriptionMaxChunkMB);
+    if (msg && msg.transcriptionMaxChunkMB != null) copy.transcriptionMaxChunkMB = Number(msg.transcriptionMaxChunkMB);
     return copy;
   }
   if (opts && opts.forImage) {
@@ -735,14 +742,110 @@ function fetchJsonText(rawUrl) {
  * lib/manifests.js find the audio rendition, then concatenate its
  * (already compressed) segments into one Blob for the Whisper endpoint.
  * Byte budget keeps a rogue manifest from exhausting memory. */
+
+/* webRequest fallback store: the URL a tab ACTUALLY requested, remembered
+ * per tab. By scan time the resource-timing buffer has usually rotated the
+ * manifest that started playback out (the reported "manifest is already
+ * gone" case); the document_start watcher covers most tabs, and this store
+ * covers the rest. 'webRequest' only — never blocking, no header/body
+ * access, so no cookies are ever captured. */
+var manifestCandidatesByTab = new Map();
+function rememberManifestCandidate(tabId, url) {
+  var s = String(url || '');
+  if (!/\.(m3u8|mpd)($|[?#])/i.test(s)) return;
+  var list = manifestCandidatesByTab.get(tabId) || [];
+  var at = list.indexOf(s);
+  if (at !== -1) list.splice(at, 1);
+  list.unshift(s);
+  if (list.length > 8) list.length = 8;
+  manifestCandidatesByTab.set(tabId, list);
+}
+try {
+  if (ext.webRequest && ext.webRequest.onCompleted) {
+    ext.webRequest.onCompleted.addListener(function (details) {
+      try {
+        if (!details || details.tabId == null || details.tabId < 0) return;
+        rememberManifestCandidate(details.tabId, details.url);
+      } catch (e) { /* ignore */ }
+    }, { urls: ['*://*/*.m3u8*', '*://*/*.mpd*'] });
+  }
+  if (ext.tabs && ext.tabs.onRemoved) ext.tabs.onRemoved.addListener(function (tabId) {
+    manifestCandidatesByTab.delete(tabId);
+  });
+  if (ext.tabs && ext.tabs.onUpdated) ext.tabs.onUpdated.addListener(function (tabId, info) {
+    if (info && info.status === 'loading' && info.url) manifestCandidatesByTab.delete(tabId);
+  });
+} catch (e) { /* webRequest unavailable (e.g. restricted builds) */ }
+
 var MANIFEST_MAX_BYTES = 24 * 1024 * 1024;
 
-async function fetchManifestAudio(msg) {
+function manifestChunkLimits(msg, provider) {
+  var src = (msg && Number(msg.transcriptionMaxChunkSeconds) > 0) ? Number(msg.transcriptionMaxChunkSeconds)
+    : (provider && Number(provider.transcriptionMaxChunkSeconds) > 0 ? Number(provider.transcriptionMaxChunkSeconds) : 120);
+  var srcMb = (msg && Number(msg.transcriptionMaxChunkMB) > 0) ? Number(msg.transcriptionMaxChunkMB)
+    : (provider && Number(provider.transcriptionMaxChunkMB) > 0 ? Number(provider.transcriptionMaxChunkMB) : 25);
+  return {
+    seconds: src > 0 ? src : 0,
+    mb: srcMb > 0 ? srcMb : 0,
+    bytes: srcMb > 0 ? Math.floor(srcMb * 1024 * 1024) : 0
+  };
+}
+
+function planManifestChunks(plan, opts) {
+  var secondsPer = opts && Number(opts.seconds) > 0 ? Number(opts.seconds) : 0;
+  var bytesCap = opts && Number(opts.bytes) > 0 ? Number(opts.bytes) : 0;
+  var segs = Array.isArray(plan && plan.segments) ? plan.segments : [];
+  var durs = Array.isArray(plan && plan.segmentDurations) ? plan.segmentDurations : null;
+  var starts = Array.isArray(plan && plan.segmentStarts) ? plan.segmentStarts : null;
+  var groups = [];
+  var cur = null;
+  var cursor = 0;
+  segs.forEach(function (u, i) {
+    var dur = durs && Number(durs[i]) > 0 ? Number(durs[i]) : 0;
+    var start = starts && isFinite(Number(starts[i])) ? Number(starts[i]) : (cur ? cursor : (groups.length ? cursor : 0));
+    if (!cur || (secondsPer && cur.dur > 0 && (cur.dur + dur > secondsPer))) {
+      cur = { parts: [], dur: 0, start: start };
+      groups.push(cur);
+    }
+    cur.parts.push({ url: String(u), start: start, dur: dur });
+    cur.dur += dur;
+    cursor = (starts && isFinite(Number(starts[i + 1]))) ? Number(starts[i + 1]) : cursor + dur;
+  });
+  // The MB cap cannot be planned exactly (segment bytes are only known
+  // after fetch), so it is enforced by the fetcher, which splits an
+  // oversize group into smaller blobs by whole segments.
+  void bytesCap;
+  return groups;
+}
+
+/* Fetch one group of segment URLs with ordered 4-way parallelism. */
+async function fetchSegmentGroup(parts, mimeRef) {
+  var out = new Array(parts.length);
+  var idx = 0;
+  async function worker() {
+    while (idx < parts.length) {
+      var i = idx++;
+      var url = parts[i].url;
+      var res = await fetch(url);
+      if (!res.ok) throw new Error('Audio segment fetch failed: HTTP ' + res.status + ' (' + url.slice(0, 120) + ')');
+      var buf = await res.arrayBuffer();
+      out[i] = buf;
+      if (!mimeRef.mime) { try { mimeRef.mime = res.headers.get('content-type') || ''; } catch (e) { /* ignore */ } }
+    }
+  }
+  var workers = [];
+  for (var w = 0; w < Math.min(4, parts.length); w++) workers.push(worker());
+  await Promise.all(workers);
+  return out;
+}
+
+async function fetchManifestAudio(msg, limitsOverride) {
   if (typeof GraphiteManifests === 'undefined' || !GraphiteManifests) {
     throw new Error('fetchManifestAudio: GraphiteManifests (lib/manifests.js) is not loaded');
   }
   var manifestUrl = String((msg && (msg.url || msg.manifestUrl)) || '');
   if (!/^https?:/i.test(manifestUrl)) throw new Error('fetchManifestAudio: an http(s) manifest URL is required');
+  var limits = limitsOverride || manifestChunkLimits(msg, null);
   var planOverride = (msg && msg.manifestAudio) || null; // { init, segments, mimeType } from the page
   var plan = null;
   if (planOverride && Array.isArray(planOverride.segments) && planOverride.segments.length) {
@@ -760,13 +863,13 @@ async function fetchManifestAudio(msg) {
         if (!mediaRes.ok) throw new Error('Audio playlist fetch failed: HTTP ' + mediaRes.status);
         var media = GraphiteManifests.parseHlsMedia(await mediaRes.text(), master.url);
         if (!media || !media.segments.length) throw new Error('The audio playlist has no segments.');
-        plan = { init: media.init, segments: media.segments, mimeType: '', lang: master.lang || '' };
+        plan = { init: media.init, segments: media.segments, segmentDurations: media.segmentDurations, segmentStarts: media.segmentStarts, mimeType: '', lang: master.lang || '' };
       } else {
         // The URL itself is the media playlist (muxed audio+video or
         // audio-only stream): its segments already carry the audio.
         var direct = GraphiteManifests.parseHlsMedia(firstText, manifestUrl);
         if (!direct || !direct.segments.length) throw new Error('No audio rendition found in the HLS manifest.');
-        plan = { init: direct.init, segments: direct.segments, mimeType: '', lang: '' };
+        plan = { init: direct.init, segments: direct.segments, segmentDurations: direct.segmentDurations, segmentStarts: direct.segmentStarts, mimeType: '', lang: '' };
       }
     } else if (GraphiteManifests.looksLikeDashUrl(manifestUrl, ct) || firstText.indexOf('<MPD') !== -1) {
       var dash = GraphiteManifests.parseDashAudio(firstText, manifestUrl);
@@ -776,27 +879,82 @@ async function fetchManifestAudio(msg) {
       throw new Error('That URL is not an HLS or DASH manifest.');
     }
   }
-  var urls = [];
-  if (plan.init) urls.push(String(plan.init));
-  (plan.segments || []).forEach(function (u) { if (u) urls.push(String(u)); });
-  if (!urls.length) throw new Error('The manifest audio rendition has no segments.');
-  var mime = String(plan.mimeType || '');
-  var parts = [];
-  var total = 0;
-  var capped = false;
-  for (var i = 0; i < urls.length; i++) {
-    var segRes = await fetch(urls[i]);
-    if (!segRes.ok) throw new Error('Audio segment fetch failed: HTTP ' + segRes.status + ' (' + urls[i].slice(0, 120) + ')');
-    var buf = await segRes.arrayBuffer();
-    total += buf.byteLength;
-    if (total > MANIFEST_MAX_BYTES) { capped = true; break; }
-    if (!mime) { try { mime = segRes.headers.get('content-type') || ''; } catch (e) { /* ignore */ } }
-    parts.push(buf);
+  var segs = (plan.segments || []).filter(Boolean).map(String);
+  if (!segs.length) throw new Error('The manifest audio rendition has no segments.');
+  var groups = planManifestChunks(plan, limits);
+  if (!groups.length) groups = [{ parts: segs.map(function (u) { return { url: u, start: 0, dur: 0 }; }), dur: 0, start: 0 }];
+  // Without per-segment durations there is nothing to chunk by time; one
+  // group, but the fetcher still splits it on the provider's MB ceiling
+  // (whole segments; sub-chunk starts stay approximate in that case).
+  if (!groups.some(function (g) { return g.dur > 0; })) {
+    groups = [{ parts: segs.map(function (u) { return { url: u, start: 0, dur: 0 }; }), dur: 0, start: 0 }];
   }
-  if (!parts.length) throw new Error('No audio segments could be fetched from the manifest.');
-  if (!mime) mime = /\.aac($|[?#])/i.test(urls[urls.length - 1]) ? 'audio/aac' : (plan.init ? 'audio/mp4' : 'audio/aac');
-  var blob = new Blob(parts, { type: mime.split(';')[0].trim() || 'audio/mp4' });
-  return { blob: blob, mime: blob.type, bytes: total, segmentCount: parts.length, capped: capped, lang: plan.lang || '' };
+  var mimeRef = { mime: String(plan.mimeType || '') };
+  var chunks = [];
+  var totalBytes = 0;
+  var capped = false;
+  var initBuf = null;
+  if (plan.init) {
+    var initRes = await fetch(String(plan.init));
+    if (initRes.ok) {
+      initBuf = await initRes.arrayBuffer();
+      if (!mimeRef.mime) { try { mimeRef.mime = initRes.headers.get('content-type') || ''; } catch (e) { /* ignore */ } }
+    }
+  }
+  for (var g = 0; g < groups.length; g++) {
+    if (totalBytes > MANIFEST_MAX_BYTES) { capped = true; break; }
+    var group = groups[g];
+    var bufs = await fetchSegmentGroup(group.parts, mimeRef);
+    var groupBytes = 0;
+    bufs.forEach(function (b) { groupBytes += (b && b.byteLength) || 0; });
+    if (totalBytes + groupBytes > MANIFEST_MAX_BYTES) capped = true;
+    var budgetLeft = Math.max(0, MANIFEST_MAX_BYTES - totalBytes);
+    // Per-chunk ceiling = min(provider MB cap (if any), remaining safety
+    // budget). If a fetched group exceeds it, split by whole segments.
+    var ceiling = limits && limits.bytes > 0 ? Math.min(limits.bytes, budgetLeft || limits.bytes) : (budgetLeft || 0);
+    var cur = [];
+    var curBytes = 0;
+    var curStart = group.start || 0;
+    var curDur = 0;
+    function flush() {
+      if (!cur.length) return;
+      // init belongs only on the very first blob.
+      var withInit = (chunks.length === 0 && initBuf) ? [initBuf].concat(cur) : cur;
+      chunks.push({
+        blob: new Blob(withInit, { type: (mimeRef.mime || 'audio/mp4').split(';')[0].trim() || 'audio/mp4' }),
+        // Byte-split sub-blobs of one time-group carry their OWN media
+        // window (first segment's start, summed durations), not the
+        // whole group's — otherwise the transcribe join would stamp
+        // every sub-chunk's segments at the group start.
+        start: curStart,
+        dur: curDur,
+        segCount: cur.length
+      });
+      cur = []; curBytes = 0; curDur = 0;
+    }
+    for (var bidx = 0; bidx < bufs.length; bidx++) {
+      var bb = bufs[bidx];
+      if (!bb) continue;
+      totalBytes += bb.byteLength;
+      // A single segment larger than the ceiling cannot be split further
+      // (init+segment must stay byte-contiguous), so it goes alone.
+      if (ceiling > 0 && curBytes > 0 && curBytes + bb.byteLength > ceiling) flush();
+      if (!cur.length) {
+        var partMeta = group.parts[bidx] || {};
+        curStart = Number(partMeta.start) || 0;
+      }
+      cur.push(bb);
+      curBytes += bb.byteLength;
+      curDur += Number((group.parts[bidx] || {}).dur) || 0;
+    }
+    flush();
+    if (totalBytes > MANIFEST_MAX_BYTES) { capped = true; break; }
+  }
+  if (!chunks.length) throw new Error('No audio segments could be fetched from the manifest.');
+  if (!mimeRef.mime) mimeRef.mime = /\.aac($|[?#])/i.test(segs[segs.length - 1]) ? 'audio/aac' : (plan.init ? 'audio/mp4' : 'audio/aac');
+  var segmentCount = chunks.reduce(function (n, c) { return n + (c.segCount || 0); }, 0);
+  var blob = chunks[0].blob;
+  return { blob: blob, mime: blob.type, bytes: totalBytes, segmentCount: segmentCount, capped: capped, lang: plan.lang || '', chunks: chunks };
 }
 
 function resolveTabIdForMessage(tabId, label) {
@@ -905,10 +1063,50 @@ function handleMessage(msg) {
         var filename = msg.filename || msg.name || 'audio.webm';
         var srcUrl = msg.dataUrl || msg.audioDataUrl;
         if (msg.manifestUrl || msg.manifestAudio) {
-          var fetched = await fetchManifestAudio(msg);
+          var mLimits = manifestChunkLimits(msg, p);
+          var fetched = await fetchManifestAudio(msg, mLimits);
           blob = fetched.blob;
           var extByMime = { 'audio/mp4': '.mp4', 'audio/aac': '.aac', 'audio/mpeg': '.mp3', 'audio/ogg': '.ogg', 'audio/webm': '.webm', 'audio/wav': '.wav' };
           filename = 'manifest-audio' + (extByMime[blob.type] || '.mp4');
+          var transcribeOpts2 = {};
+          if (msg.transcriptionModel) transcribeOpts2.model = msg.transcriptionModel;
+          if (msg.language) transcribeOpts2.language = msg.language;
+          if (typeof msg.segmentSeconds === 'number' && msg.segmentSeconds > 0) transcribeOpts2.segmentSeconds = msg.segmentSeconds;
+          if (fetched.chunks && fetched.chunks.length > 1) {
+            // Long stream: one /audio/transcriptions request per chunk,
+            // re-offsetting each chunk's segments by chunk.start so the
+            // transcript keeps true timestamps.
+            var segsAll = [];
+            var textsAll = [];
+            var haveSegs = true;
+            for (var ci = 0; ci < fetched.chunks.length; ci++) {
+              var ch = fetched.chunks[ci];
+              var cr = await GraphiteProviders.transcribe(p, ch.blob, filename, transcribeOpts2);
+              var csegs = cr && Array.isArray(cr.segments) ? cr.segments : null;
+              if (csegs && csegs.length) {
+                csegs.forEach(function (s) {
+                  if (!s || typeof s.text !== 'string' || !s.text.trim()) return;
+                  var st = Number(s.start);
+                  var en = Number(s.end);
+                  segsAll.push({
+                    start: (ch.start || 0) + (isFinite(st) ? st : 0),
+                    dur: isFinite(en) && isFinite(st) ? Math.max(0, en - st) : Math.max(0, Number(s.dur) || 0),
+                    text: s.text
+                  });
+                });
+                textsAll.push((cr && cr.text) || csegs.map(function (s) { return s.text; }).join(' '));
+              } else {
+                haveSegs = false;
+                if (cr && cr.text) textsAll.push(cr.text);
+              }
+            }
+            var joinedText = haveSegs && segsAll.length
+              ? GraphiteCaptions.segmentsToText(segsAll, true)
+              : textsAll.join('\n');
+            return { text: joinedText, segments: haveSegs ? segsAll : null, capped: fetched.capped };
+          }
+          var mr = await GraphiteProviders.transcribe(p, blob, filename, transcribeOpts2);
+          return Object.assign({}, mr, { capped: fetched.capped });
         } else if (msg.audioBase64) {
           var bin = atob(msg.audioBase64);
           var arr = new Uint8Array(bin.length);
@@ -932,6 +1130,20 @@ function handleMessage(msg) {
       // show what will be sent. The actual bytes move in 'transcribe'.
       return fetchManifestAudio(msg).then(function (r) {
         return { ok: true, mime: r.mime, bytes: r.bytes, segmentCount: r.segmentCount, capped: r.capped, lang: r.lang };
+      });
+    }
+    case 'getManifestCandidates': {
+      // webRequest-remembered manifest URLs for the sidebar's page tab
+      // (most recent first). The in-page watch store covers most cases;
+      // this covers tabs where it was not injected or already rotated
+      // out. The sidebar cannot use tabs.onActivated here, so resolve the
+      // active tab when no explicit tabId is given.
+      if (msg && msg.tabId != null) {
+        return Promise.resolve((manifestCandidatesByTab.get(msg.tabId) || []).slice());
+      }
+      return queryActiveTab().then(function (tabs) {
+        var id = tabs && tabs[0] && tabs[0].id;
+        return id != null ? (manifestCandidatesByTab.get(id) || []).slice() : [];
       });
     }
     case 'generateImage': {

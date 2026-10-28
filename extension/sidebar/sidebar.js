@@ -17,9 +17,12 @@
     handSteps: [], handStop: false,
     handLogEntries: [], handRun: null, handRunSaved: false, handSummaryRecord: null,
     researchRaw: '', researchSources: [], researchId: null,
-    videos: [], videoSelected: -1, videoBusy: false, videoResultRaw: ''
+    videos: [], videoSelected: -1, videoBusy: false, videoResultRaw: '',
+    videoSummaryLang: '', videoSummaryProviderId: '', videoSummaryModel: ''
   };
   var TOOL_FAVORITES_KEY = 'graphiteSider.toolFavorites.v1';
+  var VIDEO_SUMMARY_PREFS_KEY = 'graphiteSider.videoSummaryPrefs.v1';
+  var VIDEO_FOLLOW_CHAT = '__follow__';
 
   function esc(s) { return window.GraphiteMarkdown ? GraphiteMarkdown.escapeHtml(s) : String(s).replace(/[&<>"]/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]; }); }
   function setGeneratedHtml(el, html) {
@@ -135,6 +138,7 @@
       state.activeModel = state.settings.activeModel || state.settings.model || '';
       renderProviderSelects();
       renderGroupModels();
+      renderVideoSummaryControls();
       var configured = state.providers.some(function (p) { return p.hasKey; }) || !!state.settings.apiKey;
       $('noProviderBanner').classList.toggle('hidden', configured || !state.providers.length && configured);
       if (!state.providers.length) $('noProviderBanner').classList.remove('hidden');
@@ -545,9 +549,19 @@
     return readAsDataURL(file).then(function (dataUrl) {
       if (!doTranscribe) { state.attachment = { kind: 'audio', name: file.name, dataUrl: dataUrl, mime: file.type }; showAttachment('<strong>Audio:</strong> ' + esc(file.name)); status('Audio attached'); return null; }
       status('Transcribing audio...');
-      return sendMessage({ type: 'transcribe', dataUrl: dataUrl, name: file.name, mime: file.type }).then(function (r) {
-        var text = typeof r === 'string' ? r : (r && (r.text || r.transcript)) || '';
-        if (!text) throw new Error((r && r.error) || 'Transcription unavailable - background returned no text');
+      var limits = videoChunkLimits();
+      var overCap = limits.mb > 0 && file.size > limits.mb * 1024 * 1024;
+      var send = overCap
+        ? chunkAudioBlob(file, limits).then(function (chunks) {
+            if (!chunks.length) throw new Error('No audio chunks could be prepared from this file.');
+            return transcribeAudioChunks(chunks, { index: 0 });
+          })
+        : sendMessage({ type: 'transcribe', dataUrl: dataUrl, name: file.name, mime: file.type }).then(function (r) {
+            var text = typeof r === 'string' ? r : (r && (r.text || r.transcript)) || '';
+            if (!text) throw new Error((r && r.error) || 'Transcription unavailable - background returned no text');
+            return text;
+          });
+      return send.then(function (text) {
         setContext(text, 'Audio transcript: ' + file.name);
         return text;
       }).catch(function (e) { status('Transcribe failed: ' + e.message); throw e; });
@@ -2247,6 +2261,86 @@
     }
     if (chosen) selEl.value = chosen.value;
   }
+  // Videos summary preferences (output language + optional pinned model).
+  // Persisted separately from settings (like tool favorites) so they
+  // survive provider/settings reloads; the model select is rebuilt by
+  // renderVideoSummaryControls() from allModelCombos() on every settings
+  // load. '__follow__' (or a pinned combo that no longer exists) resolves
+  // to the chat's active provider/model.
+  function loadVideoSummaryPrefs() {
+    return storageGet(VIDEO_SUMMARY_PREFS_KEY).then(function (o) {
+      var p = (o && o[VIDEO_SUMMARY_PREFS_KEY]) || {};
+      state.videoSummaryLang = String(p.lang || '');
+      state.videoSummaryProviderId = String(p.providerId || '');
+      state.videoSummaryModel = String(p.model || '');
+    }).catch(function () {}).then(function () { renderVideoSummaryControls(); });
+  }
+  function saveVideoSummaryPrefs() {
+    var payload = {};
+    payload[VIDEO_SUMMARY_PREFS_KEY] = {
+      lang: state.videoSummaryLang,
+      providerId: state.videoSummaryProviderId,
+      model: state.videoSummaryModel
+    };
+    return storageSet(payload).catch(function () {});
+  }
+  function renderVideoSummaryControls() {
+    var langSel = $('videoSummaryLangSel');
+    if (langSel) fillVideoLangSelect(langSel, state.videoSummaryLang || defaultTargetLang());
+    var sel = $('videoSummaryModelSel');
+    if (!sel) return;
+    sel.textContent = '';
+    var follow = document.createElement('option');
+    follow.value = VIDEO_FOLLOW_CHAT; follow.textContent = 'Follow chat model';
+    sel.appendChild(follow);
+    var wanted = '';
+    if (state.videoSummaryProviderId && state.videoSummaryModel) {
+      wanted = state.videoSummaryProviderId + '\n' + state.videoSummaryModel;
+    }
+    var chosen = follow;
+    allModelCombos().forEach(function (c, i) {
+      var opt = document.createElement('option');
+      opt.value = 'combo:' + i;
+      opt.dataset.providerId = c.providerId;
+      opt.dataset.model = c.model;
+      opt.textContent = c.label;
+      if (wanted && (c.providerId + '\n' + c.model) === wanted) chosen = opt;
+      sel.appendChild(opt);
+    });
+    sel.value = chosen.value;
+  }
+  // Resolve the Videos summary model selection: { providerId, model } or
+  // null to follow the chat's active provider/model.
+  function videoSummaryModelChoice() {
+    var sel = $('videoSummaryModelSel');
+    if (!sel || !sel.value || sel.value === VIDEO_FOLLOW_CHAT) return null;
+    var opt = sel.options[sel.selectedIndex];
+    if (!opt || !opt.dataset) return null;
+    var providerId = String(opt.dataset.providerId || '');
+    var model = String(opt.dataset.model || '');
+    if (!providerId || !model) return null;
+    return { providerId: providerId, model: model };
+  }
+  // Per-request transcription chunk limits (Options page, per provider)
+  // read from the RAW settings: normalizeProviders() strips these fields,
+  // so state.providers cannot be used. Defaults mirror lib/storage.js
+  // (120s / 25MB); 0 = that limit disabled.
+  function videoChunkLimits() {
+    var raw = (state.settings && Array.isArray(state.settings.providers)) ? state.settings.providers : [];
+    var p = null;
+    for (var i = 0; i < raw.length; i++) {
+      if (raw[i] && (raw[i].id || raw[i].name) === state.activeProviderId) { p = raw[i]; break; }
+    }
+    if (!p) p = raw[0] || {};
+    var sec = (p.transcriptionMaxChunkSeconds == null || p.transcriptionMaxChunkSeconds === '')
+      ? 120 : Number(p.transcriptionMaxChunkSeconds);
+    var mb = (p.transcriptionMaxChunkMB == null || p.transcriptionMaxChunkMB === '')
+      ? 25 : Number(p.transcriptionMaxChunkMB);
+    return {
+      seconds: isFinite(sec) && sec >= 0 ? sec : 120,
+      mb: isFinite(mb) && mb >= 0 ? mb : 25
+    };
+  }
   function videoScan() {
     var btn = $('videoScanBtn');
     if (btn) btn.disabled = true;
@@ -2331,6 +2425,7 @@
       metaEl.textContent = [video.kind === 'audio' ? 'Audio' : 'Video', dur, video.youTube ? 'YouTube' : ''].filter(Boolean).join(' · ');
     }
     fillVideoLangSelect($('videoLangSel'), defaultTargetLang());
+    renderVideoSummaryControls();
     $('videoTranscriptText').value = '';
     state.videoResultRaw = '';
     renderVideoResult('');
@@ -2382,9 +2477,11 @@
       var el = $(id); if (el) el.disabled = !!busy;
     });
   }
-  function videoRunModel(prompt) {
+  function videoRunModel(prompt, providerId, model) {
     if (!state.providers.length) throw new Error('No provider configured - open Settings');
-    return chatSyncFallback([{ role: 'user', content: prompt }], state.activeProviderId, state.activeModel, null).then(function (text) {
+    var pid = providerId || state.activeProviderId;
+    var mdl = model || (pid === state.activeProviderId ? state.activeModel : '');
+    return chatSyncFallback([{ role: 'user', content: prompt }], pid, mdl, null).then(function (text) {
       if (!text || text.indexOf('Error:') === 0) throw new Error((text || 'Model request failed').replace(/^Error:\s*/, ''));
       return text;
     });
@@ -2434,24 +2531,15 @@
     });
   }
   // Extracted-audio hand-off: the content script returns base64 MP3 chunks
-  // (WAV only as a last resort); we keep them only long enough to send
-  // them one by one to the background transcribe case, then drop the
-  // reference (plus a 10-minute safety timer) so large audio never
-  // lingers in sidebar memory.
-  var pendingAudio = null;
-  var pendingAudioTimer = null;
-  function clearPendingAudio() {
-    pendingAudio = null;
-    if (pendingAudioTimer) { clearTimeout(pendingAudioTimer); pendingAudioTimer = null; }
-  }
-  function holdPendingAudio(chunks) {
-    clearPendingAudio();
-    pendingAudio = chunks;
-    pendingAudioTimer = setTimeout(clearPendingAudio, 10 * 60 * 1000);
-    return chunks;
-  }
+  // (WAV only as a last resort), already sized to the provider's chunk
+  // limits. We send them one by one to the background transcribe case and
+  // re-offset each chunk's returned segments by chunk.start so the joined
+  // transcript keeps true timestamps. No chunk state is retained anywhere
+  // after this call (no audio is ever held for later reuse).
   function transcribeAudioChunks(chunks, video) {
+    var segments = [];
     var texts = [];
+    var haveSegments = true;
     var chain = Promise.resolve();
     (chunks || []).forEach(function (chunk, i) {
       chain = chain.then(function () {
@@ -2463,6 +2551,7 @@
         // into /audio/transcriptions; Options > Transcription model (or
         // whisper-1 fallback) is what reaches the provider.
         var chunkExt = chunk.format ? String(chunk.format) : String(chunk.mimeType || '').split('/')[1] || 'mp3';
+        var offset = Number(chunk.start) || 0;
         return sendMessage({
           type: 'transcribe',
           audioBase64: chunk.audioBase64,
@@ -2470,15 +2559,112 @@
           filename: 'page-video-' + (Number(video && video.index) || 0) + '-part' + (i + 1) + '.' + chunkExt,
           providerId: state.activeProviderId
         }).then(function (r) {
-          var text = (r && (r.text || r.transcript)) || '';
-          if (text) texts.push(text);
+          var chunkSegs = r && Array.isArray(r.segments) ? r.segments : null;
+          if (chunkSegs && chunkSegs.length) {
+            chunkSegs.forEach(function (s) {
+              if (!s || typeof s.text !== 'string' || !s.text.trim()) return;
+              var start = Number(s.start);
+              var end = Number(s.end);
+              segments.push({
+                start: offset + (isFinite(start) ? start : 0),
+                dur: isFinite(end) && isFinite(start) ? Math.max(0, end - start) : Math.max(0, Number(s.dur) || 0),
+                text: s.text
+              });
+            });
+            texts.push((r && (r.text || r.transcript)) || chunkSegs.map(function (s) { return s.text; }).join(' '));
+          } else {
+            // Provider gave text only: keep the text, drop timestamps for
+            // the whole transcript rather than timestamping later chunks.
+            haveSegments = false;
+            var text = (r && (r.text || r.transcript)) || '';
+            if (text) texts.push(text);
+          }
         });
       });
     });
     return chain.then(function () {
-      var joined = texts.join('\n').trim();
-      if (!joined) throw new Error('The transcription provider returned no text for the extracted audio.');
+      var joined = (haveSegments && segments.length)
+        ? transcriptFromSegments(segments)
+        : texts.join('\n').trim();
+      if (!String(joined || '').trim()) throw new Error('The transcription provider returned no text for the extracted audio.');
       return joined;
+    });
+  }
+  function blobToBase64Short(blob) {
+    return new Promise(function (resolve, reject) {
+      var reader = new FileReader();
+      reader.onload = function () {
+        var text = String(reader.result || '');
+        resolve(text.indexOf(',') >= 0 ? text.slice(text.indexOf(',') + 1) : text);
+      };
+      reader.onerror = function () { reject(new Error('Could not encode the audio chunk.')); };
+      reader.readAsDataURL(blob);
+    });
+  }
+  // Split a locally-held Blob (media file the sidebar fetched itself, or an
+  // uploaded file) into transcription-sized chunks: decode and convert to
+  // MP3 at the provider's limits in-page when possible; when the sidebar
+  // cannot decode the blob, fall back to byte-slices under both caps
+  // (approximate split — timestamps come from the provider per piece).
+  // Resolves [{ audioBase64, mimeType, format, start, dur }].
+  function chunkAudioBlob(blob, limits) {
+    var GA = window.GraphiteAudioExtract;
+    var AC = window.AudioContext || window.webkitAudioContext;
+    var decodedP = Promise.resolve(null);
+    if (GA && typeof GA.renderMp3BlobInChunks === 'function' && typeof AC === 'function' &&
+        typeof blob.arrayBuffer === 'function') {
+      decodedP = blob.arrayBuffer().then(function (buf) {
+        if (!buf || !buf.byteLength) return null;
+        var ctx = null;
+        try { ctx = new AC(); } catch (e) { return null; }
+        if (!ctx || typeof ctx.decodeAudioData !== 'function') return null;
+        // decodeAudioData detaches buf, so hand it a copy.
+        return Promise.resolve(ctx.decodeAudioData(buf.slice(0))).then(function (decoded) {
+          try { ctx.close(); } catch (e) { /* ignore */ }
+          if (!decoded || !decoded.duration) return null;
+          return GA.renderMp3BlobInChunks(decoded, { maxChunkSeconds: limits.seconds, maxChunkMB: limits.mb });
+        }).catch(function () {
+          try { ctx.close(); } catch (e) { /* ignore */ }
+          return null;
+        });
+      }).catch(function () { return null; });
+    }
+    return decodedP.then(function (chunks) {
+      if (chunks && chunks.length && chunks[0] && chunks[0].blob) {
+        var out = [];
+        var chain = Promise.resolve();
+        chunks.forEach(function (c) {
+          if (!c || !c.blob) return;
+          chain = chain.then(function () {
+            return blobToBase64Short(c.blob).then(function (b64) {
+              out.push({ audioBase64: b64, mimeType: 'audio/mpeg', format: 'mp3', start: c.start || 0, dur: c.dur || 0 });
+            });
+          });
+        });
+        return chain.then(function () { return out; });
+      }
+      // Byte-slices: one slice when the blob fits, otherwise maxBytes-sized
+      // pieces under both caps. (Decoders resync per slice; segments in
+      // this fallback carry approximate offsets.)
+      var maxBytes = Math.floor(900000 * 3 / 4) - 1024;
+      if (limits.mb > 0) maxBytes = Math.min(maxBytes, Math.floor(limits.mb * 1024 * 1024));
+      if (maxBytes < 1024) maxBytes = 1024;
+      var slices = [];
+      var byteChain = Promise.resolve();
+      for (var off = 0; off < Math.max(1, blob.size); off += maxBytes) {
+        (function (part) {
+          byteChain = byteChain.then(function () {
+            return blobToBase64Short(part).then(function (b64) {
+              slices.push({
+                audioBase64: b64, mimeType: blob.type || 'audio/webm',
+                format: String(blob.type || '').split('/')[1] || 'webm',
+                start: 0, dur: 0
+              });
+            });
+          });
+        })(blob.slice(off, Math.min(blob.size || 0, off + maxBytes), blob.type || ''));
+      }
+      return byteChain.then(function () { return slices; });
     });
   }
   function videoDirectUrlTranscript(video, srcOverride) {
@@ -2490,15 +2676,40 @@
       var src = String(media.url || '');
       if (!src) throw new Error('This player has no direct media URL.');
       if (/^blob:/i.test(src)) throw new Error('This player streams via a blob/MSE source that cannot be sent to the transcription provider.');
-      videoDetailStatus('Sending the media file to your provider for transcription. Long files can take a while...');
-      return sendMessage({
-        type: 'transcribe', dataUrl: src, audioDataUrl: src,
-        filename: 'page-video-' + (Number(video.index) || 0),
-        providerId: state.activeProviderId
-      }).then(function (r) {
-        var text = (r && (r.text || r.transcript)) || '';
-        if (!text) throw new Error('The transcription provider returned no text.');
-        return text;
+      var limits = videoChunkLimits();
+      // Small files under the MB cap keep the simple dataUrl path (the
+      // background fetches and uploads the URL itself); anything larger —
+      // or of unknown length — is fetched here, decoded and sent as MP3
+      // chunks so the provider's per-request seconds/MB limits are
+      // honoured. With the MB cap disabled there is nothing to decide
+      // locally, so dataUrl is used directly.
+      function sendDataUrl() {
+        videoDetailStatus('Sending the media file to your provider for transcription. Long files can take a while...');
+        return sendMessage({
+          type: 'transcribe', dataUrl: src, audioDataUrl: src,
+          filename: 'page-video-' + (Number(video.index) || 0),
+          providerId: state.activeProviderId
+        }).then(function (r) {
+          var text = (r && (r.text || r.transcript)) || '';
+          if (!text) throw new Error('The transcription provider returned no text.');
+          return text;
+        });
+      }
+      if (!(limits.mb > 0)) return sendDataUrl();
+      return fetch(src, { method: 'HEAD' }).then(function (r) {
+        return r && r.ok ? (Number(r.headers.get('content-length')) || 0) : 0;
+      }).catch(function () { return 0; }).then(function (len) {
+        if (len > 0 && len <= limits.mb * 1024 * 1024) return sendDataUrl();
+        videoDetailStatus('Fetching the media file to split it into transcription-sized chunks...');
+        return fetch(src).then(function (r) {
+          if (!r.ok) throw new Error('Media fetch failed: HTTP ' + r.status);
+          return r.blob();
+        }).then(function (blob) {
+          return chunkAudioBlob(blob, limits);
+        }).then(function (chunks) {
+          if (!chunks.length) throw new Error('No audio chunks could be prepared from the media file.');
+          return transcribeAudioChunks(chunks, video);
+        });
       });
     });
   }
@@ -2506,26 +2717,43 @@
     // Best route: the site's OWN separate audio rendition. Most HLS/DASH
     // players keep audio as compressed AAC/Opus segments in the manifest;
     // the background fetches and uploads those bytes directly — no
-    // in-page re-encode, no WAV, no base64 hop through the sidebar.
+    // in-page re-encode, no WAV, no base64 hop through the sidebar. The
+    // background may still have manifest URLs the page itself missed (its
+    // webRequest store remembers requests made before this scan), so those
+    // candidates are merged in too.
+    var limits = videoChunkLimits();
+    var bgCandidates = sendMessage({ type: 'getManifestCandidates' }).catch(function () { return []; });
     videoDetailStatus('Looking for a separate audio track in the stream manifest (HLS/DASH)...');
-    return sendTabCommand('video-manifest-audio', {
-      index: video.index, srcs: video.srcs || [], manifestUrls: video.manifestUrls || []
+    return bgCandidates.then(function (extra) {
+      var urls = video.manifestUrls || [];
+      if (Array.isArray(extra)) {
+        extra.forEach(function (u) { if (urls.indexOf(u) === -1) urls.unshift(u); });
+      }
+      return sendTabCommand('video-manifest-audio', {
+        index: video.index, srcs: video.srcs || [], manifestUrls: urls
+      });
     }).then(function (res) {
       if (!res || !res.ok) throw new Error((res && res.error) || 'No streaming manifest found for this player.');
       var plan = { manifestUrl: res.manifestUrl || '' };
       if (res.segments && res.segments.length) {
-        plan.manifestAudio = { init: res.init || null, segments: res.segments, mimeType: res.mimeType || '' };
+        plan.manifestAudio = {
+          init: res.init || null, segments: res.segments, mimeType: res.mimeType || '',
+          segmentDurations: res.segmentDurations || null, segmentStarts: res.segmentStarts || null
+        };
       }
       var via = res.kind === 'dash' ? 'DASH' : 'HLS';
-      videoDetailStatus('Found the ' + via + ' audio track' + (res.lang ? ' (' + res.lang + ')' : '') + '. Sending it to your provider for transcription...');
+      videoDetailStatus('Found the ' + via + ' audio track' + (res.lang ? ' (' + res.lang + ')' : '') + '. Sending it to your provider for transcription... (Sent in parts under your ' + (limits.seconds || '∞') + ' s / ' + (limits.mb || '∞') + ' MB chunk limits.)');
       return sendMessage({
         type: 'transcribe',
         manifestUrl: plan.manifestUrl,
         manifestAudio: plan.manifestAudio,
-        providerId: state.activeProviderId
+        providerId: state.activeProviderId,
+        transcriptionMaxChunkSeconds: limits.seconds,
+        transcriptionMaxChunkMB: limits.mb
       }).then(function (r) {
         var text = (r && (r.text || r.transcript)) || '';
         if (!text) throw new Error('The transcription provider returned no text for the manifest audio.');
+        if (r && r.capped) videoDetailStatus('Only the first part of this stream fit the safety byte cap (24 MB of segments fetched); the transcript covers that part.');
         return text;
       });
     });
@@ -2537,18 +2765,16 @@
     // direct media file URL. Only the page can observe blob:/MSE media.
     return videoManifestTranscript(video).catch(function (manifestErr) {
       videoDetailStatus('No manifest audio track (' + manifestErr.message + ') Extracting audio from the player in the page...');
-      return sendTabCommand('video-extract-audio', { index: video.index, srcs: video.srcs || [] }).then(function (res) {
+      var lim = videoChunkLimits();
+      return sendTabCommand('video-extract-audio', {
+        index: video.index, srcs: video.srcs || [],
+        captureRate: 2, maxChunkSeconds: lim.seconds, maxChunkMB: lim.mb
+      }).then(function (res) {
         if (res && res.ok && res.chunks && res.chunks.length) {
-          var chunks = holdPendingAudio(res.chunks);
+          var chunks = res.chunks;
           var fmt = String(res.format || 'mp3').toUpperCase();
-          videoDetailStatus('Extracted ' + chunks.length + ' ' + fmt + ' audio chunk' + (chunks.length === 1 ? '' : 's') + ' (' + (res.duration || '?') + 's' + (res.source === 'capture' ? ', captured from the player' : '') + '). Transcribing...');
-          return transcribeAudioChunks(chunks, video).then(function (text) {
-            clearPendingAudio();
-            return text;
-          }, function (err) {
-            clearPendingAudio();
-            throw err;
-          });
+          videoDetailStatus('Extracted ' + chunks.length + ' ' + fmt + ' audio chunk' + (chunks.length === 1 ? '' : 's') + ' (' + (res.duration || '?') + 's' + (res.source === 'capture' ? ', captured from the player at ' + (res.captureRate || 1) + 'x' : '') + '). Transcribing...');
+          return transcribeAudioChunks(chunks, video);
         }
         var extractError = (res && res.error) || 'Audio extraction was not possible on this player.';
         var directUrl = '';
@@ -2601,17 +2827,23 @@
     var video = selectedVideo();
     if (!video) { videoStatus('Select a video first.'); return; }
     if (state.videoBusy) return;
+    var langSel = $('videoSummaryLangSel');
+    var lang = (langSel && langSel.value) || state.videoSummaryLang || defaultTargetLang();
+    var choice = videoSummaryModelChoice();
     videoBusy(true);
     ensureVideoTranscript(video).then(function (transcript) {
       if (!transcript) throw new Error('No transcript yet — run Transcribe first.');
-      videoDetailStatus('Summarizing in the Videos tab...');
+      videoDetailStatus('Summarizing in ' + lang + '...');
       var prompt = (window.GraphiteYouTube && typeof GraphiteYouTube.buildYouTubeSummaryPrompt === 'function')
         ? GraphiteYouTube.buildYouTubeSummaryPrompt(truncate(transcript, 60000), video.label || document.title || 'Page video')
         : 'Summarize this video transcript. Use timestamps as given.\n\nTitle: ' + (video.label || '') + '\n\n' + truncate(transcript, 60000);
-      return videoRunModel(prompt);
+      // The transcript is often in a language the user does not speak:
+      // pin the summary's output language explicitly.
+      prompt += '\n\nWrite the entire summary in ' + lang + ', regardless of the transcript\'s original language.';
+      return videoRunModel(prompt, choice && choice.providerId, choice && choice.model);
     }).then(function (text) {
       renderVideoResult(text);
-      videoDetailStatus('Summary ready.');
+      videoDetailStatus('Summary ready (' + lang + ').');
     }).catch(function (e) { videoDetailStatus('Summary failed: ' + e.message); }).then(function () { videoBusy(false); });
   }
   function translateSelectedVideo() {
@@ -2796,6 +3028,13 @@
     if ($('handFinishBtn')) $('handFinishBtn').addEventListener('click', function () { finishHandRun(handOutcomeFor()); });
     if ($('handCopySummaryBtn')) $('handCopySummaryBtn').addEventListener('click', copyHandSummary);
     if ($('handDownloadSummaryBtn')) $('handDownloadSummaryBtn').addEventListener('click', downloadHandSummary);
+    if ($('videoSummaryLangSel')) $('videoSummaryLangSel').addEventListener('change', function () { state.videoSummaryLang = this.value; saveVideoSummaryPrefs(); });
+    if ($('videoSummaryModelSel')) $('videoSummaryModelSel').addEventListener('change', function () {
+      var choice = videoSummaryModelChoice();
+      state.videoSummaryProviderId = choice ? choice.providerId : '';
+      state.videoSummaryModel = choice ? choice.model : '';
+      saveVideoSummaryPrefs();
+    });
     if ($('videoScanBtn')) $('videoScanBtn').addEventListener('click', videoScan);
     if ($('videoTranscribeBtn')) $('videoTranscribeBtn').addEventListener('click', transcribeSelectedVideo);
     if ($('videoSummarizeBtn')) $('videoSummarizeBtn').addEventListener('click', summarizeSelectedVideo);
@@ -2860,6 +3099,7 @@
     var initMsgBox = $('messages'); initMsgBox.textContent = ''; initMsgBox.appendChild(emptyNoteEl('Attach a page, YouTube video, or file - or just ask.'));
     loadToolFavorites().then(function () { renderTools(); });
     renderTools();
+    loadVideoSummaryPrefs();
     loadSettings().then(function () { refreshPageChip(); checkPendingAction(); });
   }
   function openSettings() {

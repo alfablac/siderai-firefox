@@ -449,19 +449,37 @@
     // router-specific ids here (e.g. cx/transcribe).
     var model = String(opts.model || opts.transcriptionModel ||
       provider.transcriptionModel || 'whisper-1').trim() || 'whisper-1';
-    var form = new FormData();
-    form.append('file', blob, filename || 'audio.webm');
-    form.append('model', model);
-    form.append('response_format', 'json');
-    if (opts.language) form.append('language', String(opts.language));
     var headers = {};
     if (provider.apiKey) headers.Authorization = 'Bearer ' + provider.apiKey;
-    var res;
+    var url = trimSlash(provider.baseUrl) + '/audio/transcriptions';
+    // verbose_json yields Whisper-style segments ([{start, end, text}])
+    // which the callers re-offset by chunk start and join with true
+    // timestamps. Some gateways reject the format or answer text-only;
+    // both paths fall back to a plain 'json' request (a fresh FormData is
+    // required per attempt — a consumed body cannot be re-sent).
+    async function postTranscription(format) {
+      var form = new FormData();
+      form.append('file', blob, filename || 'audio.webm');
+      form.append('model', model);
+      form.append('response_format', format);
+      if (opts.language) form.append('language', String(opts.language));
+      var r;
+      try {
+        r = await fetch(url, { method: 'POST', headers: headers, body: form });
+      } catch (e) { throw networkError(e, provider); }
+      if (!r.ok) throw providerError(r.status, await readBody(r), provider);
+      return r.json();
+    }
+    var json = null;
     try {
-      res = await fetch(trimSlash(provider.baseUrl) + '/audio/transcriptions', { method: 'POST', headers: headers, body: form });
-    } catch (e) { throw networkError(e, provider); }
-    if (!res.ok) throw providerError(res.status, await readBody(res), provider);
-    var json = await res.json();
+      json = await postTranscription('verbose_json');
+      if (!json || (typeof json.text !== 'string' && typeof json.transcript !== 'string' &&
+          !(Array.isArray(json.segments) && json.segments.length) &&
+          !(Array.isArray(json) && json.length && json[0] && typeof json[0].text === 'string'))) {
+        json = null; // unusable shape — retry plain below
+      }
+    } catch (e) { json = null; }
+    if (!json) json = await postTranscription('json');
     var text = '';
     if (json && typeof json.text === 'string') text = json.text;
     else if (Array.isArray(json) && json.length && json[0] && typeof json[0].text === 'string') text = json[0].text;

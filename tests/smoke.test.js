@@ -649,12 +649,12 @@ check("background prompt path guarded and loads settings", () => {
   assert.ok(!/(^|[^\w.$])global\./.test(bg), "background.js must not use the bare global object");
 });
 
-check("manifest background order and release version 1.0.27", () => {
+check("manifest background order and release version 1.0.28", () => {
   assert.ok(manifest, "manifest required");
   const scripts = (manifest.background && manifest.background.scripts) || [];
   const iP = scripts.indexOf("lib/prompts.js"), iY = scripts.indexOf("lib/youtube.js"), iB = scripts.indexOf("background.js");
   assert.ok(iP >= 0 && iY >= 0 && iB > iP && iB > iY, "lib/prompts.js + lib/youtube.js load before background.js");
-  assert.strictEqual(manifest.version, "1.0.27", "release version");
+  assert.strictEqual(manifest.version, "1.0.28", "release version");
 });
 
 /* ---------- 1.0.6 bug: transcript truncated at 22:52 of a 44:59 video -----
@@ -1517,7 +1517,7 @@ Promise.all([Promise.resolve(sseDone), Promise.resolve(imageDone), Promise.resol
    fallback, widened liveness, touch selection, helper payloads. */
 check("1.0.21: version, model-select wiring, detach transport, mobile surfaces", () => {
   assert.ok(manifest, "manifest required");
-  assert.strictEqual(manifest.version, "1.0.27", "release version");
+  assert.strictEqual(manifest.version, "1.0.28", "release version");
   assert.ok(manifest.browser_specific_settings.gecko_android, "gecko_android block present");
   // Shared picker loads before both helpers.
   const ytEntry = (manifest.content_scripts || []).find((cs) => (cs.js || []).includes("content/youtube.js"));
@@ -1613,7 +1613,7 @@ check("1.0.19: icons built as same-document SVG nodes (no DOMParser import)", ()
    static 9px text; now icons-only everywhere, name via long-press. */
 check("1.0.23: panel placement ladder + long-press toolbar labels", () => {
   assert.ok(manifest, "manifest required");
-  assert.strictEqual(manifest.version, "1.0.27", "release version 1.0.27");
+  assert.strictEqual(manifest.version, "1.0.28", "release version 1.0.28");
   const yt = fs.readFileSync(path.join(EXT, "content/youtube.js"), "utf8");
   // Ladder exists, tried sequentially in priority order.
   const ladder = yt.slice(yt.indexOf("const PANEL_PLACEMENTS"), yt.indexOf("function bestPanelPlacement"));
@@ -1907,8 +1907,8 @@ check("1.0.27 blob/MSE extraction + per-provider transcription model", () => {
   assert.ok(side.includes("'video-manifest-audio'"), "sidebar asks the page for the manifest audio rendition first");
   assert.ok(side.includes("videoManifestTranscript"), "sidebar tries manifest audio before extraction");
   assert.ok(side.includes("transcribeAudioChunks"), "sidebar transcribes chunk by chunk");
-  assert.ok(side.includes("holdPendingAudio") && side.includes("clearPendingAudio"), "sidebar holds/releases extracted chunks");
-  assert.ok(side.includes("10 * 60 * 1000"), "pending audio auto-clears after 10 minutes");
+  assert.ok(!side.includes("holdPendingAudio") && !side.includes("clearPendingAudio") && !side.includes("pendingAudio"),
+    "1.0.28: dead pending-audio hold state removed (chunks are never retained)");
   const audioFlow = side.slice(side.indexOf("function videoAudioTranscript"), side.indexOf("function transcribeSelectedVideo"));
   assert.ok(!audioFlow.includes("model: state.activeModel"), "chat model never sent on the transcribe path");
   const extractIdx = side.indexOf("function videoAudioTranscript");
@@ -1944,4 +1944,92 @@ check("1.0.27 blob/MSE extraction + per-provider transcription model", () => {
   const html = fs.readFileSync(path.join(EXT, "sidebar/sidebar.html"), "utf8");
   assert.ok(html.includes("../lib/audio-extract.js"), "sidebar loads the extract lib");
   assert.ok(html.includes("../lib/manifests.js"), "sidebar loads the manifests lib");
+});
+
+/* ---------- 1.0.28: manifest recovery, accelerated capture, chunk limits,
+   summary language/model controls -----------------------------------------
+   Pins: document_start watcher + buffered store, non-blocking webRequest
+   fallback (never webRequestBlocking), background getManifestCandidates,
+   provider transcription chunk caps, verbose_json timestamps, 2x capture,
+   per-video summary language + model selectors. */
+check("1.0.28 manifest recovery + chunking + summary controls", () => {
+  assert.ok(manifest, "manifest required");
+  assert.strictEqual(manifest.version, "1.0.28", "release version");
+
+  // Watcher: registered at document_start in its OWN entry, before the
+  // document_end content entry; webRequest present, blocking variant absent.
+  const cs = manifest.content_scripts || [];
+  const watchEntry = cs.find((e) => (e.js || []).includes("content/manifest-watch.js"));
+  assert.ok(watchEntry, "manifest registers content/manifest-watch.js");
+  assert.strictEqual(watchEntry.run_at, "document_start", "watcher runs at document_start");
+  assert.ok((watchEntry.matches || []).includes("<all_urls>"), "watcher matches all pages");
+  const mainEntry = cs.find((e) => (e.js || []).includes("content/content.js"));
+  assert.ok(mainEntry && mainEntry.run_at === "document_end", "main content script keeps document_end");
+  assert.ok(cs.indexOf(watchEntry) < cs.indexOf(mainEntry), "watcher entry precedes the main content entry");
+  const perms = manifest.permissions || [];
+  assert.ok(perms.includes("webRequest"), "webRequest permission present");
+  assert.ok(!perms.includes("webRequestBlocking"), "webRequestBlocking must never be requested");
+
+  const watch = fs.readFileSync(path.join(EXT, "content/manifest-watch.js"), "utf8");
+  assert.ok(watch.includes("PerformanceObserver"), "watcher uses PerformanceObserver");
+  assert.ok(watch.includes("buffered: true"), "watcher observes buffered entries");
+  assert.ok(watch.includes("__graphiteManifestUrls"), "watcher keeps the page-level store");
+
+  const content = fs.readFileSync(path.join(EXT, "content/content.js"), "utf8");
+  assert.ok(content.includes("__graphiteManifestUrls"), "collectManifestUrls merges the watch store");
+
+  const bg = fs.readFileSync(path.join(EXT, "background.js"), "utf8");
+  assert.ok(bg.includes("manifestCandidatesByTab"), "background keeps the per-tab webRequest store");
+  assert.ok(bg.includes("webRequest.onCompleted"), "background listens with onCompleted (non-blocking)");
+  assert.ok(!bg.includes("webRequestBlocking"), "background never blocks requests");
+  assert.ok(bg.includes("case 'getManifestCandidates':"), "background exposes getManifestCandidates");
+  const sliceStart = bg.indexOf("case 'buildYouTubePrompt':");
+  const sliceEnd = bg.indexOf("case 'getActiveTab':");
+  assert.ok(sliceStart > -1 && sliceEnd > sliceStart, "pinned slice anchors present");
+  assert.ok(!bg.slice(sliceStart, sliceEnd).includes("case 'getManifestCandidates':"),
+    "getManifestCandidates stays outside the pinned slice");
+  assert.ok(bg.includes("planManifestChunks"), "background chunks manifest audio by segment durations");
+  assert.ok(bg.includes("transcriptionMaxChunkSeconds"), "background honours the chunk-seconds cap");
+
+  // Chunk limits: storage normalize + options inputs + provider propagation.
+  const storage = fs.readFileSync(path.join(EXT, "lib/storage.js"), "utf8");
+  assert.ok(storage.includes("transcriptionChunkSeconds"), "storage normalises transcriptionChunkSeconds");
+  assert.ok(storage.includes("transcriptionChunkMB"), "storage normalises transcriptionChunkMB");
+  assert.ok(storage.includes("transcriptionMaxChunkSeconds: transcriptionChunkSeconds(p)"), "storage keeps the chunk-seconds field");
+  assert.ok(storage.includes("transcriptionMaxChunkMB: transcriptionChunkMB(p)"), "storage keeps the chunk-MB field");
+  const options = fs.readFileSync(path.join(EXT, "options/options.js"), "utf8");
+  assert.ok(options.includes('data-field="transcriptionMaxChunkSeconds"'), "options renders the chunk-seconds input");
+  assert.ok(options.includes('data-field="transcriptionMaxChunkMB"'), "options renders the chunk-MB input");
+
+  // verbose_json first so segments carry real timestamps for re-offsetting.
+  const prov = fs.readFileSync(path.join(EXT, "lib/providers.js"), "utf8");
+  assert.ok(prov.includes("verbose_json"), "transcribe requests verbose_json");
+  assert.ok(prov.includes("postTranscription('json')"), "transcribe falls back to plain json");
+
+  // Accelerated capture: sidebar asks for 2x, content honours captureRate
+  // and stops the capture tracks afterwards (no leaked media streams).
+  const side = fs.readFileSync(path.join(EXT, "sidebar/sidebar.js"), "utf8");
+  assert.ok(side.includes("captureRate: 2"), "sidebar requests 2x accelerated capture");
+  assert.ok(content.includes("captureRate"), "content honours captureRate");
+  assert.ok(content.includes("preservesPitch"), "capture keeps pitch intelligible at speed");
+  assert.ok(content.includes("getTracks()"), "capture stops its tracks on exit");
+  assert.ok(side.includes("transcriptionMaxChunkSeconds: limits.seconds"), "sidebar sends chunk limits to the background");
+  assert.ok(side.includes("getManifestCandidates"), "sidebar merges background manifest candidates");
+
+  // Summary controls: language + model selects beside Translate-to, the
+  // explicit output-language instruction, and a pinned model override.
+  const html = fs.readFileSync(path.join(EXT, "sidebar/sidebar.html"), "utf8");
+  assert.ok(html.includes('id="videoSummaryLangSel"'), "sidebar.html has the Summarize-in select");
+  assert.ok(html.includes('id="videoSummaryModelSel"'), "sidebar.html has the Summary model select");
+  assert.ok(html.indexOf('id="videoSummaryLangSel"') > html.indexOf('id="videoLangSel"'),
+    "summary controls sit after the translate language select");
+  assert.ok(side.includes("Write the entire summary in"), "summary prompt pins the output language");
+  assert.ok(side.includes("regardless of the transcript"), "summary prompt overrides the transcript language");
+  assert.ok(side.includes("videoSummaryModelChoice"), "sidebar resolves the pinned summary model");
+  assert.ok(side.includes("videoRunModel(prompt, choice"), "summary call passes the pinned provider/model");
+  const sum = side.slice(side.indexOf("function summarizeSelectedVideo"), side.indexOf("function translateSelectedVideo"));
+  assert.ok(sum.includes("videoSummaryLangSel"), "summarize reads the Summarize-in select");
+  const tr = side.slice(side.indexOf("function translateSelectedVideo"), side.indexOf("function downloadVideoResult"));
+  assert.ok(!tr.includes("videoSummaryLangSel"), "translate keeps its own language select");
+  assert.ok(!tr.includes("Write the entire summary in"), "translate prompt unchanged");
 });
