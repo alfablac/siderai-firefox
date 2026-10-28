@@ -185,11 +185,18 @@
     return Math.max(min, Math.min(max, value));
   }
 
+  // Viewport geometry: window.innerWidth/Height ignore the soft keyboard
+  // and browser chrome on mobile; visualViewport is the visible area.
+  // (The drag harness extracts clampRect's neighbours, so this helper must
+  // live inside the wireToolbarDrag..qs extraction span — see below.)
   function clampRect(left, top, width, height) {
     const margin = 8;
+    const vp = (typeof viewportSize === 'function')
+      ? viewportSize()
+      : { width: window.innerWidth, height: window.innerHeight, offsetLeft: 0, offsetTop: 0 };
     return {
-      left: clamp(left, margin, Math.max(margin, window.innerWidth - width - margin)),
-      top: clamp(top, margin, Math.max(margin, window.innerHeight - height - margin))
+      left: clamp(left, margin + vp.offsetLeft, Math.max(margin + vp.offsetLeft, vp.offsetLeft + vp.width - width - margin)),
+      top: clamp(top, margin + vp.offsetTop, Math.max(margin + vp.offsetTop, vp.offsetTop + vp.height - height - margin))
     };
   }
 
@@ -416,6 +423,17 @@
   // and the drag start also lives on window (capture) so shadow/page
   // propagation differences cannot swallow the press. `buttons === 0`
   // during a move is treated as a missed release. No setPointerCapture.
+  // Viewport geometry helper (inside the drag extraction span on purpose):
+  // window.innerWidth/Height ignore the soft keyboard and browser chrome
+  // on mobile; visualViewport is the actually-visible area.
+  function viewportSize() {
+    const vv = window.visualViewport;
+    if (vv && vv.width > 0 && vv.height > 0) {
+      return { width: vv.width, height: vv.height, offsetLeft: vv.offsetLeft || 0, offsetTop: vv.offsetTop || 0 };
+    }
+    return { width: window.innerWidth, height: window.innerHeight, offsetLeft: 0, offsetTop: 0 };
+  }
+
   function wireToolbarDrag(root) {
     const toolbar = root.querySelector('[data-gs="toolbar"]');
     if (!toolbar || toolbar.__gsDragWired) return;
@@ -734,7 +752,7 @@
       chip.textContent = t.label;
       chip.setAttribute('data-tone', t.id);
       chip.style.cssText = 'border-radius:999px;padding:4px 9px;font-size:11px;';
-      chip.addEventListener('mousedown', (event) => event.preventDefault());
+      chip.addEventListener('pointerdown', (event) => event.preventDefault());
       chip.addEventListener('click', () => {
         currentRewriteToneId = t.id;
         runRewriteWithTone(text, anchorRect, t.id);
@@ -844,7 +862,7 @@
       chip.className = 'gs-btn gs-lang-chip' + (lang === defaultLang ? ' gs-btn-primary' : '');
       chip.textContent = lang;
       chip.setAttribute('data-lang', lang);
-      chip.addEventListener('mousedown', (event) => event.preventDefault());
+      chip.addEventListener('pointerdown', (event) => event.preventDefault());
       chip.addEventListener('click', () => runTranslateWithLang(text, anchorRect, lang));
       chips.appendChild(chip);
     });
@@ -974,7 +992,7 @@
     // can swallow the toolbar-level drag start and, on some surfaces, the
     // activation itself. draggable=false kills image/element native drag.
     button.draggable = false;
-    button.addEventListener('mousedown', (event) => event.preventDefault());
+    button.addEventListener('pointerdown', (event) => event.preventDefault());
     return button;
   }
 
@@ -1088,7 +1106,7 @@
     };
     send.addEventListener('click', submit);
     input.addEventListener('keydown', (event) => {
-      if (event.key === 'Enter') submit();
+      if (event.key === 'Enter' && !event.isComposing) submit();
       event.stopPropagation();
     });
     setTimeout(() => { try { input.focus(); } catch (e) { /* ignore */ } }, 30);
@@ -1150,6 +1168,22 @@
 
   let activeField = null;
   let writeButtonTimer = null;
+  // Field selection snapshot taken when the write menu opens: on touch,
+  // focusing the menu target can collapse the field's selection before an
+  // action runs, so applyToField restores from this snapshot.
+  let fieldSelectionSnapshot = null;
+  function snapshotFieldSelection(el) {
+    fieldSelectionSnapshot = null;
+    if (!el) return;
+    if (typeof el.selectionStart === 'number') {
+      fieldSelectionSnapshot = { start: el.selectionStart, end: el.selectionEnd };
+    } else if (el.isContentEditable) {
+      const sel = window.getSelection();
+      if (sel && sel.rangeCount) {
+        try { fieldSelectionSnapshot = { range: sel.getRangeAt(0).cloneRange() }; } catch (e) { /* ignore */ }
+      }
+    }
+  }
 
   function isEditable(el) {
     if (!el || el.nodeType !== 1) return false;
@@ -1206,7 +1240,7 @@
 
   function wireWriteMenu(root) {
     const btn = root.querySelector('[data-gs="write-btn"]');
-    btn.addEventListener('mousedown', (event) => event.preventDefault());
+    btn.addEventListener('pointerdown', (event) => event.preventDefault());
     btn.addEventListener('click', (event) => {
       event.preventDefault();
       event.stopPropagation();
@@ -1234,6 +1268,7 @@
   }
 
   function showWriteMenu(el) {
+    snapshotFieldSelection(el);
     const menu = qs('[data-gs="write-menu"]');
     menu.replaceChildren();
     const actions = [
@@ -1247,7 +1282,7 @@
       item.type = 'button';
       item.className = 'gs-menu-item';
       item.textContent = label;
-      item.addEventListener('mousedown', (event) => event.preventDefault());
+      item.addEventListener('pointerdown', (event) => event.preventDefault());
       item.addEventListener('click', () => {
         hideWriteMenu();
         runWritingAction(action, label, el).catch(() => {});
@@ -1265,7 +1300,7 @@
     trigger.textContent = 'Rewrite as ▾';
     trigger.setAttribute('data-gs', 'rewrite-trigger');
     trigger.setAttribute('aria-expanded', 'false');
-    trigger.addEventListener('mousedown', (event) => event.preventDefault());
+    trigger.addEventListener('pointerdown', (event) => event.preventDefault());
     trigger.addEventListener('click', () => {
       const isHidden = submenu.classList.toggle('gs-hidden');
       trigger.textContent = isHidden ? 'Rewrite as ▾' : 'Rewrite as ▴';
@@ -1281,7 +1316,7 @@
       item.className = 'gs-menu-item' + (t.id === tone.id ? ' gs-menu-item-current' : '');
       item.textContent = (t.id === tone.id ? '✓ ' : '') + t.label;
       item.setAttribute('data-tone', t.id);
-      item.addEventListener('mousedown', (event) => event.preventDefault());
+      item.addEventListener('pointerdown', (event) => event.preventDefault());
       item.addEventListener('click', () => {
         currentRewriteToneId = t.id;
         hideWriteMenu();
@@ -1299,7 +1334,7 @@
     customBtn.type = 'button';
     customBtn.className = 'gs-btn gs-menu-custom-btn';
     customBtn.textContent = 'Go';
-    customBtn.addEventListener('mousedown', (event) => event.preventDefault());
+    customBtn.addEventListener('pointerdown', (event) => event.preventDefault());
     customBtn.addEventListener('click', () => {
       const custom = customInput.value.trim();
       if (!custom) return;
@@ -1307,7 +1342,7 @@
       hideWriteMenu();
       runWritingAction('rewrite', 'Rewrite: Custom', el, { toneId: 'custom', customTone: custom }).catch(() => {});
     });
-    customInput.addEventListener('keydown', (event) => { if (event.key === 'Enter') customBtn.click(); event.stopPropagation(); });
+    customInput.addEventListener('keydown', (event) => { if (event.key === 'Enter' && !event.isComposing) customBtn.click(); event.stopPropagation(); });
     customRow.appendChild(customInput);
     customRow.appendChild(customBtn);
     submenu.appendChild(customRow);
@@ -1411,7 +1446,7 @@
     if (isEditable(el)) {
       activeField = el;
       scheduleWriteButton(el);
-    } else if (activeField && !qs('[data-gs="write-menu"]').contains(document.activeElement)) {
+    } else if (activeField && focusWithinShadow()) {
       // keep button while focus is inside our shadow UI
     }
   }
@@ -1423,6 +1458,17 @@
         if (document.activeElement !== activeField) hideWriteButton();
       }, 150);
     }
+  }
+
+  // Focus retention for our own shadow UI: focus moving INTO the shadow
+  // host (write menu, ask input) must not hide the write button — the
+  // document-level activeElement is the host, not the inner control, so
+  // check the shadow tree's active element too.
+  function focusWithinShadow() {
+    try {
+      const host = document.getElementById('graphite-sider-root');
+      return !!(host && host.shadowRoot && host.shadowRoot.activeElement);
+    } catch (e) { return false; }
   }
 
   // ----------------------------------------------------- page extraction
@@ -1752,6 +1798,48 @@
   // ------------------------------------------------------------- listeners
 
   document.addEventListener('mouseup', onMouseUp, true);
+  // Touch selection on mobile never fires a useful mouseup/keyup pair:
+  // selectionchange (debounced) and pointerup (longer delay for touch, so
+  // selection handles can settle) drive the same show/hide decision.
+  let selectionChangeTimer = 0;
+  let lastPointerUpAt = 0;
+  function checkSelectionNow() {
+    if (settings.selectionToolbar === false) return;
+    if (toolbarDragActive || Date.now() < toolbarDragSuppressUntil) return;
+    const info = getSelectionInfo();
+    if (info) {
+      lastSelectionText = info.text;
+      lastSelectionRect = info.rect;
+      showToolbar(info.rect, info.text);
+    } else {
+      hideToolbar();
+    }
+  }
+  document.addEventListener('selectionchange', () => {
+    if (selectionChangeTimer) clearTimeout(selectionChangeTimer);
+    selectionChangeTimer = setTimeout(checkSelectionNow, 300);
+  }, true);
+  document.addEventListener('pointerup', (event) => {
+    if (event.target && event.target.closest && event.target.closest('#graphite-sider-root')) return;
+    lastPointerUpAt = Date.now();
+    if (event.pointerType === 'touch') setTimeout(checkSelectionNow, 300);
+    else if (event.pointerType === 'mouse') onMouseUp(event);
+  }, true);
+  // While the soft keyboard or browser chrome resizes, re-anchor the
+  // toolbar to the (possibly moved) selection instead of leaving it
+  // stranded off-screen.
+  if (window.visualViewport && window.visualViewport.addEventListener) {
+    let vvTimer = 0;
+    window.visualViewport.addEventListener('resize', () => {
+      if (vvTimer) clearTimeout(vvTimer);
+      vvTimer = setTimeout(() => {
+        const toolbar = qs('[data-gs="toolbar"]');
+        if (!toolbar || toolbar.classList.contains('gs-hidden')) return;
+        const info = getSelectionInfo();
+        if (info) { lastSelectionText = info.text; lastSelectionRect = info.rect; showToolbar(info.rect, info.text); }
+      }, 120);
+    });
+  }
   document.addEventListener('keyup', (event) => {
     if (event.key === 'Shift' || event.key.startsWith('Arrow')) onMouseUp(event);
   }, true);
@@ -1761,11 +1849,21 @@
     if (activeField && settings.writingAssistant !== false) scheduleWriteButton(activeField);
   }, true);
 
+  // Outside dismissal: only a real tap (down+up near the same point, not
+  // a selection-handle drag) hides the toolbar/menu; an instant
+  // pointerdown hide fought touch selection adjustment on mobile.
+  let downPoint = null;
   document.addEventListener('pointerdown', (event) => {
+    downPoint = { x: event.clientX || 0, y: event.clientY || 0 };
+  }, true);
+  document.addEventListener('pointerup', (event) => {
     const host = document.getElementById('graphite-sider-root');
     if (host && event.target === host) return; // clicks inside shadow are handled below
-    // Shadow content clicks do not reach the page document with a
-    // shadow target, so only hide for true outside clicks.
+    if (!downPoint) return;
+    const dx = Math.abs((event.clientX || 0) - downPoint.x);
+    const dy = Math.abs((event.clientY || 0) - downPoint.y);
+    downPoint = null;
+    if (dx > 10 || dy > 10) return; // drag / selection adjustment, not a tap
     if (!event.composedPath || !event.composedPath().includes(host)) {
       hideToolbar();
       hideWriteMenu();

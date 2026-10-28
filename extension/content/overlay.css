@@ -783,6 +783,102 @@
   align-self: flex-start;
 }
 
+/* ---------- shared provider/model picker (lib/model-select.js) ---------- */
+.gs-model-picker {
+  display: inline-flex;
+  gap: 6px;
+  align-items: center;
+  flex-wrap: wrap;
+  min-width: 0;
+}
+.gs-model-provider,
+.gs-model-model {
+  all: initial;
+  font-family: inherit;
+  font-size: 12px;
+  color: #e6e8eb;
+  background: #17191d;
+  border: 1px solid #33373f;
+  border-radius: 8px;
+  padding: 6px 8px;
+  line-height: 1.3;
+  cursor: pointer;
+  max-width: 150px;
+  min-width: 0;
+}
+.gs-model-provider:focus,
+.gs-model-model:focus {
+  border-color: #5ec8c0;
+  outline: none;
+}
+
+/* ---------- coarse pointers (touch): bigger targets, no hover traps ------
+   44px minimum tap targets, 16px input text (prevents iOS/Firefox focus
+   zoom), manipulation touch-action (no double-tap zoom delay). Toolbar
+   labels stay visible on tap/focus instead of hover-only. */
+@media (pointer: coarse) {
+  .gs-toolbar-btn,
+  .gs-toolbar-logo {
+    width: 44px;
+    height: 44px;
+    min-width: 44px;
+    min-height: 44px;
+  }
+  .gs-yt-btn,
+  .gs-btn,
+  .gs-menu-item,
+  .gs-lang-chip,
+  .gs-chip,
+  .gs-model-provider,
+  .gs-model-model,
+  button {
+    min-height: 44px;
+    touch-action: manipulation;
+  }
+  .gs-ask-input,
+  .gs-menu-custom-input,
+  .gs-lang-select,
+  .gs-lang-custom-input,
+  input,
+  textarea,
+  select {
+    font-size: 16px;
+    touch-action: manipulation;
+  }
+  .gs-toolbar-btn::after {
+    opacity: 1;
+    transform: translateX(-50%) translateY(0);
+    position: static;
+    transform: none;
+    padding: 0 2px;
+    background: transparent;
+    border: none;
+    box-shadow: none;
+    font-size: 9px;
+  }
+  /* Narrow screens: the search card stacks full-width above the results
+     instead of a squeezed right-column float. */
+  .gs-search-card--rail-fallback {
+    float: none;
+    width: auto;
+    flex: 1 1 auto;
+    order: 0;
+    margin: 0 0 16px 0;
+  }
+  .gs-yt-panel,
+  .gs-search-card {
+    max-width: 100%;
+  }
+  .gs-model-picker {
+    flex: 1 1 100%;
+  }
+  .gs-model-provider,
+  .gs-model-model {
+    flex: 1 1 auto;
+    max-width: none;
+  }
+}
+
 /* ---------- Translate language picker ---------- */
 
 .gs-lang-chips {

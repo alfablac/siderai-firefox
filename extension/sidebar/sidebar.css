@@ -119,3 +119,28 @@ th{background:var(--panel2)}
 .streaming-cursor::after{content:"▍";color:var(--accent);animation:blink 1s steps(1) infinite}
 @keyframes blink{50%{opacity:0}}
 ::-webkit-scrollbar{width:9px;height:9px}::-webkit-scrollbar-thumb{background:var(--panel2);border-radius:6px}::-webkit-scrollbar-track{background:transparent}
+/* Chat-as-tab on phones (Firefox for Android has no sidebar): full-width
+   surface, 44px tap targets, 16px inputs (no focus zoom). */
+@media (max-width: 640px){
+  .app-header{flex-direction:column;align-items:stretch}
+  .header-controls{flex-wrap:wrap}
+  .header-controls select,.header-controls .model-picker,.header-controls .icon-btn{min-height:44px}
+  .model-picker{max-width:none;flex:1 1 100%}
+  .model-button{min-height:44px;width:100%}
+  .model-button-label{max-width:none}
+  .model-menu{left:0;right:0;width:auto;max-height:60vh}
+  .model-item{min-height:44px;display:flex;align-items:center}
+  .tabs .tab{min-height:44px;flex:1}
+  .messages{padding:8px}
+  #composer{font-size:16px;min-height:64px}
+  .composer-actions .btn{min-height:44px;min-width:64px}
+  .chip-btn,.chip{min-height:36px}
+  .composer-wrap{padding-bottom:calc(8px + env(safe-area-inset-bottom,0px))}
+  .tool-grid{grid-template-columns:repeat(auto-fill,minmax(120px,1fr))}
+  .view{padding:8px}
+}
+@media (pointer: coarse){
+  button,select,input,textarea{touch-action:manipulation}
+  input,textarea{font-size:16px}
+  .icon-btn,.btn{min-height:44px}
+}

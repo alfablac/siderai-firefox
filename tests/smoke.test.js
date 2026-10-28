@@ -649,12 +649,12 @@ check("background prompt path guarded and loads settings", () => {
   assert.ok(!/(^|[^\w.$])global\./.test(bg), "background.js must not use the bare global object");
 });
 
-check("manifest background order and release version 1.0.20", () => {
+check("manifest background order and release version 1.0.21", () => {
   assert.ok(manifest, "manifest required");
   const scripts = (manifest.background && manifest.background.scripts) || [];
   const iP = scripts.indexOf("lib/prompts.js"), iY = scripts.indexOf("lib/youtube.js"), iB = scripts.indexOf("background.js");
   assert.ok(iP >= 0 && iY >= 0 && iB > iP && iB > iY, "lib/prompts.js + lib/youtube.js load before background.js");
-  assert.strictEqual(manifest.version, "1.0.20", "release version");
+  assert.strictEqual(manifest.version, "1.0.21", "release version");
 });
 
 /* ---------- 1.0.6 bug: transcript truncated at 22:52 of a 44:59 video -----
@@ -1474,6 +1474,81 @@ Promise.all([Promise.resolve(sseDone), Promise.resolve(imageDone), Promise.resol
   console.log(`\n${failures} failure(s), ${pending} pending (core not present yet)`);
   if (pending) console.warn("note: pending checks become hard failures under STRICT=1 once core files land");
   process.exit(failures ? 1 : 0);
+});
+
+/* ---------- 1.0.21: Firefox Android + slow-model connection + helper model
+   selectors ---------------------------------------------------------------
+   Pins: version, model-select load order + persistence path, background
+   detach-don't-abort with attach replay and job persistence, chat-tab
+   fallback, widened liveness, touch selection, helper payloads. */
+check("1.0.21: version, model-select wiring, detach transport, mobile surfaces", () => {
+  assert.ok(manifest, "manifest required");
+  assert.strictEqual(manifest.version, "1.0.21", "release version 1.0.21");
+  assert.ok(manifest.browser_specific_settings.gecko_android, "gecko_android block present");
+  // Shared picker loads before both helpers.
+  const ytEntry = (manifest.content_scripts || []).find((cs) => (cs.js || []).includes("content/youtube.js"));
+  const searchEntry = (manifest.content_scripts || []).find((cs) => (cs.js || []).includes("content/search.js"));
+  assert.ok(ytEntry && ytEntry.js.indexOf("lib/model-select.js") < ytEntry.js.indexOf("content/youtube.js"),
+    "model-select loads before youtube.js");
+  assert.ok(searchEntry && searchEntry.js.indexOf("lib/model-select.js") < searchEntry.js.indexOf("content/search.js"),
+    "model-select loads before search.js");
+  const ms = fs.readFileSync(path.join(EXT, "lib/model-select.js"), "utf8");
+  assert.ok(ms.includes("GraphiteModelSelect"), "picker exposes GraphiteModelSelect");
+  assert.ok(ms.includes("type: 'setActiveModel'"), "picker persists via background setActiveModel");
+  assert.ok(ms.includes("type: 'getSettings'"), "picker reads settings via background");
+  // Background: jobs, attach, detach-don't-abort, setActiveModel, chat tab.
+  const bg = fs.readFileSync(path.join(EXT, "background.js"), "utf8");
+  assert.ok(bg.includes("case 'setActiveModel':"), "background handles setActiveModel");
+  assert.ok(bg.includes("saveSettings"), "setActiveModel persists via saveSettings");
+  assert.ok(bg.includes("case 'getChatJob':"), "background handles getChatJob");
+  assert.ok(bg.includes("function attachChatJob"), "background replays jobs on attach");
+  assert.ok(bg.includes("type: 'snapshot'"), "attach replays a snapshot of text so far");
+  assert.ok(bg.includes("Detach-don't-abort"), "disconnect detaches instead of aborting");
+  assert.ok(bg.includes("ports.delete(port)"), "disconnect only removes the port from jobs");
+  assert.ok(bg.includes("saveChatJob"), "job results persist via GraphiteStorage");
+  assert.ok(bg.includes("openChatTab"), "chat-tab fallback exists");
+  assert.ok(bg.includes("sidebar/sidebar.html"), "chat tab hosts the sidebar page");
+  // Storage jobs API.
+  const GS = loadLibInSandbox("lib/storage.js").GraphiteStorage;
+  assert.ok(GS && typeof GS.saveChatJob === "function" && typeof GS.getChatJob === "function" &&
+    typeof GS.pruneChatJobs === "function", "storage exposes the chat-jobs API");
+  // YouTube: attach reconnect, picker mount + payload, wider liveness.
+  const yt = fs.readFileSync(path.join(EXT, "content/youtube.js"), "utf8");
+  const stream = yt.slice(yt.indexOf("function runSummaryStream"), yt.indexOf("  // Every panel chat path"));
+  assert.ok(stream.includes("type: 'attach'"), "youtube re-attaches after a drop");
+  assert.ok(stream.includes("providerId: sel") && stream.includes("model: sel"), "youtube sends picker selection");
+  assert.ok(yt.includes("GraphiteModelSelect.createPicker"), "youtube mounts the picker");
+  assert.ok(yt.includes("SUMMARY_BACKGROUND_TIMEOUT_MS = 90000"), "youtube liveness widened to 90s");
+  assert.ok(yt.includes("pageshow") && yt.includes("visibilitychange"), "resume hooks re-arm liveness");
+  assert.ok(yt.includes("ytModelPicker"), "youtube tracks the picker instance");
+  assert.ok(yt.includes("'openChat'") && yt.includes("Open chat"), "youtube panel offers Open chat");
+  // Search: picker mount + payload.
+  const search = fs.readFileSync(path.join(EXT, "content/search.js"), "utf8");
+  assert.ok(search.includes("GraphiteModelSelect.createPicker"), "search mounts the picker");
+  assert.ok(search.includes("providerId: sel") && search.includes("model: sel"), "search sends picker selection");
+  assert.ok(search.includes("gs-search-open-chat"), "search card offers Open chat");
+  // Sidebar: persistence, coarse composer, chat-tab origin tracking.
+  const side = fs.readFileSync(path.join(EXT, "sidebar/sidebar.js"), "utf8");
+  assert.ok(side.includes("setActiveModel"), "sidebar persists picker choices");
+  assert.ok(side.includes("(pointer: coarse)"), "sidebar composer is coarse-pointer aware");
+  assert.ok(side.includes("isComposing"), "sidebar composer guards IME composition");
+  assert.ok(side.includes("originatingTab"), "sidebar tracks the originating tab");
+  // Content: touch selection + inputs.
+  const content = fs.readFileSync(path.join(EXT, "content/content.js"), "utf8");
+  assert.ok(content.includes("selectionchange"), "touch selection observed via selectionchange");
+  assert.ok(content.includes("pointerType === 'touch'"), "touch pointerup handled separately");
+  assert.ok(content.includes("visualViewport"), "positions use visualViewport");
+  assert.ok(content.includes("addEventListener('pointerdown', (event) => event.preventDefault())"),
+    "focus preservation uses pointerdown (touch-safe)");
+  assert.ok(content.includes("snapshotFieldSelection"), "field selection snapshot for touch apply");
+  assert.ok(content.includes("isComposing"), "Enter submits guard IME composition");
+  // CSS: coarse-pointer targets + narrow search card + chat-tab layout.
+  const css = fs.readFileSync(path.join(EXT, "content/overlay.css"), "utf8");
+  assert.ok(css.includes("@media (pointer: coarse)"), "coarse-pointer block in overlay.css");
+  assert.ok(css.includes(".gs-model-picker"), "picker styles present");
+  assert.ok(css.includes(".gs-search-card--rail-fallback"), "narrow search card stacking present");
+  const sideCss = fs.readFileSync(path.join(EXT, "sidebar/sidebar.css"), "utf8");
+  assert.ok(sideCss.includes("@media (max-width: 640px)"), "chat-tab mobile layout in sidebar.css");
 });
 
 /* ---------- 1.0.19: toolbar/write icons blank after the innerHTML removal --

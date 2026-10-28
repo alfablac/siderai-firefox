@@ -250,6 +250,9 @@
     renderModelSelect();
     closeModelPicker();
     var btn = $('modelButton'); if (btn) btn.focus();
+    // Persist like the Options page does, so the YouTube/Search helpers
+    // (and the next session) see the same active model.
+    sendMessage({ type: 'setActiveModel', providerId: state.activeProviderId, model: m }).catch(function () {});
   }
   function renderGroupModels() {
     var box = $('groupModels'); box.textContent = '';
@@ -288,12 +291,37 @@
   }
 
   /* ---------------- current tab / context ---------------- */
+  // When this page runs as a chat TAB (Firefox for Android fallback), the
+  // "active tab" is this chat page itself; track the tab the user came
+  // from instead (stored by the background's openChatTab flow / pending
+  // action tabId, or the most recent non-extension active tab).
+  function isChatSurfaceTab(tab) {
+    return !!(tab && tab.url && tab.url.indexOf(api.runtime.getURL('sidebar/sidebar.html')) === 0);
+  }
+  function originatingTab() {
+    try {
+      var saved = sessionStorage.getItem('graphiteSider.originTabId');
+      if (saved) return api.tabs.get(Number(saved)).catch(function () { return null; });
+    } catch (e) { /* fall through */ }
+    return Promise.resolve(null);
+  }
+  function rememberOriginTab(tab) {
+    if (!tab || tab.id == null || isChatSurfaceTab(tab)) return;
+    try { sessionStorage.setItem('graphiteSider.originTabId', String(tab.id)); } catch (e) { /* ignore */ }
+    state.currentTab = tab;
+  }
   function getActiveTab() {
     return sendMessage({ type: 'getActiveTab' }).then(function (r) {
       if (r && (r.url || r.title)) return r;
       throw new Error('empty');
     }).catch(function () {
       return api.tabs.query({ active: true, currentWindow: true }).then(function (tabs) { return tabs[0] || null; });
+    }).then(function (tab) {
+      if (isChatSurfaceTab(tab)) {
+        return originatingTab().then(function (origin) { return origin || tab; });
+      }
+      rememberOriginTab(tab);
+      return tab;
     });
   }
   function isYouTube(url) { return /(?:youtube\.com\/(?:watch|shorts|live)|youtu\.be\/)/.test(url || ''); }
@@ -604,7 +632,10 @@
     $('sendBtn').classList.toggle('hidden', on);
     $('stopBtn').classList.toggle('hidden', !on);
   }
-  var STREAM_BACKGROUND_TIMEOUT_MS = 45000; // no port message at all
+  function newRequestId() {
+    return 'chat-' + Date.now() + '-' + Math.floor(Math.random() * 1e6);
+  }
+  var STREAM_BACKGROUND_TIMEOUT_MS = 90000; // no port message at all (STREAM_BACKGROUND_TIMEOUT_MS = 45000 was the pre-mobile value; widened for Android freezes)
   var STREAM_PROVIDER_IDLE_TIMEOUT_MS = 120000; // no provider activity
   function streamChat(apiMessages, providerId, model, targetEl, onDone) {
     return new Promise(function (resolve) {
@@ -683,7 +714,7 @@
         if (text) finish(null); else finish(state.stopRequested ? null : err);
         if (!text && state.stopRequested) { text = text || ''; onDone(text); resolve(text); }
       });
-      try { port.postMessage({ type: 'start', messages: apiMessages, providerId: providerId, model: model }); }
+      try { port.postMessage({ type: 'start', requestId: newRequestId(), messages: apiMessages, providerId: providerId, model: model }); }
       catch (e) { finish(e.message); }
     });
   }
@@ -1337,7 +1368,7 @@
     $('settingsBtn').addEventListener('click', openSettings);
     $('bannerSettingsBtn').addEventListener('click', openSettings);
     $('newChatBtn').addEventListener('click', newChat);
-    $('providerSelect').addEventListener('change', function () { closeModelPicker(); state.activeProviderId = this.value; var np = state.providers.find(function (x) { return x.id === state.activeProviderId; }); state.activeModel = np && np.model ? np.model : ''; renderModelSelect(); renderGroupModels(); });
+    $('providerSelect').addEventListener('change', function () { closeModelPicker(); state.activeProviderId = this.value; var np = state.providers.find(function (x) { return x.id === state.activeProviderId; }); state.activeModel = np && np.model ? np.model : ''; renderModelSelect(); renderGroupModels(); sendMessage({ type: 'setActiveModel', providerId: state.activeProviderId, model: state.activeModel }).catch(function () {}); });
     if ($('modelButton')) $('modelButton').addEventListener('click', function () { toggleModelPicker(); });
     if ($('modelSearch')) {
       $('modelSearch').addEventListener('input', function () { renderModelList(); });
@@ -1366,7 +1397,14 @@
       }
       if (!pop.classList.contains('hidden') && e.key === 'Enter' && pop._hits && pop._hits[state.slashIndex]) { e.preventDefault(); pickSlash(pop._hits[state.slashIndex]); return; }
       if (e.key === 'Escape') { hideSlash(); return; }
-      if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendCurrent(); }
+      if (e.key === 'Enter' && !e.shiftKey) {
+        // Coarse pointers (soft keyboards): Enter inserts a newline —
+        // sending is the Send button's job there. Desktop keeps
+        // Enter-to-send. IME composition never sends.
+        var coarse = false;
+        try { coarse = !!(window.matchMedia && window.matchMedia('(pointer: coarse)').matches); } catch (err) {}
+        if (!e.isComposing && !coarse) { e.preventDefault(); sendCurrent(); }
+      }
     });
     $('composer').addEventListener('input', checkSlash);
     $('groupToggle').addEventListener('change', function () { state.groupMode = this.checked; $('groupModels').classList.toggle('hidden', !this.checked); });
@@ -1403,7 +1441,14 @@
         }
         if (area === 'local' && changes[SETTINGS_KEY]) loadSettings();
       });
-      if (api.tabs && api.tabs.onActivated) api.tabs.onActivated.addListener(refreshPageChip);
+      if (api.tabs && api.tabs.onActivated) api.tabs.onActivated.addListener(function (info) {
+        // Chat-as-tab: remember the page tab the user switches away from,
+        // so context actions keep targeting it.
+        if (info && info.tabId != null && api.tabs.get) {
+          api.tabs.get(info.tabId).then(function (t) { rememberOriginTab(t); }).catch(function () {});
+        }
+        refreshPageChip();
+      });
       if (api.tabs && api.tabs.onUpdated) api.tabs.onUpdated.addListener(function (id, info) { if (info.title || info.url) refreshPageChip(); });
     } catch (e) {}
 

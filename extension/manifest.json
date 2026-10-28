@@ -1,7 +1,7 @@
 {
   "manifest_version": 2,
   "name": "Graphite Sider — AI Sidebar (BYO API)",
-  "version": "1.0.20",
+  "version": "1.0.21",
   "description": "Graphite-themed AI sidebar for Firefox. Bring your own key (BYOK; OpenAI-compatible, Anthropic, Ollama, LM Studio) for page and YouTube summaries with clickable timestamps, translation and writing help. No account, no proprietary backend.",
   "author": "Graphite Sider contributors",
   "icons": {
@@ -23,6 +23,9 @@
           "websiteContent"
         ]
       }
+    },
+    "gecko_android": {
+      "strict_min_version": "142.0"
     }
   },
   "permissions": [
@@ -102,7 +105,7 @@
     },
     {
       "matches": ["*://*.youtube.com/*"],
-      "js": ["content/youtube.js"],
+      "js": ["lib/model-select.js", "content/youtube.js"],
       "run_at": "document_end"
     },
     {
@@ -122,7 +125,7 @@
         "*://html.duckduckgo.com/html/*",
         "*://lite.duckduckgo.com/lite/*"
       ],
-      "js": ["content/search.js"],
+      "js": ["lib/model-select.js", "content/search.js"],
       "run_at": "document_end"
     },
     {

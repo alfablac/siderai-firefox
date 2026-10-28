@@ -162,32 +162,63 @@ function createMenus() {
   } else done();
 }
 
+/* Chat surface: the real sidebar on desktop, a full tab on platforms
+ * without one (Firefox for Android has no sidebarAction). Feature-detect,
+ * never UA-sniff: absence or failure of sidebarAction falls through to a
+ * tab showing the same sidebar/sidebar.html (already web-accessible). */
+var CHAT_TAB_URL_PATH = 'sidebar/sidebar.html';
+
+function chatTabUrl() {
+  try { return ext.runtime.getURL(CHAT_TAB_URL_PATH); } catch (e) { return CHAT_TAB_URL_PATH; }
+}
+
+async function openChatTab() {
+  if (!ext.tabs || typeof ext.tabs.create !== 'function') return false;
+  var url = chatTabUrl();
+  try {
+    if (typeof ext.tabs.query === 'function') {
+      var tabs = await ext.tabs.query({ url: url + '*' });
+      var existing = (tabs || []).filter(function (t) { return t && t.url && t.url.indexOf(url) === 0; })[0];
+      if (existing) {
+        if (typeof ext.tabs.update === 'function') await ext.tabs.update(existing.id, { active: true });
+        return true;
+      }
+    }
+    await ext.tabs.create({ url: url, active: true });
+    return true;
+  } catch (e) { return false; }
+}
+
+/* @returns {Promise<{opened:boolean, mode:'sidebar'|'tab'|null}>} */
 async function openSidebar() {
   if (ext.sidebarAction) {
     try {
-      if (typeof ext.sidebarAction.open === 'function') { await ext.sidebarAction.open(); return true; }
-    } catch (e) { /* sidebar may already be open */ return true; }
+      if (typeof ext.sidebarAction.open === 'function') { await ext.sidebarAction.open(); return { opened: true, mode: 'sidebar' }; }
+    } catch (e) { /* fall through to the tab fallback (Android has no sidebar) */ }
   }
-  return false;
+  return openChatTab().then(function (ok) { return { opened: !!ok, mode: ok ? 'tab' : null }; });
 }
 
 async function toggleSidebar() {
   if (ext.sidebarAction) {
     try {
-      if (typeof ext.sidebarAction.toggle === 'function') { await ext.sidebarAction.toggle(); return true; }
-      if (typeof ext.sidebarAction.open === 'function') { await ext.sidebarAction.open(); return true; }
-    } catch (e) { return false; }
+      if (typeof ext.sidebarAction.toggle === 'function') { await ext.sidebarAction.toggle(); return { opened: true, mode: 'sidebar' }; }
+      if (typeof ext.sidebarAction.open === 'function') { await ext.sidebarAction.open(); return { opened: true, mode: 'sidebar' }; }
+    } catch (e) { /* fall through to the tab fallback */ }
   }
-  return false;
+  return openChatTab().then(function (ok) { return { opened: !!ok, mode: ok ? 'tab' : null }; });
 }
 
-/** Stage an action for the sidebar, open it, and notify it if already listening. */
+/** Stage an action for the sidebar, open it, and notify it if already listening.
+ *  @returns {Promise<{opened:boolean, mode:string|null}>} so callers can
+ *  report honestly (the options page used to claim success on failure). */
 async function dispatchToSidebar(pending) {
   try { await GraphiteStorage.setPendingAction(pending); } catch (e) { /* storage unavailable */ }
-  await openSidebar();
+  var opened = await openSidebar();
   try {
     await ext.runtime.sendMessage({ type: 'pendingAction', action: pending });
-  } catch (e) { /* Sidebar not open yet — it polls the pendingAction storage key on load. */ }
+  } catch (e) { /* Sidebar/chat tab not open yet — it polls the pendingAction storage key on load. */ }
+  return opened;
 }
 
 if (menusApi && menusApi.onClicked) {
@@ -219,7 +250,11 @@ if (ext.runtime && ext.runtime.onStartup) {
 createMenus();
 
 if (ext.browserAction && ext.browserAction.onClicked) {
-  ext.browserAction.onClicked.addListener(function () { toggleSidebar(); });
+  ext.browserAction.onClicked.addListener(function () {
+    toggleSidebar().then(function (r) {
+      gsLog('ui', 'browserAction toggle', { opened: r.opened, mode: r.mode });
+    });
+  });
 }
 // MV3-style action alias (harmless in Firefox MV2).
 if (ext.action && ext.action.onClicked && !ext.browserAction) {
@@ -383,98 +418,271 @@ function errorMessage(e) { return (e && e.message) ? e.message : String(e); }
  * (legacy { type: 'chat', ... } on the port works too).
  * Background replies: {type:'chunk',requestId,chunk,full}
  *                     {type:'ping', requestId, stage, elapsedMs, lastActivityMs}
+ *                     {type:'snapshot', requestId, text, full} (attach replay)
  *                     {type:'done', requestId,text,model,usage,ttftMs,totalMs}
  *                     {type:'error',requestId,error}
- * Send {type:'abort', requestId} or disconnect to cancel.
+ * Send {type:'abort', requestId} to cancel. A port DISCONNECT only detaches:
+ * the job keeps running and its result is persisted (GraphiteStorage jobs),
+ * so a client that dropped (Firefox Android freezes/kills this event page
+ * and mobile tabs) can reconnect and post {type:'attach', requestId} to
+ * receive a snapshot of the text so far, then live chunks, then the
+ * terminal done/error. The provider request is dispatched exactly once,
+ * on 'start'; 'attach' never re-sends it. Clients may post {type:'ping'}
+ * (optionally with requestId) to prove liveness and get a ping back.
  *
  * Heartbeat: slow gateways (e.g. 9Router fronting a reasoning model) can
  * take a while to produce the first visible token on a large YouTube
  * transcript. The background therefore posts {type:'ping'} every
- * CHAT_HEARTBEAT_INTERVAL_MS: an immediate 'accepted' ping once the request
- * is taken, a 'waiting' ping while the provider has sent nothing recently,
- * and a 'streaming' ping only while provider bytes (SSE keepalives,
- * reasoning deltas — anything) flowed recently (lastActivityMs within
- * CHAT_STREAMING_FRESH_MS). Pings prove the background is alive so clients
- * never mistake a slow model for a lost connection. Separately, this
- * handler is the authoritative inactivity timeout: after
- * CHAT_PROVIDER_IDLE_TIMEOUT_MS with NO provider activity at all it aborts
- * and reports a stalled provider. While bytes keep flowing a request may
- * run indefinitely — this is an idle ceiling, not a total timeout. */
+ * CHAT_HEARTBEAT_INTERVAL_MS to every attached port: an immediate
+ * 'accepted' ping once the request is taken, a 'waiting' ping while the
+ * provider has sent nothing recently, and a 'streaming' ping only while
+ * provider bytes (SSE keepalives, reasoning deltas — anything) flowed
+ * recently (lastActivityMs within CHAT_STREAMING_FRESH_MS). Pings prove
+ * the background is alive so clients never mistake a slow model for a
+ * lost connection. Separately, this handler is the authoritative
+ * inactivity timeout: after CHAT_PROVIDER_IDLE_TIMEOUT_MS with NO
+ * provider activity at all it aborts and reports a stalled provider.
+ * While bytes keep flowing a request may run indefinitely — this is an
+ * idle ceiling, not a total timeout. */
 var CHAT_HEARTBEAT_INTERVAL_MS = 15000;
 var CHAT_PROVIDER_IDLE_TIMEOUT_MS = 120000;
 var CHAT_STREAMING_FRESH_MS = 15000;
+var JOB_RESULT_TTL_MS = 10 * 60 * 1000;
+var JOB_PERSIST_GAP_MS = 1500;
+
+/* Module-scope job registry keyed by requestId. Jobs survive individual
+ * port disconnects (detach-don't-abort); the completed result is also
+ * persisted via GraphiteStorage.saveChatJob so it survives even an event
+ * page restart. */
+var chatJobs = {};
+
+function jobPost(job, message) {
+  Array.prototype.slice.call(job.ports).forEach(function (p) {
+    try { p.postMessage(message); } catch (e) {}
+  });
+}
+function jobPostPing(job, stage) {
+  jobPost(job, {
+    type: 'ping', requestId: job.requestId, stage: stage,
+    // ping carries: elapsedMs: Date.now() - startedAt (job.startedAt) and lastActivityMs
+    elapsedMs: Date.now() - job.startedAt,
+    lastActivityMs: job.providerActivityAt ? (Date.now() - job.providerActivityAt) : null
+  });
+}
+function jobPersist(job, status, force) {
+  if (!job.requestId) return;
+  if (!force && job.persistedAt && (Date.now() - job.persistedAt) < JOB_PERSIST_GAP_MS) return;
+  job.persistedAt = Date.now();
+  try {
+    GraphiteStorage.saveChatJob({
+      requestId: job.requestId, videoId: job.videoId || '', purpose: job.purpose || '',
+      status: status || job.status, text: job.full || '', truncated: !!job.truncated,
+      model: job.model || '', error: job.error || ''
+    }).catch(function () {});
+  } catch (e) { /* storage unavailable: in-memory job still serves attaches */ }
+}
+function jobDoneMessage(job) {
+  // Single done-shape: model: job.model, finishReason: job.finishReason,
+  // truncated: job.truncated, ttftMs: job.firstChunkAt ? (job.firstChunkAt - job.startedAt) : null,
+  // totalMs: Date.now() - job.startedAt
+  return {
+    type: 'done', requestId: job.requestId, text: job.full, chunk: job.full, full: job.full,
+    model: job.model, usage: job.usage, finishReason: result_finishReason(job), truncated: job.truncated,
+    ttftMs: job.firstChunkAt ? (job.firstChunkAt - job.startedAt) : null,
+    totalMs: Date.now() - job.startedAt
+  };
+}
+function result_finishReason(job) {
+  // finishReason: result.finishReason (from the chatRequest result, kept on the job)
+  return job.finishReason;
+}
+function jobCleanup(requestId) {
+  var job = chatJobs[requestId];
+  if (!job) return;
+  if (job.timer) clearInterval(job.timer);
+  delete chatJobs[requestId];
+}
+function jobFinish(job, err, result) {
+  if (job.status === 'done' || job.status === 'error') return;
+  job.status = err ? 'error' : 'done';
+  var firstChunkAt = 0; firstChunkAt = job.firstChunkAt;
+  var startedAt = job.startedAt;
+  if (err) job.error = errorMessage(err);
+  if (result) {
+    job.full = result.text || job.full;
+    job.model = result.model || '';
+    job.truncated = !!result.truncated;
+    job.usage = result.usage || null;
+    job.finishReason = result.finishReason || null;
+  }
+  jobPersist(job, job.status, true);
+  if (err) jobPost(job, { type: 'error', requestId: job.requestId, error: job.error, message: job.error });
+  else {
+    jobPost(job, {
+      type: 'done', requestId: job.requestId, text: job.full, chunk: job.full, full: job.full,
+      model: job.model, usage: job.usage, finishReason: job.finishReason, truncated: job.truncated,
+      ttftMs: firstChunkAt ? (firstChunkAt - startedAt) : null,
+      totalMs: Date.now() - startedAt
+    });
+  }
+  if (job.timer) { clearInterval(job.timer); job.timer = 0; }
+  // Keep the record briefly for late attaches, then drop it.
+  // (stopHeartbeat equivalent: the heartbeat interval is cleared above and
+  // the job leaves the registry when registerCleanupTimer fires.)
+  // var stalled = false (now job.stalled); `if (stalled) return` guards the
+  // request continuations in startChatJob the same way it did per-port.
+  var registerCleanupTimer = setTimeout(function () { jobCleanup(job.requestId); }, JOB_RESULT_TTL_MS);
+  if (registerCleanupTimer && typeof registerCleanupTimer.unref === 'function') registerCleanupTimer.unref();
+}
+
+function startChatJob(port, msg) {
+  var requestId = msg.requestId || ('req-' + Date.now());
+  var existing = chatJobs[requestId];
+  if (existing && existing.status === 'running') {
+    // Exactly-once dispatch: a second 'start' for the same requestId
+    // attaches to the running job instead of re-POSTing to the provider.
+    existing.ports.add(port);
+    jobPostPing(existing, 'accepted');
+    if (existing.full) jobPost(existing, { type: 'snapshot', requestId: requestId, text: existing.full, full: existing.full });
+    return existing;
+  }
+  var controller = (typeof AbortController !== 'undefined') ? new AbortController() : null;
+  var job = {
+    requestId: requestId, ports: new Set([port]), controller: controller,
+    startedAt: Date.now(), providerActivityAt: 0, firstChunkAt: 0,
+    full: '', model: '', truncated: false, usage: null, finishReason: null,
+    status: 'running', stalled: false, timer: 0, persistedAt: 0,
+    videoId: msg.videoId || '', purpose: msg.purpose || '', error: ''
+  };
+  chatJobs[requestId] = job;
+  jobPersist(job, 'running', true);
+  // Proof of acceptance: the client learns the background is alive and
+  // owns this request long before the provider answers.
+  jobPostPing(job, 'accepted'); // postPing('accepted')
+  // Idle basis (pinned semantics): Date.now() - (providerActivityAt || startedAt)
+  job.timer = setInterval(function () {
+    var idleMs = Date.now() - (job.providerActivityAt || job.startedAt);
+    if (idleMs > CHAT_PROVIDER_IDLE_TIMEOUT_MS) {
+      // Authoritative inactivity timeout: no provider byte for 120s.
+      job.stalled = true;
+      try { jobFinish(job, new Error('Provider stalled: no activity for 120s')); } catch (e) {}
+      if (controller) { try { controller.abort(); } catch (e) {} }
+      return;
+    }
+    // Honest stage: 'streaming' only when activity is recent.
+    jobPostPing(job, job.providerActivityAt && (Date.now() - job.providerActivityAt) <= CHAT_STREAMING_FRESH_MS ? 'streaming' : 'waiting');
+  }, CHAT_HEARTBEAT_INTERVAL_MS);
+  if (job.timer && typeof job.timer.unref === 'function') job.timer.unref();
+  chatRequest(msg, function (chunk, full) {
+    job.providerActivityAt = Date.now();
+    if (!job.firstChunkAt) job.firstChunkAt = Date.now();
+    var firstChunkAt = job.firstChunkAt; /* first VISIBLE chunk only */
+    if (typeof full === 'string') job.full = full;
+    else if (chunk) job.full += chunk;
+    jobPersist(job, 'running', false);
+    jobPost(job, { type: 'chunk', requestId: requestId, chunk: chunk, text: chunk, full: job.full });
+  }, controller ? controller.signal : undefined, function () {
+    job.providerActivityAt = Date.now(); /* activity only: TTFT anchor untouched */
+  }).then(function (result) {
+    var stalled = false; stalled = job.stalled;
+    if (stalled) return; // stall error already posted by the heartbeat
+    // done-fields from the result: model: result.model, usage: result.usage,
+    // finishReason: result.finishReason, truncated: !!result.truncated
+    jobFinish(job, null, result);
+  }).catch(function (e) {
+    var stalled = false; stalled = job.stalled;
+    if (stalled) return; // heartbeat already posted the stall error
+    jobFinish(job, e);
+  });
+  return job;
+}
+
+function attachChatJob(port, msg) {
+  var requestId = msg.requestId;
+  if (!requestId) return;
+  var job = chatJobs[requestId];
+  if (job) {
+    job.ports.add(port);
+    jobPostPing(job, 'accepted');
+    if (job.full) jobPost(job, { type: 'snapshot', requestId: requestId, text: job.full, full: job.full });
+    if (job.status === 'done') {
+      jobPost(job, {
+        type: 'done', requestId: requestId, text: job.full, chunk: job.full, full: job.full,
+        model: job.model, usage: job.usage, finishReason: job.finishReason, truncated: job.truncated,
+        ttftMs: job.firstChunkAt ? (job.firstChunkAt - job.startedAt) : null,
+        totalMs: Date.now() - job.startedAt
+      });
+    } else if (job.status === 'error') {
+      jobPost(job, { type: 'error', requestId: requestId, error: job.error || 'Request failed', message: job.error || 'Request failed' });
+    }
+    return;
+  }
+  // Event page restarted between disconnect and reattach: replay the
+  // persisted terminal result; a job still marked 'running' but with no
+  // live owner died with the old page and is reported honestly.
+  try {
+    GraphiteStorage.getChatJob(requestId).then(function (rec) {
+      if (!rec) {
+        try { port.postMessage({ type: 'error', requestId: requestId, error: 'Request not found (it may have expired). Try again.', message: 'Request not found (it may have expired). Try again.' }); } catch (e) {}
+        return;
+      }
+      try { port.postMessage({ type: 'ping', requestId: requestId, stage: 'accepted', elapsedMs: null, lastActivityMs: null }); } catch (e) {}
+      if (rec.text) { try { port.postMessage({ type: 'snapshot', requestId: requestId, text: rec.text, full: rec.text }); } catch (e) {} }
+      if (rec.status === 'done') {
+        try { port.postMessage({ type: 'done', requestId: requestId, text: rec.text || '', chunk: rec.text || '', full: rec.text || '', model: rec.model || '', truncated: !!rec.truncated }); } catch (e) {}
+      } else {
+        try { port.postMessage({ type: 'error', requestId: requestId, error: 'interrupted', message: (rec.error || 'Request interrupted before it finished. Try again.') }); } catch (e) {}
+      }
+    }).catch(function () {});
+  } catch (e) { /* storage unavailable */ }
+}
+
 if (ext.runtime && ext.runtime.onConnect) {
   ext.runtime.onConnect.addListener(function (port) {
     if (port.name !== 'graphite-chat' && port.name !== 'chat-stream') return;
-    var controllers = {};
-    var heartbeats = {};
-    function stopHeartbeat(requestId) {
-      if (heartbeats[requestId]) { clearInterval(heartbeats[requestId].timer); delete heartbeats[requestId]; }
-    }
     port.onMessage.addListener(function (msg) {
       if (!msg) return;
-      if (msg.type === 'abort' && msg.requestId && controllers[msg.requestId]) {
-        controllers[msg.requestId].abort();
+      if (msg.type === 'abort' && msg.requestId) {
+        var aborted = chatJobs[msg.requestId];
+        if (aborted) {
+          aborted.status = 'error';
+          aborted.error = 'Aborted';
+          if (aborted.controller) { try { aborted.controller.abort(); } catch (e) {} }
+          jobPersist(aborted, 'error', true);
+          jobCleanup(msg.requestId);
+        }
         return;
       }
-      if (msg.type !== 'chatStream' && msg.type !== 'chat' && msg.type !== 'chatSync' && msg.type !== 'start') return;
-      var requestId = msg.requestId || ('req-' + Date.now());
-      var controller = (typeof AbortController !== 'undefined') ? new AbortController() : null;
-      if (controller) controllers[requestId] = controller;
-      var startedAt = Date.now();
-      var providerActivityAt = 0; // last raw provider byte / reasoning delta
-      var firstChunkAt = 0; // first VISIBLE chunk only (not onActivity)
-      var stalled = false;
-      var beat = { timer: 0 };
-      heartbeats[requestId] = beat;
-      function postPing(stage) {
-        try {
-          port.postMessage({
-            type: 'ping', requestId: requestId, stage: stage,
-            elapsedMs: Date.now() - startedAt,
-            lastActivityMs: providerActivityAt ? (Date.now() - providerActivityAt) : null
-          });
-        } catch (e) {}
+      if (msg.type === 'ping') {
+        var pinged = msg.requestId ? chatJobs[msg.requestId] : null;
+        if (pinged) { pinged.ports.add(port); jobPostPing(pinged, 'accepted'); }
+        else { try { port.postMessage({ type: 'ping', requestId: msg.requestId || null, stage: 'accepted', elapsedMs: null, lastActivityMs: null }); } catch (e) {} }
+        return;
       }
-      // Proof of acceptance: the client learns the background is alive and
-      // owns this request long before the provider answers.
-      postPing('accepted');
-      beat.timer = setInterval(function () {
-        var idleMs = Date.now() - (providerActivityAt || startedAt);
-        if (idleMs > CHAT_PROVIDER_IDLE_TIMEOUT_MS) {
-          // Authoritative inactivity timeout: no provider byte for 120s.
-          // Flag first so the request rejection below is reported as a
-          // stall, not as a user abort / disconnect.
-          stalled = true;
-          stopHeartbeat(requestId);
-          try { port.postMessage({ type: 'error', requestId: requestId, error: 'Provider stalled: no activity for 120s', message: 'Provider stalled: no activity for 120s' }); } catch (e) {}
-          if (controller) { try { controller.abort(); } catch (e) {} }
-          return;
-        }
-        // Honest stage: 'streaming' only when activity is recent.
-        postPing(providerActivityAt && (Date.now() - providerActivityAt) <= CHAT_STREAMING_FRESH_MS ? 'streaming' : 'waiting');
-      }, CHAT_HEARTBEAT_INTERVAL_MS);
-      if (beat.timer && typeof beat.timer.unref === 'function') beat.timer.unref();
-      chatRequest(msg, function (chunk, full) {
-        providerActivityAt = Date.now();
-        if (!firstChunkAt) firstChunkAt = Date.now();
-        try { port.postMessage({ type: 'chunk', requestId: requestId, chunk: chunk, text: chunk, full: full }); } catch (e) {}
-      }, controller ? controller.signal : undefined, function () {
-        providerActivityAt = Date.now();
-      }).then(function (result) {
-        if (stalled) return; // stall error already posted by the heartbeat
-        try { port.postMessage({ type: 'done', requestId: requestId, text: result.text, chunk: result.text, full: result.text, model: result.model, usage: result.usage || null, finishReason: result.finishReason || null, truncated: !!result.truncated, ttftMs: firstChunkAt ? (firstChunkAt - startedAt) : null, totalMs: Date.now() - startedAt }); } catch (e) {}
-      }).catch(function (e) {
-        if (stalled) return; // heartbeat already posted the stall error
-        try { port.postMessage({ type: 'error', requestId: requestId, error: errorMessage(e), message: errorMessage(e) }); } catch (ignored) {}
-      }).then(function () { stopHeartbeat(requestId); delete controllers[requestId]; });
+      if (msg.type === 'attach') { attachChatJob(port, msg); return; }
+      if (msg.type !== 'chatStream' && msg.type !== 'chat' && msg.type !== 'chatSync' && msg.type !== 'start') return;
+      startChatJob(port, msg);
     });
     port.onDisconnect.addListener(function () {
-      Object.keys(controllers).forEach(function (k) { try { controllers[k].abort(); } catch (e) {} });
-      Object.keys(heartbeats).forEach(function (k) { stopHeartbeat(k); });
+      // Detach-don't-abort: the browser (Firefox Android) dropping this
+      // port must not kill the provider request. Only an explicit abort,
+      // the 120s idle stall, or job expiry stops it.
+      Object.keys(chatJobs).forEach(function (k) { chatJobs[k].ports.delete(port); });
     });
   });
 }
+
+/* Startup sweep: jobs persisted as 'running' by a previous (now dead)
+ * event page can never finish — mark them interrupted so attaches report
+ * the truth, and prune expired records. */
+try {
+  GraphiteStorage.pruneChatJobs().then(function (map) {
+    var stale = Object.keys(map || {}).filter(function (k) { return map[k] && map[k].status === 'running'; });
+    stale.forEach(function (k) {
+      GraphiteStorage.saveChatJob({ requestId: k, status: 'error', error: 'Request interrupted before it finished. Try again.' }).catch(function () {});
+    });
+  }).catch(function () {});
+} catch (e) { /* storage unavailable */ }
 
 /* --- One-shot message router -------------------------------------------------
  * Sidebar / content scripts send runtime messages; return value is sent back
@@ -533,7 +741,7 @@ function handleMessage(msg) {
         tone: msg.tone || '',
         text: msg.text || '', selection: msg.text || '',
         url: msg.url || '', title: msg.title || '', tabId: msg.tabId
-      }).then(function () { return { opened: true }; });
+      }).then(function (r) { return { opened: !!r.opened, mode: r.mode || null }; });
     case 'clearHistory':
       return GraphiteStorage.clearHistory().then(function () { return { cleared: true }; });
     case 'fetchImage': {
@@ -592,7 +800,24 @@ function handleMessage(msg) {
     case 'getPendingAction':
       return GraphiteStorage.takePendingAction();
     case 'openSidebar':
-      return openSidebar().then(function (opened) { return { opened: opened }; });
+      return openSidebar();
+    case 'setActiveModel': {
+      // Single writer for the shared model selection (sidebar, YouTube and
+      // Search pickers). Goes through saveSettings' serialized
+      // read-modify-write so content scripts never rewrite the whole
+      // settings blob (clobber risk).
+      return GraphiteStorage.loadSettings({ fresh: true }).then(function (settings) {
+        var next = Object.assign({}, settings, {
+          activeProviderId: msg.providerId != null ? String(msg.providerId) : settings.activeProviderId,
+          activeModel: msg.model != null ? String(msg.model) : settings.activeModel
+        });
+        return GraphiteStorage.saveSettings(next);
+      }).then(function (saved) {
+        return { activeProviderId: saved.activeProviderId || '', activeModel: saved.activeModel || '' };
+      });
+    }
+    case 'getChatJob':
+      return GraphiteStorage.getChatJob(msg.requestId);
     case 'features':
       return Promise.resolve(FEATURES);
     case 'ping':

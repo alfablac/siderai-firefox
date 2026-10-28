@@ -42,6 +42,7 @@
   var STORAGE_KEY = 'graphiteSider.settings.v1';
   var PENDING_KEY = 'graphiteSider.pendingAction';
   var HISTORY_KEY = 'graphiteSider.history.v1';
+  var JOBS_KEY = 'graphiteSider.jobs.v1';
   var SYNC_KEY = 'graphiteSider.settings.sync.v1';
   var HISTORY_LIMIT = 100;
   // storage.sync allows 8192 bytes per item (key + value); stay well under.
@@ -674,10 +675,71 @@
     return loadSettings().then(function (s) { s.history = []; return saveSettings(s); });
   }
 
+  /* --- Chat jobs ----------------------------------------------------------
+   * Persisted streaming-job results (background detach fix). When a port
+   * drops mid-stream (Firefox Android freezes/kills the non-persistent
+   * event page), the background no longer aborts the provider request;
+   * the finished text is stored here so a reconnected client can attach
+   * by requestId and recover it. Records: { requestId, videoId, purpose,
+   * status: 'running'|'done'|'error', text, truncated, model, error,
+   * updatedAt, expiresAt }. */
+  var JOB_TTL_MS = 10 * 60 * 1000;
+
+  function pruneJobMap(map, now) {
+    var out = {};
+    var n = now || Date.now();
+    Object.keys(map || {}).forEach(function (k) {
+      var j = map[k];
+      if (j && j.requestId && typeof j.expiresAt === 'number' && j.expiresAt > n) out[k] = j;
+    });
+    return out;
+  }
+
+  function readJobs() {
+    return rawGet(JOBS_KEY).then(function (items) {
+      var map = items[JOBS_KEY];
+      return (map && typeof map === 'object') ? map : {};
+    }).catch(function () { return {}; });
+  }
+
+  function saveChatJob(job) {
+    if (!job || !job.requestId) return Promise.resolve(null);
+    return readJobs().then(function (map) {
+      var record = Object.assign({}, map[job.requestId] || {}, job, {
+        updatedAt: Date.now(),
+        expiresAt: (typeof job.expiresAt === 'number' && job.expiresAt > Date.now())
+          ? job.expiresAt : (Date.now() + JOB_TTL_MS)
+      });
+      map[job.requestId] = record;
+      var payload = {};
+      payload[JOBS_KEY] = pruneJobMap(map);
+      return rawSet(payload).then(function () { return record; });
+    }).catch(function () { return null; });
+  }
+
+  function getChatJob(requestId) {
+    if (!requestId) return Promise.resolve(null);
+    return readJobs().then(function (map) {
+      var j = map[requestId] || null;
+      return (j && j.expiresAt && j.expiresAt > Date.now()) ? j : null;
+    });
+  }
+
+  function pruneChatJobs() {
+    return readJobs().then(function (map) {
+      var pruned = pruneJobMap(map);
+      if (Object.keys(pruned).length === Object.keys(map).length) return pruned;
+      var payload = {};
+      payload[JOBS_KEY] = pruned;
+      return rawSet(payload).then(function () { return pruned; });
+    }).catch(function () { return {}; });
+  }
+
   global.GraphiteStorage = {
     STORAGE_KEY: STORAGE_KEY,
     PENDING_KEY: PENDING_KEY,
     HISTORY_KEY: HISTORY_KEY,
+    JOBS_KEY: JOBS_KEY,
     SYNC_KEY: SYNC_KEY,
     HISTORY_LIMIT: HISTORY_LIMIT,
     DEFAULT_PROVIDERS: DEFAULT_PROVIDERS,
@@ -695,6 +757,9 @@
     takePendingAction: takePendingAction,
     appendHistory: appendHistory,
     clearHistory: clearHistory,
+    saveChatJob: saveChatJob,
+    getChatJob: getChatJob,
+    pruneChatJobs: pruneChatJobs,
     clearCache: function () { cache = null; },
     _rawGet: rawGet,
     _rawSet: rawSet,

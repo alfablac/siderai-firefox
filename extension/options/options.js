@@ -162,8 +162,18 @@ function openSidebar() {
     }
   } catch (e) { /* fall through to message */ }
   // Options pages cannot always call sidebarAction; ask the background.
-  sendMessage({ type: "openSidebar" }).then(function () {
-    done(true, "Sidebar opened — now move it to the right using Firefox's sidebar menu (see steps below).");
+  // Report honestly from its result: on Firefox for Android there is no
+  // sidebar, so the background opens the chat tab instead — only claim
+  // success when it actually opened something.
+  sendMessage({ type: "openSidebar" }).then(function (resp) {
+    var r = (resp && typeof resp === "object" && "ok" in resp) ? resp.result : resp;
+    if (r && r.opened && r.mode === "tab") {
+      done(true, "Chat opened in a tab (this device has no sidebar).");
+    } else if (r && r.opened) {
+      done(true, "Sidebar opened — now move it to the right using Firefox's sidebar menu (see steps below).");
+    } else {
+      done(false, "Could not open the chat. Use the Graphite Sider toolbar button (or Ctrl+Shift+Y).");
+    }
   }).catch(function () {
     done(false, "Use the Graphite Sider toolbar button (or Ctrl+Shift+Y) to open the sidebar, then follow the steps below.");
   });

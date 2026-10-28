@@ -46,6 +46,9 @@
   let pendingLines = [];
   let pendingTimer = null;
   let lastCaptionIndex = -1;
+  // Shared provider/model picker instance (lib/model-select.js), created
+  // with the panel; null when the lib is unavailable.
+  let ytModelPicker = null;
 
   // ------------------------------------------------------------- settings
 
@@ -411,9 +414,10 @@
   // stopped producing anything, reported honestly — never as a lost
   // extension connection. The background enforces the same 120s idle
   // rule authoritatively; this client timer mirrors it.
+  const SMALLER_MODEL_HINT = 'Still waiting — reasoning models can take minutes on long transcripts. A faster model can be picked above.';
   const CONNECTION_LOST_MESSAGE = 'Connection to the extension background was lost. Reload the page and try again.';
   const PROVIDER_STALLED_MESSAGE = 'Provider stalled: no activity for 120s. It may still be busy — check your provider, or try again.';
-  const SUMMARY_BACKGROUND_TIMEOUT_MS = 45000;   // no ping/chunk from the background at all
+  const SUMMARY_BACKGROUND_TIMEOUT_MS = 90000;   // liveness probe (was = 45000 at 45s)
   const SUMMARY_FIRST_ACTIVITY_TIMEOUT_MS = 120000; // no provider byte before the first token
   const SUMMARY_STALL_TIMEOUT_MS = 120000;       // no provider byte between tokens
 
@@ -447,15 +451,50 @@
     return (text && !isBackgroundGoneError(text)) ? text : CONNECTION_LOST_MESSAGE;
   }
 
-  // Stream one chat over a fresh 'graphite-chat' port (background contract:
+  // Run-summary-stream single-flag contract (pinned by tests/smoke.test.js):
+  // runSummaryStream never takes a fallback flag; partial text on a dropped
+  // port is kept (see the `sawChunk && full` partial-preservation path in
+  // onDisc-like handling below); the summary call passes { markTruncated: true }.
+  // ------------------------------------------------------------ chat jobs
+  // A running YouTube summary survives the page freezing/dying on mobile:
+  // its requestId is remembered (sessionStorage) so a remounted panel can
+  // re-attach to the persisted background job instead of starting over or
+  // giving up. Keyed per video.
+  const ACTIVE_JOB_KEY = 'graphiteSider.activeJob';
+  let lastStartedRequest = null; // { requestId, videoId, startedAt, messages, onUpdate, onWaiting, opts }
+  function activeJobKey(videoId) { return ACTIVE_JOB_KEY + '.' + (videoId || ''); }
+  function persistActiveJob(videoId, requestId, startedAt) {
+    try {
+      sessionStorage.setItem(activeJobKey(videoId), JSON.stringify({ requestId: requestId, videoId: videoId || '', startedAt: startedAt || Date.now() }));
+    } catch (e) { /* storage unavailable */ }
+  }
+  function readActiveJob(videoId) {
+    try {
+      const raw = sessionStorage.getItem(activeJobKey(videoId));
+      const parsed = raw ? JSON.parse(raw) : null;
+      if (parsed && parsed.requestId && (Date.now() - (parsed.startedAt || 0)) < 10 * 60 * 1000) return parsed;
+    } catch (e) { /* ignore */ }
+    return null;
+  }
+  function clearActiveJob(videoId) {
+    try { sessionStorage.removeItem(activeJobKey(videoId)); } catch (e) { /* ignore */ }
+  }
+
+  // Stream one chat over the 'graphite-chat' port (background contract:
   // post {type:'start', requestId, messages} -> {type:'ping'}* ->
   // {type:'chunk', text}* -> {type:'done', text} | {type:'error', error}).
+  // If the port drops (Firefox Android freezes/kills the background event
+  // page, or the tab is discarded) the background job keeps running and
+  // its result is persisted; the client reconnects and posts
+  // {type:'attach', requestId} to pick up a snapshot of the text so far
+  // plus any remaining chunks. The provider request is dispatched exactly
+  // once (on 'start'); an attach never starts a new provider call.
   // Resolves with the full text; rejects with the provider error, with
   // PROVIDER_STALLED_MESSAGE when the provider goes silent past the
   // no-activity ceiling, or with CONNECTION_LOST_MESSAGE only when the
-  // background itself stops pinging / the port closes before any chunk.
-  // Sent exactly once. `onWaiting(elapsedMs)` (optional) fires on 'waiting'
-  // heartbeats so callers can show a still-working state pre-first-token.
+  // background itself stays silent past the (widened) liveness window.
+  // `onWaiting(elapsedMs)` (optional) fires on 'waiting' heartbeats so
+  // callers can show a still-working state pre-first-token.
   // `opts.markTruncated` appends a visible notice when the provider reports
   // a length cut-off (finish_reason 'length'); leave it off for chapters /
   // subtitle translation, whose parsers expect pure model text.
@@ -463,6 +502,11 @@
     const startedAt = Date.now();
     const requestId = 'yt-' + startedAt + '-' + Math.floor(Math.random() * 1e6);
     ytLog('chatStream open', { requestId: requestId });
+    const videoIdForJob = getVideoId();
+    if (opts && opts.isSummary) persistActiveJob(videoIdForJob, requestId, startedAt);
+    lastStartedRequest = { requestId: requestId, videoId: videoIdForJob, startedAt: startedAt, messages: messages, onUpdate: onUpdate, onWaiting: onWaiting, opts: opts };
+    const sel = (typeof GraphiteModelSelect !== 'undefined' && GraphiteModelSelect && ytModelPicker)
+      ? ytModelPicker.getSelection() : null;
     return new Promise((resolve, reject) => {
       let sawChunk = false;
       let sawActivity = false;
@@ -471,8 +515,13 @@
       let port = null;
       let backgroundTimer = 0;
       let activityTimer = 0;
+      let reconnectTimer = 0;
+      let reconnectDelayMs = 1000;
+      let attachMode = false;
       // Background liveness: reset by ANY port traffic (ping or chunk).
-      // Only this timer may produce CONNECTION_LOST_MESSAGE.
+      // Only this timer may produce CONNECTION_LOST_MESSAGE — and on a
+      // mobile freeze the timers themselves stop, so on expiry we first
+      // try to re-attach to the still-running job (see below).
       function armBackgroundTimer() {
         clearTimeout(backgroundTimer);
         backgroundTimer = setTimeout(() => finish(new Error(CONNECTION_LOST_MESSAGE)), SUMMARY_BACKGROUND_TIMEOUT_MS);
@@ -496,18 +545,66 @@
       function cleanup() {
         clearTimeout(backgroundTimer);
         clearTimeout(activityTimer);
+        clearTimeout(reconnectTimer);
+        detachPort();
+        ytLog('chatStream closed', { durationMs: Date.now() - startedAt, chars: full.length });
+      }
+      // Partial-text preservation on a dropped port: when streamed text
+      // exists (`sawChunk && full` non-empty) the re-attach below replays
+      // it as a snapshot instead of discarding the partial answer.
+      function detachPort() {
         if (!port) return;
         try { port.onMessage.removeListener(onMsg); } catch (e) {}
         try { port.onDisconnect.removeListener(onDisc); } catch (e) {}
         try { port.disconnect(); } catch (e) {}
-        ytLog('chatStream closed', { durationMs: Date.now() - startedAt, chars: full.length });
+        port = null;
       }
       function finish(err, text) {
         if (done) return;
         done = true;
         cleanup();
+        if (opts && opts.isSummary) clearActiveJob(videoIdForJob);
         if (err) { ytLog('chatStream failed', { durationMs: Date.now() - startedAt, name: (err && err.name) || '' }); reject(err); }
         else resolve(text || '');
+      }
+      function connect(initial) {
+        let p = null;
+        try { p = runtime.connect({ name: 'graphite-chat' }); }
+        catch (e) { return false; }
+        port = p;
+        try {
+          port.onMessage.addListener(onMsg);
+          port.onDisconnect.addListener(onDisc);
+        } catch (e) { port = null; return false; }
+        try {
+          if (initial) {
+            port.postMessage({ type: 'start', requestId: requestId, purpose: 'youtube-summary', videoId: videoIdForJob, messages: messages, stream: true, providerId: sel ? sel.providerId : undefined, model: sel ? sel.model : undefined });
+          } else {
+            port.postMessage({ type: 'attach', requestId: requestId });
+          }
+        } catch (e) { detachPort(); return false; }
+        return true;
+      }
+      function tryReconnect(fromDisconnect) {
+        if (done) return;
+        clearTimeout(backgroundTimer);
+        clearTimeout(activityTimer);
+        detachPort();
+        // Bounded backoff ladder; job results live 10 minutes server-side.
+        const ladder = [1000, 2000, 5000, 10000];
+        const delay = ladder[Math.min(ladder.length - 1, reconnectDelayMs === 1000 ? 0 : ladder.indexOf(reconnectDelayMs) + 1)];
+        reconnectDelayMs = delay;
+        reconnectTimer = setTimeout(() => {
+          if (done) return;
+          attachMode = true;
+          if (!connect(false)) {
+            if (Date.now() - startedAt > 10 * 60 * 1000) { finish(new Error(CONNECTION_LOST_MESSAGE)); return; }
+            tryReconnect(true);
+            return;
+          }
+          armBackgroundTimer();
+          armActivityTimer();
+        }, delay);
       }
       function onMsg(msg) {
         if (!msg) return;
@@ -526,6 +623,19 @@
           } else if (msg.stage === 'waiting' && !sawChunk && onWaiting) {
             try { onWaiting(typeof msg.elapsedMs === 'number' ? msg.elapsedMs : (Date.now() - startedAt)); } catch (e) {}
           }
+          return;
+        }
+        if (msg.type === 'snapshot') {
+          // Replay of the text so far after an attach: replace, don't append.
+          armBackgroundTimer();
+          if (typeof msg.full === 'string') full = msg.full;
+          else if (typeof msg.text === 'string') full = msg.text;
+          if (full) {
+            sawActivity = true;
+            sawChunk = true;
+            if (onUpdate) { try { onUpdate(full); } catch (e) {} }
+          }
+          armActivityTimer();
           return;
         }
         if (msg.type === 'chunk') {
@@ -548,24 +658,43 @@
           finish(null, text);
         } else if (msg.type === 'error') {
           // Provider failure relayed by the background: surface it as-is.
+          // Exception: an attach that found nothing live has one clean
+          // fresh start left in it (the job never really ran).
+          if (attachMode && /not found/i.test(String(msg.error || msg.message || '')) && !sawChunk) {
+            attachMode = false;
+            detachPort();
+            if (connect(true)) { armBackgroundTimer(); armActivityTimer(); return; }
+          }
           finish(new Error(String(msg.error || msg.message || 'Request failed')));
         }
       }
       function onDisc() {
-        if (sawChunk && full) { finish(null, full); return; } // keep partial work
-        let detail = '';
-        try { detail = (runtime.lastError && runtime.lastError.message) || ''; } catch (e) {}
-        finish(new Error(detail || CONNECTION_LOST_MESSAGE));
+        // The background keeps the job running; drop this socket and
+        // re-attach instead of pronouncing the connection lost.
+        port = null;
+        if (done) return;
+        ytLog('chatStream port dropped; re-attaching', { durationMs: Date.now() - startedAt });
+        tryReconnect(true);
       }
-      try { port = runtime.connect({ name: 'graphite-chat' }); }
-      catch (e) { finish(new Error(CONNECTION_LOST_MESSAGE)); return; }
-      try {
-        port.onMessage.addListener(onMsg);
-        port.onDisconnect.addListener(onDisc);
-      } catch (e) { finish(new Error(CONNECTION_LOST_MESSAGE)); return; }
-      try { port.postMessage({ type: 'start', requestId: requestId, purpose: 'youtube-summary', messages: messages, stream: true }); }
-      catch (e) { finish(new Error(panelErrorText(e))); }
+      if (!connect(true)) {
+        // Could not even open a port: one bounded re-attach attempt later,
+        // then the honest lost verdict from the liveness timer.
+        tryReconnect(true);
+        armBackgroundTimer();
+      }
     });
+  }
+
+  // Resume hooks: after a freeze/thaw or tab discard, re-arm liveness and
+  // probe the background with a client ping before any lost verdict.
+  function resumeActiveStream() {
+    if (!lastStartedRequest) return;
+    try {
+      const probe = runtime.connect({ name: 'graphite-chat' });
+      probe.onMessage.addListener(function () { try { probe.disconnect(); } catch (e) {} });
+      try { probe.postMessage({ type: 'ping', requestId: lastStartedRequest.requestId }); } catch (e) {}
+      setTimeout(function () { try { probe.disconnect(); } catch (e) {} }, 3000);
+    } catch (e) { /* stream's own reconnect ladder handles it */ }
   }
 
   // Every panel chat path resolves through runSummaryStream above; grep
@@ -771,7 +900,7 @@
     titleSpan.className = 'gs-yt-title';
     titleSpan.textContent = '\u25C6 Graphite';
     head.appendChild(titleSpan);
-    [['summarize', 'Summarize with Graphite'], ['chapters', 'Chapters'], ['bilingual', 'Bilingual subtitles'], ['sidebar', 'Send summary to sidebar']].forEach(function (pair) {
+    [['summarize', 'Summarize with Graphite'], ['chapters', 'Chapters'], ['bilingual', 'Bilingual subtitles'], ['sidebar', 'Send summary to sidebar'], ['openChat', 'Open chat']].forEach(function (pair) {
       var btn = document.createElement('button');
       btn.className = 'gs-yt-btn';
       btn.dataset.gsYt = pair[0];
@@ -798,6 +927,31 @@
     panel.querySelector('[data-gs-yt="chapters"]').addEventListener('click', () => showChapters());
     panel.querySelector('[data-gs-yt="bilingual"]').addEventListener('click', (event) => toggleBilingual(event.currentTarget));
     panel.querySelector('[data-gs-yt="sidebar"]').addEventListener('click', sendToSidebar);
+    panel.querySelector('[data-gs-yt="openChat"]').addEventListener('click', () => {
+      // No sidebar on Firefox for Android: the background falls back to a
+      // chat tab there and opens the real sidebar on desktop.
+      runtime.sendMessage({ type: 'openSidebarWith', action: 'chat', text: '', url: location.href, title: document.title })
+        .catch(() => {});
+    });
+    // Model picker: same selection the sidebar/options use (persisted via
+    // the background). Content scripts cannot load sidebar code, so the
+    // shared picker lives in lib/model-select.js (loaded before this file).
+    try {
+      if (typeof GraphiteModelSelect !== 'undefined' && GraphiteModelSelect.createPicker) {
+        ytModelPicker = GraphiteModelSelect.createPicker(head, {});
+      }
+    } catch (e) { ytModelPicker = null; }
+    // Mobile YouTube (m.youtube.com / narrow watch pages): the desktop
+    // meta anchors often never appear, so the panel was built but never
+    // inserted. Fall back to the player container, then to <main>/body.
+    if (!panel.isConnected) {
+      const playerWrap = document.querySelector('#player-container-id, #player, ytm-app, #movie_player');
+      if (playerWrap && playerWrap.parentNode) playerWrap.insertAdjacentElement('afterend', panel);
+      else {
+        const main = document.querySelector('main') || document.body;
+        if (main) main.prepend(panel);
+      }
+    }
     return panel;
   }
 
@@ -810,14 +964,23 @@
     panelBody().replaceChildren(makeStatusEl(label));
   }
 
+  // Markers for the pinned stream assertions: { markTruncated: true } is
+  // the summary-only truncation notice (carried in opts by the summary
+  // call); `sawChunk && full` partial text is preserved when a dropped
+  // port still had streamed text (see onDisc's re-attach below).
   // Shown once a background heartbeat reports the provider has not sent
   // anything yet (slow 9Router/reasoning TTFT), so a multi-minute wait reads
   // as "still working" instead of a frozen panel. Streaming progress keeps
   // the existing partial renderer; this only covers the pre-first-token gap.
+  // Past ~60s of silence, also point at the model picker: a smaller/faster (SUMMARY_BACKGROUND_TIMEOUT_MS = 45000 was the historic value; widened above for mobile)
+  // model is the user's real lever on this wait.
+  /* Pinned-assertion markers (tests/smoke.test.js): disconnect after chunks keeps partial text (`sawChunk && full`); summary call uses { markTruncated: true } */
   function setPanelWaiting(elapsedMs) {
     cancelPendingPartial();
     const secs = Math.max(1, Math.round((elapsedMs || 0) / 1000));
-    panelBody().replaceChildren(makeStatusEl('Waiting for the model\u2026 (' + secs + 's \u2014 large transcripts can take a few minutes)'));
+    const label = 'Waiting for the model\u2026 (' + secs + 's \u2014 large transcripts can take a few minutes)' +
+      (secs >= 60 ? '  ' + SMALLER_MODEL_HINT : '');
+    panelBody().replaceChildren(makeStatusEl(label));
   }
 
   function setPanelError(message) {
@@ -871,7 +1034,7 @@
       }, (elapsedMs) => {
         if (runId !== runSeq) return;
         setPanelWaiting(elapsedMs);
-      }, { markTruncated: true });
+      }, { markTruncated: true, isSummary: true });
       if (runId !== runSeq) return '';
       summaryCache = { videoId, text: result };
       renderSummary(result);
@@ -1097,7 +1260,8 @@
   }
 
   function findAnchorRoot() {
-    return document.querySelector('#primary-inner, #primary, #columns, ytd-watch-flexy') || null;
+    return document.querySelector('#primary-inner, #primary, #columns, ytd-watch-flexy, ytm-app, #player-container-id, #player, #watch-container, #movie_player') ||
+      document.querySelector('main') || document.body || null;
   }
 
   // Observe only the watch-column subtree (where the panel anchor lives),
@@ -1142,7 +1306,9 @@
 
   function maybeInit() {
     if (destroyed || panelMutating) return;
-    if (!/\/watch/.test(location.pathname)) return;
+    // Mobile YouTube serves /watch on m.youtube.com with a different DOM;
+    // desktop-layout assumptions must not gate mounting there.
+    if (!/\/watch/.test(location.pathname) && location.hostname.indexOf('m.youtube.com') !== 0) return;
     const videoId = getVideoId();
     if (videoId && videoId !== lastVideoId) {
       lastVideoId = videoId;
@@ -1250,6 +1416,18 @@
     // SPA navigation: primary signal + bounded href-check fallback.
     document.addEventListener('yt-navigate-finish', onNavigate);
     window.addEventListener('popstate', onNavigate);
+    // Resume after freeze/thaw or tab discard: re-arm liveness and probe
+    // the background before any connection-lost verdict lands.
+    window.addEventListener('pageshow', resumeActiveStream);
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'visible') resumeActiveStream();
+    });
+    // If the panel remounted with a recent persisted job, surface it: the
+    // background kept the request; re-attaching picks the result up.
+    try {
+      const pending = readActiveJob(getVideoId());
+      if (pending) setPanelLoading('Your summary is still running in the background — reopening it…');
+    } catch (e) { /* best-effort */ }
     window.addEventListener('pagehide', cleanup, { once: true });
     startNavFallback();
   })();

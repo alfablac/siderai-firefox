@@ -64,8 +64,18 @@
     while (doc.body.firstChild) el.appendChild(doc.body.firstChild);
   }
 
+  // Shared provider/model picker (lib/model-select.js, loaded before this
+  // file): the choice persists via the background (setActiveModel) and is
+  // sent per request below so a faster model can serve search answers.
+  let searchModelPicker = null;
+
   async function chatSync(messages, action) {
-    const raw = await runtime.sendMessage({ type: 'chatSync', messages, action });
+    const sel = searchModelPicker ? searchModelPicker.getSelection() : null;
+    const raw = await runtime.sendMessage({
+      type: 'chatSync', messages, action,
+      providerId: sel ? sel.providerId : undefined,
+      model: sel ? sel.model : undefined
+    });
     if (!raw) throw new Error('No response from background');
     const res = (raw && typeof raw === 'object' && 'ok' in raw && ('result' in raw || 'error' in raw))
       ? (raw.ok ? raw.result : (() => { throw new Error(raw.error || 'Request failed'); })())
@@ -160,6 +170,22 @@
     title.className = 'gs-search-title';
     title.textContent = '◆ Graphite AI Answer';
     head.appendChild(title);
+    try {
+      if (typeof GraphiteModelSelect !== 'undefined' && GraphiteModelSelect.createPicker) {
+        searchModelPicker = GraphiteModelSelect.createPicker(head, {});
+      }
+    } catch (e) { searchModelPicker = null; }
+    // No sidebar on Firefox for Android: open the chat (sidebar on desktop,
+    // chat tab there) from the card too.
+    const openChatBtn = document.createElement('button');
+    openChatBtn.className = 'gs-yt-btn gs-search-open-chat';
+    openChatBtn.type = 'button';
+    openChatBtn.textContent = 'Open chat';
+    openChatBtn.addEventListener('click', () => {
+      runtime.sendMessage({ type: 'openSidebarWith', action: 'chat', text: '', url: location.href, title: document.title })
+        .catch(() => {});
+    });
+    head.appendChild(openChatBtn);
     const body = document.createElement('div');
     body.className = 'gs-search-body';
     const sources = document.createElement('p');
