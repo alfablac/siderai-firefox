@@ -724,12 +724,18 @@
   color: #e6e8eb;
   border: 1px solid #33373f;
   border-radius: 12px;
-  padding: 14px;
+  padding: 16px 18px;
   margin: 0 0 16px;
   font-family: "Inter", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
-  font-size: 13px;
-  line-height: 1.55;
+  font-size: 14px;
+  line-height: 1.6;
   box-sizing: border-box;
+  /* Fill the container it lands in (rail or results column) instead of
+     shrinking to content width. */
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+  flex: 1 1 auto;
 }
 
 .gs-search-card * {
@@ -774,17 +780,21 @@
   margin-top: 8px;
 }
 
-/* No native rail on this results page: sit in a right column next to the
-   results instead of spanning the top of the column. */
+/* No native rail on this results page: the card stretches to fill its
+   container (full width of the results column, capped at a readable measure)
+   instead of the old shrunk 336px floated column. The legacy
+   --rail-fallback class is kept as an alias for any already-mounted card. */
+.gs-search-card--stretch,
 .gs-search-card--rail-fallback {
-  /* Block containers: float beside the results column. */
-  float: right;
-  width: min(336px, 36%);
-  margin: 0 0 16px 20px;
-  /* Flex-row containers: be the last (rightmost) item instead. */
-  order: 99;
-  flex: 0 0 min(336px, 36%);
-  align-self: flex-start;
+  float: none;
+  width: 100%;
+  max-width: 880px;
+  margin: 0 auto 20px 0;
+  /* Flex/grid containers: take a whole row, not a squeezed flex item. */
+  flex: 1 1 100%;
+  order: 0;
+  align-self: stretch;
+  clear: both;
 }
 
 /* ---------- shared provider/model picker (lib/model-select.js) ---------- */
@@ -853,10 +863,12 @@
      (.gs-toolbar-btn--labelled, content.js). The old always-visible 9px
      inline labels made every button read as icon+text on mobile. */
   /* Narrow screens: the search card stacks full-width above the results
-     instead of a squeezed right-column float. */
+     (the stretch class already does this; keep the legacy class in sync). */
+  .gs-search-card--stretch,
   .gs-search-card--rail-fallback {
     float: none;
-    width: auto;
+    width: 100%;
+    max-width: 100%;
     flex: 1 1 auto;
     order: 0;
     margin: 0 0 16px 0;

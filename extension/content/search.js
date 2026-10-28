@@ -102,10 +102,18 @@
     return 'Google';
   }
 
+  // Results are collected FRESH at generate time (and re-collected while the
+  // page settles): Google renders results progressively, so a snapshot taken
+  // when the card first mounts is often empty — the old card then told the
+  // model "no results" and it reported the search as empty. Broad selectors:
+  // current Google markup nests results as #rso > div with h3 links, and the
+  // .g class comes and goes between experiments.
   function collectResults(limit) {
     const selectors = [
-      // Google
-      '#search .g, #rso .g, div[data-hveid] h3',
+      // Google (specific first, then the broad container sweep)
+      '#rso .g, #search .g',
+      '#rso div[data-hveid] h3, #search div[data-hveid] h3',
+      '#rso h3, #search h3',
       // Bing
       '#b_results .b_algo',
       // DuckDuckGo
@@ -119,6 +127,7 @@
     const results = [];
     const seen = new Set();
     for (const node of nodes) {
+      if (node.closest && node.closest('.gs-search-card')) continue;
       const root = node.closest('.g, .b_algo, .result, .web-result, article') || node;
       const titleEl = root.querySelector('h3, h2, .result__title, a[data-testid="result-title-a"]') || root.querySelector('a');
       const snippetEl = root.querySelector(
@@ -138,7 +147,9 @@
   }
 
   // The answer belongs in the right rail (Google #rhs, Bing #b_context,
-  // DuckDuckGo sidebar), never at the top of the main results column.
+  // DuckDuckGo sidebar) and must fill that container; without a native rail it
+  // stretches across the results area instead of sitting shrunk in a narrow
+  // floated column. Insertion never lands at the top of the results column.
   function insertionPoint() {
     // 1. The engine's own right rail, when present (Google renders #rhs
     //    only with knowledge-panel-type content; on plain queries it is
@@ -150,9 +161,10 @@
         return { el, rail: true };
       }
     }
-    // 2. No rail: build our own column next to the main results. Prepending
-    //    inside #rcnt (Google's two-column container) keeps the card
-    //    beside, not above, the organic results.
+    // 2. No rail: park the card in its own full-width block above the results
+    //    list (inside #rcnt/#search it spans the container instead of being
+    //    squeezed into a 336px float); tryInsert marks it with the stretch
+    //    class so the CSS below can lay it out wide.
     const mainSelectors = ['#rcnt', '#search', '#b_results', '#links', '#web_content_wrapper', 'main'];
     for (const selector of mainSelectors) {
       const el = document.querySelector(selector);
@@ -161,9 +173,13 @@
     return null;
   }
 
-  function buildCard(query, results) {
+  function buildCard(query, initialResults) {
     const card = document.createElement('section');
     card.className = 'gs-search-card';
+    // Live state, not the mount-time snapshot: refreshResults() re-collects
+    // so late-rendered results are seen, and the Generate handler always
+    // reads this array instead of a stale closure.
+    const state = { results: (initialResults || []).slice() };
     const head = document.createElement('div');
     head.className = 'gs-search-head';
     const title = document.createElement('span');
@@ -190,9 +206,26 @@
     body.className = 'gs-search-body';
     const sources = document.createElement('p');
     sources.className = 'gs-search-sources';
-    sources.textContent = 'Answer "' + query + '" using the top ' +
-      results.length + ' ' + engineName() + ' results as context. Generated only when you ask.';
     body.appendChild(sources);
+    // Honest count text, kept current by refreshResults(). The search is
+    // only reported as having no results when collection is STILL empty
+    // after re-collecting against the settled page.
+    function describeResults() {
+      if (state.results.length) {
+        sources.textContent = 'Answer "' + query + '" using the top ' +
+          state.results.length + ' ' + engineName() + ' results as context. Generated only when you ask.';
+      } else {
+        sources.textContent = 'No ' + engineName() + ' results found on this page yet — they may still be loading. ' +
+          'Clicking Generate re-checks the page before answering.';
+      }
+    }
+    function refreshResults() {
+      const fresh = collectResults(5);
+      if (fresh.length) state.results = fresh;
+      describeResults();
+      return state.results;
+    }
+    refreshResults();
     const foot = document.createElement('div');
     foot.className = 'gs-search-foot';
     const button = document.createElement('button');
@@ -206,6 +239,10 @@
     button.addEventListener('click', async () => {
       button.disabled = true;
       button.textContent = 'Generating...';
+      // Re-collect NOW: results rendered after the card mounted (the common
+      // case on Google) must be in the prompt, not the stale empty snapshot.
+      refreshResults();
+      const results = state.results;
       while (body.firstChild) body.removeChild(body.firstChild);
       const status = document.createElement('span');
       status.className = 'gs-yt-status';
@@ -217,9 +254,14 @@
       const context = results.map((r, i) =>
         (i + 1) + '. ' + r.title + (r.snippet ? '\n   ' + r.snippet : '') + (r.url ? '\n   ' + r.url : '')
       ).join('\n');
-      const prompt =
-        'Answer this search query concisely and helpfully, using the search results below as context where relevant. Mention sources by number like [1] when you rely on them. If the results do not answer the query, say so briefly and answer from general knowledge.\n\nQuery: ' +
-        query + '\n\nSearch results:\n' + context;
+      // Only when collection is genuinely empty after the fresh re-collect
+      // does the prompt say so; otherwise the real results are the context
+      // and the model must answer from them, not claim the search was empty.
+      const prompt = results.length
+        ? 'Answer this search query concisely and helpfully, using the search results below as context where relevant. Mention sources by number like [1] when you rely on them. If the results do not answer the query, say so briefly and answer from general knowledge.\n\nQuery: ' +
+          query + '\n\nSearch results:\n' + context
+        : 'Answer this search query concisely and helpfully from your general knowledge. No search-result snippets could be read from the results page, so do not claim the search itself returned nothing — just answer the question directly.\n\nQuery: ' +
+          query;
       try {
         const answer = await chatSync([{ role: 'user', content: prompt }], 'search-answer');
         setGeneratedHtml(body, markdownLite(answer));
@@ -262,7 +304,26 @@
         button.textContent = 'Try again';
       }
     });
+    card.__gsRefreshResults = refreshResults;
+    card.__gsHasResults = () => state.results.length > 0;
     return card;
+  }
+
+  // Keep re-collecting results until they appear (Google renders them after
+  // the card mounts) or the watch expires; also re-lays the card out if the
+  // page reflows. Disconnects once results are flowing.
+  function watchCard(card) {
+    if (!card || card.__gsWatching) return;
+    card.__gsWatching = true;
+    let ticks = 0;
+    const observer = new MutationObserver(() => {
+      ticks += 1;
+      if (typeof card.__gsRefreshResults === 'function') card.__gsRefreshResults();
+      const done = typeof card.__gsHasResults === 'function' && card.__gsHasResults();
+      if (done || ticks > 40) observer.disconnect();
+    });
+    observer.observe(document.documentElement, { childList: true, subtree: true });
+    setTimeout(() => observer.disconnect(), 15000);
   }
 
   async function init() {
@@ -277,7 +338,12 @@
     if (stored.searchEnhance === false) return;
 
     const tryInsert = () => {
-      if (document.querySelector('.gs-search-card')) return true;
+      const existing = document.querySelector('.gs-search-card');
+      if (existing) {
+        // Keep the mounted card fed with late-rendered results.
+        watchCard(existing);
+        return true;
+      }
       const query = getQuery();
       if (!query) return false;
       const target = insertionPoint();
@@ -287,12 +353,13 @@
       if (target.rail) {
         target.el.prepend(card);
       } else {
-        // Park in a right-side column of our own instead of inflating the
-        // top of the results column. The host page's layout rows already
-        // place the card on the right; the class only tightens it.
-        card.classList.add('gs-search-card--rail-fallback');
+        // No native rail: the card becomes a full-width block of its own
+        // above the results list (the stretch class in overlay.css), never
+        // a shrunk floated column.
+        card.classList.add('gs-search-card--stretch');
         target.el.prepend(card);
       }
+      watchCard(card);
       return true;
     };
 

@@ -649,12 +649,12 @@ check("background prompt path guarded and loads settings", () => {
   assert.ok(!/(^|[^\w.$])global\./.test(bg), "background.js must not use the bare global object");
 });
 
-check("manifest background order and release version 1.0.23", () => {
+check("manifest background order and release version 1.0.24", () => {
   assert.ok(manifest, "manifest required");
   const scripts = (manifest.background && manifest.background.scripts) || [];
   const iP = scripts.indexOf("lib/prompts.js"), iY = scripts.indexOf("lib/youtube.js"), iB = scripts.indexOf("background.js");
   assert.ok(iP >= 0 && iY >= 0 && iB > iP && iB > iY, "lib/prompts.js + lib/youtube.js load before background.js");
-  assert.strictEqual(manifest.version, "1.0.23", "release version");
+  assert.strictEqual(manifest.version, "1.0.24", "release version");
 });
 
 /* ---------- 1.0.6 bug: transcript truncated at 22:52 of a 44:59 video -----
@@ -966,8 +966,9 @@ check("search AI answer: right rail, Google #22242a background", () => {
   assert.ok(insert.includes("'#b_context'"), "Bing #b_context still a rail candidate");
   assert.ok(insert.includes("getClientRects"), "empty/hidden rails are skipped");
   assert.ok(insert.indexOf("'#rhs'") < insert.indexOf("'#rcnt'"), "rail is tried before main-column fallbacks");
-  assert.ok(src.includes("gs-search-card--rail-fallback"), "fallback path marks the card for right-column placement");
-  assert.ok(/\.gs-search-card--rail-fallback\s\{[^}]*float:\s*right/.test(css), "fallback column sits on the right");
+  assert.ok(src.includes("gs-search-card--stretch"), "fallback path marks the card to stretch full-width");
+  assert.ok(/\.gs-search-card--stretch[^{]*\{[^}]*width:\s*100%/.test(css), "stretch card fills its container width");
+  assert.ok(!/float:\s*right/.test(css.match(/\.gs-search-card--rail-fallback\s\{[^}]*\}/)?.[0] || ""), "no shrunk floated column remains");
   // Main-column insertion must not happen silently: the only un-classed
   // insertion is into the rail itself.
   const tryInsert = src.slice(src.indexOf("const tryInsert"), src.indexOf("if (!tryInsert())"));
@@ -976,6 +977,39 @@ check("search AI answer: right rail, Google #22242a background", () => {
   assert.ok(src.includes("Generate answer"), "opt-in Generate button intact");
   assert.ok(src.includes("stored.searchEnhance === false"), "searchEnhance gate intact");
   assert.ok(src.includes("'search-answer'"), "search-answer action unchanged");
+});
+
+/* ---------- 1.0.24: search card — fresh results, full-width box ----------
+   Regression: the card captured results once at mount (often before Google
+   rendered them) and the Generate handler closed over that stale, usually
+   empty array, so the model reported the search as empty. The card also
+   shrank into a 336px floated column outside a native rail. */
+check("1.0.24: search card re-collects results and stretches to fill its container", () => {
+  const src = fs.readFileSync(path.join(EXT, "content/search.js"), "utf8");
+  const css = fs.readFileSync(path.join(EXT, "content/overlay.css"), "utf8");
+  const build = src.slice(src.indexOf("function buildCard"), src.indexOf("async function init"));
+  // Results are live state, refreshed re-entrantly — not a mount snapshot.
+  assert.ok(build.includes("refreshResults"), "card refreshes results after mount");
+  assert.ok(build.includes("collectResults(5)"), "refresh re-collects from the live page");
+  const click = build.slice(build.indexOf("button.addEventListener('click'"));
+  assert.ok(click.includes("refreshResults()"), "Generate re-collects before prompting");
+  // Broad Google selectors (the .g class comes and goes between experiments).
+  assert.ok(src.includes("#rso h3, #search h3"), "broad h3 fallback selector present");
+  // Empty is honest only after a fresh re-collect, and the prompt then asks
+  // for a direct answer instead of claiming the search returned nothing.
+  assert.ok(src.includes("do not claim the search itself returned nothing"), "empty prompt never blames the search");
+  assert.ok(build.includes("No ") && build.includes("results found on this page yet"), "honest still-loading label");
+  // Card fills its container; fallback is a full-width stretched block.
+  const cardCss = css.match(/\.gs-search-card\s\{[^}]*\}/)[0];
+  assert.ok(cardCss.includes("width: 100%"), "card fills its container width");
+  const stretch = css.match(/\.gs-search-card--stretch,[^{]*\{[^}]*\}/)[0];
+  assert.ok(stretch.includes("width: 100%"), "stretch fallback is full width");
+  assert.ok(stretch.includes("max-width: 880px"), "stretch fallback has a readable cap, not 336px");
+  assert.ok(!stretch.includes("float: right"), "no floated column");
+  assert.ok(src.includes("gs-search-card--stretch"), "non-rail insertion uses the stretch class");
+  // Late results keep flowing into a mounted card.
+  assert.ok(src.includes("watchCard"), "mounted card is watched for late results");
+  assert.ok(src.includes("__gsRefreshResults"), "card exposes its refresher to the watcher");
 });
 
 /* ---------- 1.0.9: icon selection toolbar, Copy first -------------------
@@ -1483,7 +1517,7 @@ Promise.all([Promise.resolve(sseDone), Promise.resolve(imageDone), Promise.resol
    fallback, widened liveness, touch selection, helper payloads. */
 check("1.0.21: version, model-select wiring, detach transport, mobile surfaces", () => {
   assert.ok(manifest, "manifest required");
-  assert.strictEqual(manifest.version, "1.0.23", "release version");
+  assert.strictEqual(manifest.version, "1.0.24", "release version");
   assert.ok(manifest.browser_specific_settings.gecko_android, "gecko_android block present");
   // Shared picker loads before both helpers.
   const ytEntry = (manifest.content_scripts || []).find((cs) => (cs.js || []).includes("content/youtube.js"));
@@ -1579,7 +1613,7 @@ check("1.0.19: icons built as same-document SVG nodes (no DOMParser import)", ()
    static 9px text; now icons-only everywhere, name via long-press. */
 check("1.0.23: panel placement ladder + long-press toolbar labels", () => {
   assert.ok(manifest, "manifest required");
-  assert.strictEqual(manifest.version, "1.0.23", "release version 1.0.23");
+  assert.strictEqual(manifest.version, "1.0.24", "release version 1.0.24");
   const yt = fs.readFileSync(path.join(EXT, "content/youtube.js"), "utf8");
   // Ladder exists, tried sequentially in priority order.
   const ladder = yt.slice(yt.indexOf("const PANEL_PLACEMENTS"), yt.indexOf("function bestPanelPlacement"));
