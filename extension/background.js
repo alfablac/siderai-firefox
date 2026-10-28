@@ -1022,6 +1022,32 @@ function handleMessage(msg) {
         return executeInTab(tid, hsCode).then(function (res) { return (res && res[0]) || { ok: false, error: 'empty result' }; });
       });
     }
+    case 'parseCaptions': {
+      // VTT/SRT -> GraphiteYouTube-shaped segments, parsed with the pure
+      // regex parser so sidebar, background and tests agree on one shape.
+      if (typeof GraphiteCaptions === 'undefined' || !GraphiteCaptions || typeof GraphiteCaptions.parseCues !== 'function') {
+        return Promise.reject(new Error('parseCaptions: caption library unavailable'));
+      }
+      var captionText = String(msg.text || msg.captions || '');
+      if (!captionText) return Promise.reject(new Error('parseCaptions: send text (VTT/SRT)'));
+      var parsedSegments = GraphiteCaptions.parseCues(captionText);
+      return Promise.resolve({
+        segments: parsedSegments,
+        text: GraphiteCaptions.segmentsToText(parsedSegments, true),
+        count: parsedSegments.length
+      });
+    }
+    case 'normalizeCues': {
+      if (typeof GraphiteCaptions === 'undefined' || !GraphiteCaptions || typeof GraphiteCaptions.fromTrackCues !== 'function') {
+        return Promise.reject(new Error('normalizeCues: caption library unavailable'));
+      }
+      var cueSegments = GraphiteCaptions.fromTrackCues(Array.isArray(msg.cues) ? msg.cues : []);
+      return Promise.resolve({
+        segments: cueSegments,
+        text: GraphiteCaptions.segmentsToText(cueSegments, true),
+        count: cueSegments.length
+      });
+    }
     case 'features':
       return Promise.resolve(FEATURES);
     case 'ping':

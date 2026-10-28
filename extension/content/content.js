@@ -2135,9 +2135,177 @@
       case 'hand-scroll':
         window.scrollBy(0, payload.amount || 600);
         return { ok: true, y: window.scrollY };
+      case 'list-videos':
+        return listPageVideos();
+      case 'video-captions':
+        return getPageVideoCaptions(payload);
+      case 'video-seek': {
+        const seekTarget = findIndexedVideo(payload || {});
+        if (!seekTarget) return { ok: false, error: 'Video not found — rescan the page, then try again.' };
+        const seconds = Math.max(0, Number(payload.seconds) || 0);
+        try { seekTarget.currentTime = seconds; } catch (e) { /* metadata not loaded yet */ }
+        try { if (seekTarget.play) { const p = seekTarget.play(); if (p && p.catch) p.catch(() => {}); } } catch (e) { /* ignore */ }
+        try { seekTarget.scrollIntoView({ block: 'center', behavior: 'smooth' }); } catch (e) { /* ignore */ }
+        return { ok: true, currentTime: seconds };
+      }
+      case 'video-media': {
+        // Direct media URL the sidebar transcribes through the provider's
+        // Whisper endpoint (background fetches it there). Blob: URLs cannot
+        // be fetched outside this page, so surface that honestly.
+        const mediaTarget = findIndexedVideo(payload || {});
+        if (!mediaTarget) return { ok: false, error: 'Video not found — rescan the page, then try again.' };
+        const mediaUrl = mediaTarget.currentSrc || mediaTarget.src || '';
+        if (!mediaUrl) return { ok: false, error: 'This player has no direct media URL (likely an MSE/streaming source).' };
+        if (/^blob:/i.test(mediaUrl)) return { ok: false, error: 'This player streams via a blob/MSE source that cannot be sent to the transcription provider.' };
+        return { ok: true, url: mediaUrl, duration: (isFinite(mediaTarget.duration) ? Math.round(mediaTarget.duration) : 0), label: videoLabel(mediaTarget, Number(payload.index) || 0) };
+      }
       default:
         return { ok: false, error: 'Unknown command: ' + command };
     }
+  }
+
+  // ------------------------------------------------------- page videos
+
+  var GS_VIDEO_INDEX = 'data-graphite-video-index';
+
+  function videoLabel(video, index) {
+    var name = video.getAttribute('aria-label') || video.getAttribute('title') || video.title || '';
+    // Common players expose the media title via <title> or nearby heading.
+    if (!name && video.getAttribute('src')) {
+      try { name = decodeURIComponent(new URL(video.getAttribute('src'), location.href).pathname.split('/').pop() || ''); } catch (e) { name = ''; }
+    }
+    if (!name) name = 'Video ' + (index + 1);
+    return truncate(name, 160);
+  }
+
+  function videoTrackLabel(track, media) {
+    return truncate(track.label || track.language || track.kind || track.id || media, 80);
+  }
+
+  // Source URLs a <track> element points at (resolved against the page).
+  function collectTrackUrls(video) {
+    var tracks = [];
+    Array.from(video.querySelectorAll('track')).forEach((trackEl) => {
+      var url = trackEl.src || '';
+      if (!url) return;
+      tracks.push({
+        src: url,
+        kind: trackEl.kind || 'subtitles',
+        lang: trackEl.srclang || '',
+        label: videoTrackLabel(trackEl, 'track')
+      });
+    });
+    return tracks;
+  }
+
+  // TextTrack cues already loaded by the page (no fetch needed). Content
+  // scripts share this page's DOM, so `video.textTracks` is readable when
+  // the track is same-origin; cross-origin tracks throw or stay private.
+  function readTextTrackCues(video) {
+    var out = [];
+    try {
+      Array.from(video.textTracks || []).forEach((tt) => {
+        if (!tt || !tt.cues || !tt.cues.length) return;
+        var cues = Array.from(tt.cues).map((cue) => ({
+          startTime: cue ? cue.startTime : 0, endTime: cue ? cue.endTime : 0, text: cue ? cue.text : ''
+        }));
+        out.push({
+          kind: tt.kind || 'subtitles', lang: tt.language || '', label: videoTrackLabel(tt, 'track'),
+          cues: cues
+        });
+      });
+    } catch (e) { /* cross-origin TextTrack — fall back to <track src> fetch later */ }
+    return out;
+  }
+
+  /* Inventory every media element on the page the sidebar can act on.
+   * Returns serialisable descriptors only (no DOM nodes cross messages). */
+  function listPageVideos() {
+    var items = [];
+    var nodes = Array.from(document.querySelectorAll('video, audio'));
+    nodes.forEach((el) => {
+      var kind = el.tagName.toLowerCase();
+      var index = items.length;
+      el.setAttribute(GS_VIDEO_INDEX, String(index));
+      var srcEl = el.querySelector('source[src]');
+      var src = el.currentSrc || el.src || (srcEl ? (srcEl.currentSrc || srcEl.src || '') : '');
+      var srcs = [];
+      if (src) srcs.push(src);
+      Array.from(el.querySelectorAll('source[src]')).forEach((s) => {
+        if (s.src) srcs.push(s.src);
+      });
+      var trackTracks = readTextTrackCues(el);
+      var base = {
+        index: index,
+        kind: kind,
+        label: videoLabel(el, index),
+        src: src || srcs[0] || '',
+        srcs: Array.from(new Set(srcs)).slice(0, 6),
+        duration: (isFinite(el.duration) && el.duration > 0) ? Math.round(el.duration) : 0,
+        currentTime: Math.round(el.currentTime || 0),
+        paused: !!el.paused,
+        readyState: Number(el.readyState || 0),
+        poster: el.poster || '',
+        visible: isVisible(el),
+        trackUrls: collectTrackUrls(el),
+        tracks: trackTracks
+      };
+      items.push(base);
+    });
+    // YouTube watch pages are driven by the dedicated YouTube panel, but the
+    // inventory should still surface them via the YouTube transcript route.
+    if (items.length === 0 && /(^|\.)youtube\.com$/i.test(location.hostname)) {
+      items.push({
+        index: 0, kind: 'video', label: document.title || 'YouTube video', youTube: true,
+        src: location.href, srcs: [location.href], duration: 0, currentTime: 0,
+        paused: true, readyState: 0, poster: '', visible: true, trackUrls: [], tracks: []
+      });
+    }
+    return { items: items, title: document.title, url: location.href, count: items.length };
+  }
+
+  function findIndexedVideo(payload) {
+    if (payload.index != null) {
+      var el = document.querySelector('[' + GS_VIDEO_INDEX + '="' + String(payload.index).replace(/"/g, '') + '"]');
+      if (el) return el;
+    }
+    var nodes = Array.from(document.querySelectorAll('video, audio'));
+    if (payload.index != null && nodes[payload.index]) return nodes[payload.index];
+    return null;
+  }
+
+  // Direct caption fetch for same-origin <track src> (extension origin can
+  // read page files; cross-origin tracks usually refuse with CORS).
+  async function fetchTrackText(url) {
+    try {
+      var response = await fetch(url, { credentials: 'omit' });
+      if (!response.ok) return '';
+      return await response.text();
+    } catch (e) { return ''; }
+  }
+
+  /* Fetch a caption track as raw VTT/SRT text. Never throws. */
+  async function getPageVideoCaptions(payload) {
+    var video = findIndexedVideo(payload || {});
+    if (!video) return { error: 'Video not found — rescan the page, then try again.' };
+    // 1) Cues the page already loaded.
+    var loaded = readTextTrackCues(video);
+    if (loaded.length) {
+      var first = loaded.find((t) => t.cues && t.cues.length) || loaded[0];
+      return {
+        segments: first.cues, lang: first.lang || '', kind: first.kind || '',
+        label: first.label || '', source: 'texttrack'
+      };
+    }
+    // 2) <track src> files on the page.
+    var trackUrls = collectTrackUrls(video);
+    var candidate = trackUrls.find((t) => /subtitle|caption/i.test(t.kind || '')) || trackUrls[0];
+    if (candidate) {
+      var body = await fetchTrackText(candidate.src);
+      if (body) return { captionText: body, lang: candidate.lang || '', label: candidate.label || '', source: 'track-src' };
+      return { error: 'The caption file could not be fetched (usually CORS). Try audio transcription instead.' };
+    }
+    return { error: 'No captions/subtitles on this video. Try audio transcription instead.' };
   }
 
   // ------------------------------------------------------------- listeners

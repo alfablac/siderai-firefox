@@ -649,12 +649,12 @@ check("background prompt path guarded and loads settings", () => {
   assert.ok(!/(^|[^\w.$])global\./.test(bg), "background.js must not use the bare global object");
 });
 
-check("manifest background order and release version 1.0.25", () => {
+check("manifest background order and release version 1.0.26", () => {
   assert.ok(manifest, "manifest required");
   const scripts = (manifest.background && manifest.background.scripts) || [];
   const iP = scripts.indexOf("lib/prompts.js"), iY = scripts.indexOf("lib/youtube.js"), iB = scripts.indexOf("background.js");
   assert.ok(iP >= 0 && iY >= 0 && iB > iP && iB > iY, "lib/prompts.js + lib/youtube.js load before background.js");
-  assert.strictEqual(manifest.version, "1.0.25", "release version");
+  assert.strictEqual(manifest.version, "1.0.26", "release version");
 });
 
 /* ---------- 1.0.6 bug: transcript truncated at 22:52 of a 44:59 video -----
@@ -1517,7 +1517,7 @@ Promise.all([Promise.resolve(sseDone), Promise.resolve(imageDone), Promise.resol
    fallback, widened liveness, touch selection, helper payloads. */
 check("1.0.21: version, model-select wiring, detach transport, mobile surfaces", () => {
   assert.ok(manifest, "manifest required");
-  assert.strictEqual(manifest.version, "1.0.25", "release version");
+  assert.strictEqual(manifest.version, "1.0.26", "release version");
   assert.ok(manifest.browser_specific_settings.gecko_android, "gecko_android block present");
   // Shared picker loads before both helpers.
   const ytEntry = (manifest.content_scripts || []).find((cs) => (cs.js || []).includes("content/youtube.js"));
@@ -1613,7 +1613,7 @@ check("1.0.19: icons built as same-document SVG nodes (no DOMParser import)", ()
    static 9px text; now icons-only everywhere, name via long-press. */
 check("1.0.23: panel placement ladder + long-press toolbar labels", () => {
   assert.ok(manifest, "manifest required");
-  assert.strictEqual(manifest.version, "1.0.25", "release version 1.0.25");
+  assert.strictEqual(manifest.version, "1.0.26", "release version 1.0.26");
   const yt = fs.readFileSync(path.join(EXT, "content/youtube.js"), "utf8");
   // Ladder exists, tried sequentially in priority order.
   const ladder = yt.slice(yt.indexOf("const PANEL_PLACEMENTS"), yt.indexOf("function bestPanelPlacement"));
@@ -1804,4 +1804,81 @@ check("Hand run records: storage, background cases outside pinned slice, summary
   assert.ok(/handLogEntries/.test(side), "structured hand log entries");
   assert.ok(side.includes("20000"), "hand extract cap 20000 present");
   assert.ok(!/innerHTML\s*=/.test(side), "sidebar still never assigns innerHTML");
+});
+
+check("1.0.26 Videos tab: any-page video inventory, transcribe/summarize/translate", () => {
+  const html = fs.readFileSync(path.join(EXT, "sidebar/sidebar.html"), "utf8");
+  assert.ok(html.includes('data-view="videos"'), "Videos tab button present");
+  assert.ok(html.includes('id="view-videos"'), "videos view section present");
+  ["videoHost", "videoScanBtn", "videoChatBtn", "videoStatus", "videoList", "videoDetail",
+    "videoDetailTitle", "videoDetailMeta", "videoLangSel", "videoTranscribeBtn",
+    "videoSummarizeBtn", "videoTranslateBtn", "videoCopyBtn", "videoDownloadBtn",
+    "videoDetailStatus", "videoSeekRow", "videoResult", "videoTranscriptText"].forEach((id) => {
+    assert.ok(html.includes('id="' + id + '"'), "sidebar element #" + id);
+  });
+  assert.ok(html.includes("../lib/captions.js"), "sidebar loads the caption parser");
+
+  const side = fs.readFileSync(path.join(EXT, "sidebar/sidebar.js"), "utf8");
+  ["videoScan", "renderVideoList", "selectVideo", "renderVideoResult", "renderVideoSeekRow",
+    "videoYouTubeTranscript", "videoCaptionTranscript", "videoAudioTranscript",
+    "transcribeSelectedVideo", "ensureVideoTranscript", "summarizeSelectedVideo",
+    "translateSelectedVideo", "downloadVideoResult", "openVideoInChat",
+    "fillVideoLangSelect", "videoRunModel", "videoBusy"].forEach((fn) => {
+    assert.ok(side.includes("function " + fn), "sidebar implements " + fn);
+  });
+  assert.ok(side.includes("if (name === 'videos') renderVideoList();"), "switchView renders the videos view");
+  assert.ok(side.includes("t.dataset.view === name"), "switchView toggles tabs by data-view");
+  assert.ok(side.includes("'list-videos'"), "sidebar sends list-videos");
+  assert.ok(side.includes("'video-captions'"), "sidebar sends video-captions");
+  assert.ok(side.includes("'video-seek'"), "sidebar sends video-seek");
+  assert.ok(side.includes("'video-media'"), "sidebar sends video-media");
+  assert.ok(side.includes("type: 'transcribe'"), "audio fallback goes through background transcribe");
+  assert.ok(side.includes("buildYouTubeSummaryPrompt"), "summarize reuses the YouTube summary prompt");
+  assert.ok(side.includes("fillVideoLangSelect"), "language select filled without innerHTML");
+  assert.ok(!/innerHTML\s*=/.test(side), "sidebar still never assigns innerHTML (Videos wiring)");
+
+  // Slice the init() wiring block: from the first Videos listener to just
+  // before the Research listener, which the Videos block precedes.
+  const videoWireAnchor = side.indexOf("$('videoScanBtn')");
+  const researchWireAnchor = side.indexOf("researchRunBtn", videoWireAnchor);
+  assert.ok(videoWireAnchor > -1 && researchWireAnchor > videoWireAnchor, "init video wiring anchors present");
+  const sideWiring = side.slice(videoWireAnchor, researchWireAnchor);
+  ["videoScanBtn", "videoTranscribeBtn", "videoSummarizeBtn", "videoTranslateBtn",
+    "videoCopyBtn", "videoDownloadBtn", "videoChatBtn"].forEach((id) => {
+    assert.ok(sideWiring.includes("addEventListener('click'"), "init wiring attaches click handlers");
+    assert.ok(sideWiring.includes(id), "init wires #" + id);
+  });
+
+  const content = fs.readFileSync(path.join(EXT, "content/content.js"), "utf8");
+  ["list-videos", "video-captions", "video-seek", "video-media"].forEach((cmd) => {
+    assert.ok(content.includes("case '" + cmd + "'"), "content handles " + cmd);
+  });
+  ["listPageVideos", "readTextTrackCues", "collectTrackUrls", "fetchTrackText",
+    "getPageVideoCaptions", "findIndexedVideo"].forEach((fn) => {
+    assert.ok(content.includes("function " + fn), "content implements " + fn);
+  });
+  assert.ok(content.includes("data-graphite-video-index"), "content tags elements with a stable index");
+  assert.ok(/blob:/i.test(content), "content reports blob/MSE sources honestly");
+
+  const bg = fs.readFileSync(path.join(EXT, "background.js"), "utf8");
+  ["parseCaptions", "normalizeCues"].forEach((t) => {
+    assert.ok(bg.includes("case '" + t + "'"), "background handles " + t);
+  });
+  const sliceStart = bg.indexOf("case 'buildYouTubePrompt':");
+  const sliceEnd = bg.indexOf("case 'getActiveTab':");
+  assert.ok(sliceStart > -1 && sliceEnd > sliceStart, "pinned slice anchors present");
+  const slice = bg.slice(sliceStart, sliceEnd);
+  ["parseCaptions", "normalizeCues"].forEach((t) => {
+    assert.ok(!slice.includes("case '" + t + "'"), t + " not inside pinned slice");
+  });
+  assert.ok(bg.includes("GraphiteCaptions.parseCues"), "background parses with the caption lib");
+  assert.ok(bg.includes("GraphiteCaptions.fromTrackCues"), "background normalises with the caption lib");
+
+  const manifest = fs.readFileSync(path.join(EXT, "manifest.json"), "utf8");
+  assert.ok(manifest.includes('"lib/captions.js"'), "manifest registers lib/captions.js");
+
+  const css = fs.readFileSync(path.join(EXT, "sidebar/sidebar.css"), "utf8");
+  [".video-row", ".video-row.selected", ".video-detail", ".video-seek-row", ".video-result"].forEach((sel) => {
+    assert.ok(css.includes(sel), "sidebar css defines " + sel);
+  });
 });

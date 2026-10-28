@@ -37,6 +37,7 @@
   <button class="tab" data-view="code" role="tab">Code</button>
   <button class="tab" data-view="hand" role="tab">Hand</button>
   <button class="tab" data-view="research" role="tab">Research</button>
+  <button class="tab" data-view="videos" role="tab">Videos</button>
   <button class="tab" data-view="prompts" role="tab">Prompts</button>
   <button class="tab" data-view="history" role="tab">History</button>
 </nav>
@@ -181,6 +182,36 @@
     <div id="researchList" class="list"></div>
   </section>
 
+  <!-- VIDEOS -->
+  <section id="view-videos" class="view">
+    <div class="row-between"><strong>Videos on this page</strong><span id="videoHost" class="chip">No active tab</span></div>
+    <p class="muted small">Finds every &lt;video&gt;/&lt;audio&gt; element on the open page — not only YouTube. Captions/subtitles on the player are used first; otherwise the direct media file is sent to your provider's transcription (Whisper) endpoint.</p>
+    <div class="row">
+      <button id="videoScanBtn" class="btn primary small" type="button">Scan page</button>
+      <span class="spacer"></span>
+      <button id="videoChatBtn" class="btn small" type="button">Open in chat</button>
+    </div>
+    <p id="videoStatus" class="muted small" role="status" aria-live="polite"></p>
+    <div id="videoList" class="list"></div>
+    <div id="videoDetail" class="video-detail hidden">
+      <div class="row-between"><strong id="videoDetailTitle">Video</strong><span id="videoDetailMeta" class="muted small"></span></div>
+      <label class="field-label" for="videoLangSel">Translate to</label>
+      <select id="videoLangSel"></select>
+      <div class="row">
+        <button id="videoTranscribeBtn" class="btn primary small" type="button">Transcribe</button>
+        <button id="videoSummarizeBtn" class="btn small" type="button">Summarize</button>
+        <button id="videoTranslateBtn" class="btn small" type="button">Translate</button>
+        <button id="videoCopyBtn" class="btn small" type="button" disabled>Copy</button>
+        <button id="videoDownloadBtn" class="btn small" type="button" disabled>Download .md</button>
+      </div>
+      <p id="videoDetailStatus" class="muted small" role="status" aria-live="polite"></p>
+      <div id="videoSeekRow" class="video-seek-row hidden"></div>
+      <div id="videoResult" class="video-result"></div>
+      <label class="field-label" for="videoTranscriptText">Transcript</label>
+      <textarea id="videoTranscriptText" rows="8" placeholder="The transcript appears here — edit freely before Summarize / Translate" aria-label="Video transcript"></textarea>
+    </div>
+  </section>
+
   <!-- PROMPTS -->
   <section id="view-prompts" class="view">
     <div class="row-between"><strong>Prompt library</strong><button id="addPromptBtn" class="btn small" type="button">+ Add</button></div>
@@ -219,6 +250,7 @@
 <script src="../lib/pdf.js"></script>
 <script src="../lib/youtube.js"></script>
 <script src="../lib/research.js"></script>
+<script src="../lib/captions.js"></script>
 <script src="markdown.js"></script>
 <script src="sidebar.js"></script>
 </body>

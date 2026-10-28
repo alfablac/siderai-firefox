@@ -531,6 +531,92 @@ check("search markdown: GFM pipe table renders as a table", () => {
   assert.ok(html.includes("<p>Done.</p>"), "text after the table is a paragraph: " + html);
 });
 
+/* ------------------------------ lib/captions.js (GraphiteCaptions) --------
+   The whole caption lib is a pure IIFE: run it in a vm and exercise the
+   parser against VTT/SRT inputs the way the sidebar Videos tab does. */
+
+function loadCaptions() {
+  const src = fs.readFileSync(path.join(EXT, "lib/captions.js"), "utf8");
+  const sandbox = {};
+  vm.createContext(sandbox);
+  vm.runInContext(src, sandbox, { filename: "captions.js" });
+  assert.ok(sandbox.GraphiteCaptions, "GraphiteCaptions global exported");
+  return sandbox.GraphiteCaptions;
+}
+
+check("captions: WebVTT with header metadata, NOTE/STYLE blocks, cue ids", () => {
+  const C = loadCaptions();
+  const vtt = "WEBVTT - demo captions\n" +
+    "Kind: captions\nLanguage: en\n\n" +
+    "NOTE this is ignored\nanother note line\n\n" +
+    "STYLE\n::cue { color: lime }\n\n" +
+    "intro-cue\n00:00:01.500 --> 00:00:04.000 align:start\nHello <b>world</b>\n\n" +
+    "00:00:05.000 --> 00:00:07.250\nSecond &amp; final &lt;line&gt;\n";
+  const segs = C.parseCues(vtt);
+  assert.strictEqual(segs.length, 2, "two cues parsed, got " + segs.length);
+  assert.strictEqual(segs[0].start, 1.5, "first start in seconds");
+  assert.strictEqual(segs[0].dur, 2.5, "first duration");
+  assert.strictEqual(segs[0].text, "Hello world", "tags stripped from cue text");
+  assert.strictEqual(segs[1].text, "Second & final <line>", "entities decoded");
+  assert.ok(!segs.some((s) => /NOTE|STYLE|cue \{/.test(s.text)), "header blocks skipped");
+});
+
+check("captions: SRT with cue numbers and comma decimals", () => {
+  const C = loadCaptions();
+  const srt = "1\n00:00:00,500 --> 00:00:03,000\nFirst line\n\n2\n00:00:04,000 --> 00:00:06,500\nSecond line\n";
+  const segs = C.parseCues(srt);
+  assert.strictEqual(segs.length, 2);
+  assert.strictEqual(segs[0].start, 0.5);
+  assert.strictEqual(segs[0].dur, 2.5);
+  assert.strictEqual(segs[1].start, 4);
+  assert.strictEqual(segs[1].text, "Second line");
+});
+
+check("captions: roll-up duplicates collapse, empty/garbage input stays empty", () => {
+  const C = loadCaptions();
+  const rolling = "WEBVTT\n\n00:00:01.000 --> 00:00:02.000\nHello\n\n" +
+    "00:00:02.000 --> 00:00:03.000\nHello world\n\n" +
+    "00:00:03.000 --> 00:00:04.000\nHello world\n";
+  const segs = C.parseCues(rolling);
+  // Note: no deepStrictEqual across the vm boundary (different Array ctor).
+  assert.strictEqual(segs.map((s) => s.text).join("|"), "Hello world", "roll-up merges into the fullest text");
+  assert.strictEqual(segs[0].start, 1, "merged segment keeps the first start time");
+  assert.strictEqual(segs[0].dur, 3, "merged segment spans the whole roll-up");
+  assert.strictEqual(C.parseCues("").length, 0, "empty input");
+  assert.strictEqual(C.parseCues("not a caption file at all").length, 0, "garbage input");
+  assert.strictEqual(C.parseCues(null).length, 0, "null input");
+});
+
+check("captions: fromTrackCues normalises TextTrack cue records", () => {
+  const C = loadCaptions();
+  const segs = C.fromTrackCues([
+    { startTime: 61, endTime: 63.5, text: "At one minute" },
+    { startTime: 0, endTime: 2, text: "Start" },
+    { startTime: 2, endTime: 2, text: "" }
+  ]);
+  assert.strictEqual(segs.length, 2, "sorted and empties dropped");
+  assert.strictEqual(segs[0].text, "Start", "sorted by start");
+  assert.strictEqual(segs[1].start, 61);
+  assert.strictEqual(segs[1].dur, 2.5);
+});
+
+check("captions: segmentsToText formats timestamps, plain mode drops them", () => {
+  const C = loadCaptions();
+  const segs = [{ start: 65, dur: 2, text: "One oh five" }, { start: 3661, dur: 1, text: "Hour mark" }];
+  assert.strictEqual(C.segmentsToText(segs, true), "[01:05] One oh five\n[1:01:01] Hour mark");
+  assert.strictEqual(C.segmentsToText(segs, false), "One oh five\nHour mark");
+  assert.strictEqual(C.formatTimestamp(0), "00:00");
+  assert.strictEqual(C.formatTimestamp(3599), "59:59");
+});
+
+check("captions: parseTimestamp accepts hh:mm:ss, mm:ss, comma and ms forms", () => {
+  const C = loadCaptions();
+  assert.strictEqual(C.parseTimestamp("01:02:03.500"), 3723.5);
+  assert.strictEqual(C.parseTimestamp("02:03,250"), 123.25);
+  assert.strictEqual(C.parseTimestamp("00:07"), 7);
+  assert.ok(Number.isNaN(C.parseTimestamp("nope")), "garbage is NaN");
+});
+
 /* ---------------------------------------------------------------- summary */
 
 console.log(failures === 0 ? "\nall dom-sandbox tests passed" : "\n" + failures + " failure(s)");

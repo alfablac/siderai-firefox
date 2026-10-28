@@ -16,7 +16,8 @@
     toolFavorites: [], selectedToolId: '',
     handSteps: [], handStop: false,
     handLogEntries: [], handRun: null, handRunSaved: false, handSummaryRecord: null,
-    researchRaw: '', researchSources: [], researchId: null
+    researchRaw: '', researchSources: [], researchId: null,
+    videos: [], videoSelected: -1, videoBusy: false, videoResultRaw: ''
   };
   var TOOL_FAVORITES_KEY = 'graphiteSider.toolFavorites.v1';
 
@@ -296,6 +297,7 @@
     if (name === 'code') { refreshCodeHost(); renderCodeRules(); }
     if (name === 'research') renderResearchList();
     if (name === 'hand') renderHandRunsList();
+    if (name === 'videos') renderVideoList();
   }
 
   /* Send a graphite-command to the content script in the active (or
@@ -2211,6 +2213,340 @@
     status('Report downloaded');
   }
 
+  /* ---------------- videos (any page) ---------------- */
+  function videoStatus(text) { var el = $('videoStatus'); if (el) el.textContent = text || ''; }
+  function videoDetailStatus(text) { var el = $('videoDetailStatus'); if (el) el.textContent = text || ''; }
+  function videoIsYouTubeUrl(url) {
+    var s = String(url || '');
+    return /youtube\.com|youtu\.be/i.test(s);
+  }
+  function videoFormatDuration(sec) {
+    var total = Math.max(0, Math.floor(Number(sec) || 0));
+    if (!total) return '';
+    var h = Math.floor(total / 3600), m = Math.floor((total % 3600) / 60), s = total % 60;
+    function pad(n) { return (n < 10 ? '0' : '') + n; }
+    return h > 0 ? h + ':' + pad(m) + ':' + pad(s) : pad(m) + ':' + pad(s);
+  }
+  // Build language <option>s with DOM APIs (no innerHTML anywhere in the
+  // sidebar — see the 1.0.19 smoke pin), mirroring translateSelOptions().
+  function fillVideoLangSelect(selEl, selected) {
+    if (!selEl) return;
+    var wanted = String(selected || defaultTargetLang() || 'English').trim();
+    selEl.textContent = '';
+    var chosen = null;
+    translateLanguages().forEach(function (name) {
+      var opt = document.createElement('option');
+      opt.value = name; opt.textContent = name;
+      if (name === wanted) chosen = opt;
+      selEl.appendChild(opt);
+    });
+    if (!chosen && wanted) {
+      chosen = document.createElement('option');
+      chosen.value = wanted; chosen.textContent = wanted;
+      selEl.insertBefore(chosen, selEl.firstChild);
+    }
+    if (chosen) selEl.value = chosen.value;
+  }
+  function videoScan() {
+    var btn = $('videoScanBtn');
+    if (btn) btn.disabled = true;
+    videoStatus('Scanning the open page for video and audio elements...');
+    return sendTabCommand('list-videos', {}).then(function (result) {
+      var hostEl = $('videoHost');
+      if (!result || !Array.isArray(result.items)) throw new Error('No page inventory returned.');
+      state.videos = result.items;
+      state.videoSelected = -1;
+      var hideDetail = $('videoDetail'); if (hideDetail) hideDetail.classList.add('hidden');
+      if (hostEl) hostEl.textContent = hostOf(result.url) || (state.currentTab && state.currentTab.title) || 'Page';
+      renderVideoList();
+      videoStatus(state.videos.length
+        ? 'Found ' + state.videos.length + ' media element' + (state.videos.length === 1 ? '' : 's') + ' on ' + (result.title ? '"' + truncate(result.title, 60) + '"' : 'this page') + '. Select one to transcribe.'
+        : 'No video or audio elements found on this page. Embedded players (iframes) and DRM streams cannot be inventoried here.');
+      return result;
+    }).catch(function (e) {
+      videoStatus('Scan failed: ' + e.message + ' Open a normal web page (not about: or an internal page) and try again.');
+    }).then(function () { if (btn) btn.disabled = false; });
+  }
+  function videoTracksSummary(video) {
+    var parts = [];
+    if (video && video.tracks && video.tracks.length) {
+      parts.push(video.tracks.map(function (t) { return t.label || t.lang || t.kind || 'subtitles'; }).join(', '));
+    }
+    if (video && video.trackUrls && video.trackUrls.length) {
+      parts.push(video.trackUrls.length + ' caption file' + (video.trackUrls.length === 1 ? '' : 's'));
+    }
+    return parts.filter(Boolean).join(' · ');
+  }
+  function renderVideoList() {
+    var box = $('videoList'); if (!box) return;
+    box.textContent = '';
+    if (!state.videos.length) {
+      box.appendChild(emptyNoteEl('No media found yet. Open a page with a video or audio player, then Scan page.'));
+      return;
+    }
+    state.videos.forEach(function (video, i) {
+      var row = document.createElement('div');
+      row.className = 'video-row' + (i === state.videoSelected ? ' selected' : '');
+      var titleEl = document.createElement('strong');
+      titleEl.textContent = (i + 1) + '. ' + (video.label || video.src || 'Video');
+      row.appendChild(titleEl);
+      var desc = document.createElement('div'); desc.className = 'desc';
+      var bits = [video.kind === 'audio' ? 'Audio' : 'Video'];
+      if (video.youTube) bits.push('YouTube');
+      var dur = videoFormatDuration(video.duration);
+      if (dur) bits.push(dur);
+      if (video.paused === false) bits.push('playing');
+      var tracksText = videoTracksSummary(video);
+      if (tracksText) bits.push('Captions: ' + tracksText);
+      if (video.src && !/^blob:/i.test(String(video.src))) bits.push('direct file');
+      else if (video.src) bits.push('streamed (no direct file)');
+      desc.textContent = bits.join(' · ');
+      row.appendChild(desc);
+      var srcEl = document.createElement('div'); srcEl.className = 'desc src';
+      srcEl.textContent = video.src || 'No direct source URL';
+      row.appendChild(srcEl);
+      var actions = document.createElement('div'); actions.className = 'row';
+      var selectBtn = document.createElement('button'); selectBtn.type = 'button'; selectBtn.className = 'btn small primary';
+      selectBtn.textContent = i === state.videoSelected ? 'Selected' : 'Select';
+      selectBtn.addEventListener('click', function () { selectVideo(i); });
+      actions.appendChild(selectBtn);
+      row.appendChild(actions);
+      box.appendChild(row);
+    });
+  }
+  function selectedVideo() {
+    return state.videoSelected >= 0 ? (state.videos[state.videoSelected] || null) : null;
+  }
+  function selectVideo(index) {
+    state.videoSelected = index;
+    var video = state.videos[index];
+    var detail = $('videoDetail');
+    if (!video || !detail) return;
+    renderVideoList();
+    detail.classList.remove('hidden');
+    var titleEl = $('videoDetailTitle'); if (titleEl) titleEl.textContent = video.label || video.src || 'Video';
+    var metaEl = $('videoDetailMeta'); if (metaEl) {
+      var dur = videoFormatDuration(video.duration);
+      metaEl.textContent = [video.kind === 'audio' ? 'Audio' : 'Video', dur, video.youTube ? 'YouTube' : ''].filter(Boolean).join(' · ');
+    }
+    fillVideoLangSelect($('videoLangSel'), defaultTargetLang());
+    $('videoTranscriptText').value = '';
+    state.videoResultRaw = '';
+    renderVideoResult('');
+    videoDetailStatus(video.youTube
+      ? 'YouTube is transcribed via the YouTube transcript when available. Summarize / Translate run on that transcript.'
+      : 'Captions on this player are used first. If none, the direct media file is sent to your provider for transcription.');
+    detail.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  }
+  function renderVideoResult(markdown) {
+    state.videoResultRaw = String(markdown || '');
+    var box = $('videoResult'); if (!box) return;
+    box.textContent = '';
+    if (state.videoResultRaw) {
+      if (window.GraphiteMarkdown) setGeneratedHtml(box, GraphiteMarkdown.render(state.videoResultRaw, {}));
+      else box.textContent = state.videoResultRaw;
+    }
+    var has = !!state.videoResultRaw.trim();
+    var copyBtn = $('videoCopyBtn'); if (copyBtn) copyBtn.disabled = !has;
+    var dlBtn = $('videoDownloadBtn'); if (dlBtn) dlBtn.disabled = !has;
+    renderVideoSeekRow();
+  }
+  function renderVideoSeekRow() {
+    var row = $('videoSeekRow'); if (!row) return;
+    row.textContent = '';
+    if (!state.videoResultRaw || !window.GraphiteMarkdown || typeof GraphiteMarkdown.extractTimestamps !== 'function') {
+      row.classList.add('hidden'); return;
+    }
+    var stamps = GraphiteMarkdown.extractTimestamps(state.videoResultRaw).slice(0, 24);
+    if (!stamps.length) { row.classList.add('hidden'); return; }
+    row.classList.remove('hidden');
+    var label = document.createElement('span'); label.className = 'muted small'; label.textContent = 'Jump to:';
+    row.appendChild(label);
+    stamps.forEach(function (stamp) {
+      var btn = document.createElement('button'); btn.type = 'button'; btn.className = 'mini-btn';
+      btn.textContent = stamp.label;
+      btn.title = 'Seek the page player to ' + stamp.label;
+      btn.addEventListener('click', function () {
+        var video = selectedVideo();
+        sendTabCommand('video-seek', { index: video ? video.index : state.videoSelected, seconds: stamp.seconds })
+          .then(function () { videoDetailStatus('Player moved to ' + stamp.label + '.'); })
+          .catch(function (e) { videoDetailStatus('Seek failed: ' + e.message); });
+      });
+      row.appendChild(btn);
+    });
+  }
+  function videoBusy(busy) {
+    state.videoBusy = !!busy;
+    ['videoScanBtn', 'videoTranscribeBtn', 'videoSummarizeBtn', 'videoTranslateBtn'].forEach(function (id) {
+      var el = $(id); if (el) el.disabled = !!busy;
+    });
+  }
+  function videoRunModel(prompt) {
+    if (!state.providers.length) throw new Error('No provider configured - open Settings');
+    return chatSyncFallback([{ role: 'user', content: prompt }], state.activeProviderId, state.activeModel, null).then(function (text) {
+      if (!text || text.indexOf('Error:') === 0) throw new Error((text || 'Model request failed').replace(/^Error:\s*/, ''));
+      return text;
+    });
+  }
+  function transcriptFromSegments(segments) {
+    if (window.GraphiteCaptions && typeof GraphiteCaptions.segmentsToText === 'function') {
+      return GraphiteCaptions.segmentsToText(segments, true);
+    }
+    return (segments || []).map(function (s) { return s.text; }).join('\n');
+  }
+  function videoYouTubeTranscript(video) {
+    var url = String((video && video.src) || (state.currentTab && state.currentTab.url) || '');
+    var id = window.GraphiteYouTube && typeof GraphiteYouTube.parseVideoId === 'function'
+      ? GraphiteYouTube.parseVideoId(url) : null;
+    if (!id) return Promise.reject(new Error('Could not read a YouTube video id from this page.'));
+    videoDetailStatus('Fetching the YouTube transcript...');
+    return sendMessage({ type: 'fetchTranscript', url: id }).then(function (r) {
+      if (!r || !r.text) throw new Error('No YouTube transcript available for this video.');
+      $('videoTranscriptText').value = r.text;
+      videoDetailStatus('Transcript ready (' + ((r && r.lang) || 'auto') + '). Summarize or translate below.');
+      return r.text;
+    });
+  }
+  function videoCaptionTranscript(video) {
+    videoDetailStatus('Looking for captions/subtitles on this player...');
+    return sendTabCommand('video-captions', { index: video.index }).then(function (res) {
+      if (!res) throw new Error('No caption response from the page.');
+      if (res.error) throw new Error(res.error);
+      if (res.captionText && window.GraphiteCaptions && typeof GraphiteCaptions.parseCues === 'function') {
+        var parsed = GraphiteCaptions.parseCues(String(res.captionText));
+        if (parsed && parsed.length) return transcriptFromSegments(parsed);
+        // Not VTT/SRT (maybe timedtext XML) — let the background parse it
+        // through the same caption lib so parsing logic stays in one place.
+        return sendMessage({ type: 'parseCaptions', text: String(res.captionText) }).then(function (r) {
+          return (r && r.text) || '';
+        });
+      }
+      if (res.segments && res.segments.length) {
+        return sendMessage({ type: 'normalizeCues', cues: res.segments }).then(function (r) {
+          return (r && r.text) || transcriptFromSegments(res.segments.map(function (c) {
+            return { start: c.startTime || c.start || 0, dur: Math.max(0, (c.endTime || 0) - (c.startTime || 0)), text: c.text || '' };
+          }));
+        });
+      }
+      if (res.captionText) return String(res.captionText);
+      throw new Error('No captions found on this player.');
+    });
+  }
+  function videoAudioTranscript(video) {
+    return sendTabCommand('video-media', { index: video.index }).then(function (media) {
+      if (!media || !media.ok) throw new Error((media && media.error) || 'No direct media URL for transcription.');
+      var src = String(media.url || '');
+      if (!src) throw new Error('This player has no direct media URL.');
+      if (/^blob:/i.test(src)) throw new Error('This player streams via a blob/MSE source that cannot be sent to the transcription provider.');
+      videoDetailStatus('Sending the media file to your provider for transcription. Long files can take a while...');
+      return sendMessage({
+        type: 'transcribe', dataUrl: src, audioDataUrl: src,
+        filename: 'page-video-' + (Number(video.index) || 0),
+        providerId: state.activeProviderId, model: state.activeModel
+      }).then(function (r) {
+        var text = (r && (r.text || r.transcript)) || '';
+        if (!text) throw new Error('The transcription provider returned no text.');
+        return text;
+      });
+    });
+  }
+  // ownBusy: when Summarize/Translate drive the transcription they hold the
+  // busy flag themselves, so the transcript step must not release it early.
+  function transcribeSelectedVideo(ownBusy) {
+    var video = selectedVideo();
+    if (!video) { videoStatus('Select a video first.'); return Promise.resolve(); }
+    if (state.videoBusy && ownBusy !== false) return Promise.resolve();
+    var manageBusy = ownBusy !== false;
+    if (manageBusy) videoBusy(true);
+    var done = function () { if (manageBusy) videoBusy(false); };
+    var steps;
+    if (video.youTube || videoIsYouTubeUrl(video.src) || videoIsYouTubeUrl(state.currentTab && state.currentTab.url)) {
+      steps = videoYouTubeTranscript(video);
+    } else {
+      steps = videoCaptionTranscript(video).catch(function (captionErr) {
+        videoDetailStatus('No usable captions (' + captionErr.message + ') Trying audio transcription...');
+        return videoAudioTranscript(video);
+      });
+    }
+    return steps.then(function (text) {
+      $('videoTranscriptText').value = truncate(String(text || ''), 120000);
+      renderVideoResult('');
+      videoDetailStatus(text ? 'Transcript ready — ' + String(text).length.toLocaleString() + ' characters. Edit it if needed, then Summarize or Translate.' : 'Transcript came back empty.');
+    }).catch(function (e) {
+      videoDetailStatus('Transcription failed: ' + e.message + ' (audio transcription needs an OpenAI-compatible provider with a Whisper endpoint.)');
+    }).then(done);
+  }
+  function ensureVideoTranscript(video) {
+    var existing = $('videoTranscriptText').value.trim();
+    if (existing) return Promise.resolve(existing);
+    // Caller (Summarize/Translate) already holds the busy flag.
+    return transcribeSelectedVideo(false).then(function () {
+      return $('videoTranscriptText').value.trim();
+    });
+  }
+  function summarizeSelectedVideo() {
+    var video = selectedVideo();
+    if (!video) { videoStatus('Select a video first.'); return; }
+    if (state.videoBusy) return;
+    videoBusy(true);
+    ensureVideoTranscript(video).then(function (transcript) {
+      if (!transcript) throw new Error('No transcript yet — run Transcribe first.');
+      videoDetailStatus('Summarizing in the Videos tab...');
+      var prompt = (window.GraphiteYouTube && typeof GraphiteYouTube.buildYouTubeSummaryPrompt === 'function')
+        ? GraphiteYouTube.buildYouTubeSummaryPrompt(truncate(transcript, 60000), video.label || document.title || 'Page video')
+        : 'Summarize this video transcript. Use timestamps as given.\n\nTitle: ' + (video.label || '') + '\n\n' + truncate(transcript, 60000);
+      return videoRunModel(prompt);
+    }).then(function (text) {
+      renderVideoResult(text);
+      videoDetailStatus('Summary ready.');
+    }).catch(function (e) { videoDetailStatus('Summary failed: ' + e.message); }).then(function () { videoBusy(false); });
+  }
+  function translateSelectedVideo() {
+    var video = selectedVideo();
+    if (!video) { videoStatus('Select a video first.'); return; }
+    if (state.videoBusy) return;
+    var langSel = $('videoLangSel');
+    var lang = langSel && langSel.value ? langSel.value : defaultTargetLang();
+    videoBusy(true);
+    ensureVideoTranscript(video).then(function (transcript) {
+      if (!transcript) throw new Error('No transcript yet — run Transcribe first.');
+      videoDetailStatus('Translating the transcript to ' + lang + '...');
+      var prompt = 'Translate the following video transcript into ' + lang + '. Preserve the meaning, speaker intent, and all timestamps (e.g. [03:12]) exactly as they appear. Output only the translated transcript in Markdown, grouped naturally.\n\nTitle: ' + (video.label || '') + '\n\nTranscript:\n' + truncate(transcript, 60000);
+      return videoRunModel(prompt);
+    }).then(function (text) {
+      renderVideoResult(text);
+      videoDetailStatus('Translation ready (' + lang + ').');
+    }).catch(function (e) { videoDetailStatus('Translation failed: ' + e.message); }).then(function () { videoBusy(false); });
+  }
+  function downloadVideoResult() {
+    if (!state.videoResultRaw) return;
+    var video = selectedVideo();
+    var base = ((video && (video.label || video.src)) || 'page-video').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 50) || 'page-video';
+    var blob = new Blob([state.videoResultRaw], { type: 'text/markdown' });
+    var a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = base + '.md'; a.click();
+    setTimeout(function () { URL.revokeObjectURL(a.href); }, 2000);
+    status('Video result downloaded');
+  }
+  function openVideoInChat() {
+    var video = selectedVideo();
+    var transcript = $('videoTranscriptText') ? $('videoTranscriptText').value.trim() : '';
+    var result = state.videoResultRaw || '';
+    if (!transcript && !result) {
+      $('composer').value = '';
+      switchView('chat');
+      status('Videos: scan the page and transcribe a video, then Open in chat to ask follow-ups.');
+      return;
+    }
+    var label = video ? (video.label || video.src || 'Page video') : 'Page video';
+    var text = (result ? result + '\n\n' : '') +
+      'Here is the transcript of the video "' + label + '" from the open page. Use it to answer my follow-up questions.\n\n' +
+      truncate(transcript || result, 20000);
+    setContext(text, 'Video: ' + truncate(label, 60));
+    switchView('chat');
+    var composer = $('composer');
+    if (composer) composer.focus();
+  }
+
   /* ---------------- pending actions ---------------- */
   function handlePendingAction(action) {
     if (!action) return;
@@ -2347,6 +2683,16 @@
     if ($('handFinishBtn')) $('handFinishBtn').addEventListener('click', function () { finishHandRun(handOutcomeFor()); });
     if ($('handCopySummaryBtn')) $('handCopySummaryBtn').addEventListener('click', copyHandSummary);
     if ($('handDownloadSummaryBtn')) $('handDownloadSummaryBtn').addEventListener('click', downloadHandSummary);
+    if ($('videoScanBtn')) $('videoScanBtn').addEventListener('click', videoScan);
+    if ($('videoTranscribeBtn')) $('videoTranscribeBtn').addEventListener('click', transcribeSelectedVideo);
+    if ($('videoSummarizeBtn')) $('videoSummarizeBtn').addEventListener('click', summarizeSelectedVideo);
+    if ($('videoTranslateBtn')) $('videoTranslateBtn').addEventListener('click', translateSelectedVideo);
+    if ($('videoCopyBtn')) $('videoCopyBtn').addEventListener('click', function () {
+      if (!state.videoResultRaw) return;
+      if (navigator.clipboard) navigator.clipboard.writeText(state.videoResultRaw).then(function () { status('Video result copied'); }).catch(function () { status('Copy failed'); });
+    });
+    if ($('videoDownloadBtn')) $('videoDownloadBtn').addEventListener('click', downloadVideoResult);
+    if ($('videoChatBtn')) $('videoChatBtn').addEventListener('click', openVideoInChat);
     if ($('researchRunBtn')) $('researchRunBtn').addEventListener('click', runResearch);
     if ($('researchCopyBtn')) $('researchCopyBtn').addEventListener('click', function () {
       if (!state.researchRaw) return;
