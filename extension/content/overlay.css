@@ -94,7 +94,10 @@
   outline: none;
 }
 
-/* Hover label: the word, shown as a tooltip above the button. */
+/* Hover label: the word, shown as a tooltip above the button.
+   .gs-toolbar-btn--labelled is the touch equivalent: content.js adds it
+   on a long-press (touch has no hover), so coarse pointers get icons-only
+   by default and the name on demand — never permanently rendered text. */
 .gs-toolbar-btn::after {
   content: attr(data-label);
   position: absolute;
@@ -118,7 +121,8 @@
 }
 
 .gs-toolbar-btn:hover::after,
-.gs-toolbar-btn:focus-visible::after {
+.gs-toolbar-btn:focus-visible::after,
+.gs-toolbar-btn--labelled::after {
   opacity: 1;
   transform: translateX(-50%) translateY(0);
 }
@@ -845,17 +849,9 @@
     font-size: 16px;
     touch-action: manipulation;
   }
-  .gs-toolbar-btn::after {
-    opacity: 1;
-    transform: translateX(-50%) translateY(0);
-    position: static;
-    transform: none;
-    padding: 0 2px;
-    background: transparent;
-    border: none;
-    box-shadow: none;
-    font-size: 9px;
-  }
+  /* No static toolbar labels on touch: icons only, name via long-press
+     (.gs-toolbar-btn--labelled, content.js). The old always-visible 9px
+     inline labels made every button read as icon+text on mobile. */
   /* Narrow screens: the search card stacks full-width above the results
      instead of a squeezed right-column float. */
   .gs-search-card--rail-fallback {
@@ -868,6 +864,17 @@
   .gs-yt-panel,
   .gs-search-card {
     max-width: 100%;
+  }
+  /* Mobile YouTube mounts the panel as a child of ytm-* custom elements,
+     which may lay out as flex/grid: force a full-width row of its own.
+     Position/z-index are deliberately untouched — placement in normal
+     document flow (after the description) is what keeps the panel from
+     ever going behind the video; never paint over the sticky player. */
+  .gs-yt-panel {
+    width: 100%;
+    min-width: 0;
+    flex: 1 1 100%;
+    align-self: stretch;
   }
   .gs-model-picker {
     flex: 1 1 100%;

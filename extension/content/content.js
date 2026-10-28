@@ -993,6 +993,68 @@
     // activation itself. draggable=false kills image/element native drag.
     button.draggable = false;
     button.addEventListener('pointerdown', (event) => event.preventDefault());
+    // Touch has no hover, so the action name (data-label, rendered as the
+    // ::after tooltip) is revealed by long-press instead: hold ~500ms to
+    // see the name, release without firing. Icons stay icon-only
+    // otherwise — on every pointer type. A normal tap still fires.
+    let holdTimer = 0;
+    let labelTimer = 0;
+    let suppressClick = false;
+    let downX = 0;
+    let downY = 0;
+    const HOLD_MS = 500;
+    const LABEL_MS = 1600;
+    function clearLabelSoon() {
+      if (labelTimer) clearTimeout(labelTimer);
+      labelTimer = setTimeout(() => button.classList.remove('gs-toolbar-btn--labelled'), LABEL_MS);
+    }
+    function endTouch() {
+      if (holdTimer) { clearTimeout(holdTimer); holdTimer = 0; }
+      if (button.classList.contains('gs-toolbar-btn--labelled')) clearLabelSoon();
+    }
+    button.addEventListener('pointerdown', (event) => {
+      if (!event || event.pointerType !== 'touch') return;
+      downX = event.clientX || 0;
+      downY = event.clientY || 0;
+      if (labelTimer) { clearTimeout(labelTimer); labelTimer = 0; }
+      if (holdTimer) clearTimeout(holdTimer);
+      holdTimer = setTimeout(() => {
+        holdTimer = 0;
+        suppressClick = true;
+        // One label at a time.
+        const toolbar = button.closest ? button.closest('.gs-toolbar') : null;
+        if (toolbar) toolbar.querySelectorAll('.gs-toolbar-btn--labelled').forEach((el) => {
+          if (el !== button) el.classList.remove('gs-toolbar-btn--labelled');
+        });
+        button.classList.add('gs-toolbar-btn--labelled');
+      }, HOLD_MS);
+    });
+    button.addEventListener('pointermove', (event) => {
+      if (!holdTimer || !event || event.pointerType !== 'touch') return;
+      if (Math.hypot((event.clientX || 0) - downX, (event.clientY || 0) - downY) > 10) {
+        clearTimeout(holdTimer);
+        holdTimer = 0;
+      }
+    });
+    button.addEventListener('pointerup', (event) => {
+      if (!event || event.pointerType !== 'touch') return;
+      endTouch();
+      // Safety: if no click follows (finger slid off), never swallow the
+      // next genuine tap.
+      if (suppressClick) setTimeout(() => { suppressClick = false; }, 700);
+    });
+    button.addEventListener('pointercancel', () => {
+      endTouch();
+      if (suppressClick) setTimeout(() => { suppressClick = false; }, 700);
+    });
+    // Registered before the per-action listeners added in showToolbar(),
+    // so a consumed long-press click never reaches them.
+    button.addEventListener('click', (event) => {
+      if (!suppressClick) return;
+      suppressClick = false;
+      event.preventDefault();
+      event.stopImmediatePropagation();
+    });
     return button;
   }
 

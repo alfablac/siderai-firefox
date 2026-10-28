@@ -654,7 +654,7 @@ check("manifest background order and release version 1.0.21", () => {
   const scripts = (manifest.background && manifest.background.scripts) || [];
   const iP = scripts.indexOf("lib/prompts.js"), iY = scripts.indexOf("lib/youtube.js"), iB = scripts.indexOf("background.js");
   assert.ok(iP >= 0 && iY >= 0 && iB > iP && iB > iY, "lib/prompts.js + lib/youtube.js load before background.js");
-  assert.strictEqual(manifest.version, "1.0.21", "release version");
+  assert.strictEqual(manifest.version, "1.0.22", "release version");
 });
 
 /* ---------- 1.0.6 bug: transcript truncated at 22:52 of a 44:59 video -----
@@ -1483,7 +1483,7 @@ Promise.all([Promise.resolve(sseDone), Promise.resolve(imageDone), Promise.resol
    fallback, widened liveness, touch selection, helper payloads. */
 check("1.0.21: version, model-select wiring, detach transport, mobile surfaces", () => {
   assert.ok(manifest, "manifest required");
-  assert.strictEqual(manifest.version, "1.0.21", "release version 1.0.21");
+  assert.strictEqual(manifest.version, "1.0.22", "release version");
   assert.ok(manifest.browser_specific_settings.gecko_android, "gecko_android block present");
   // Shared picker loads before both helpers.
   const ytEntry = (manifest.content_scripts || []).find((cs) => (cs.js || []).includes("content/youtube.js"));
@@ -1566,4 +1566,55 @@ check("1.0.19: icons built as same-document SVG nodes (no DOMParser import)", ()
   assert.ok(src.includes("document.createElementNS(SVG_NS"), "builder targets the SVG namespace");
   // setIcon still feeds every icon surface: write button, toolbar, logo, copy-check.
   assert.ok((src.match(/setIcon\(/g) || []).length >= 5, "setIcon still wires write button, toolbar, logo, copy-check");
+});
+
+/* ---------- 1.0.22: mobile placement + toolbar label discovery --------------
+   m.youtube.com: the panel mounted via a comma-list querySelector whose
+   first document-order match could be ytm-app (ancestor of everything),
+   and afterend of #movie_player/#player lands inside the player wrapper,
+   where the positioned video surface paints over the static panel.
+   Fix: an ordered one-selector-at-a-time ladder ending after the
+   metadata/description block, plus relocation when metadata renders late.
+   Toolbar: the coarse-pointer block used to render every button's name as
+   static 9px text; now icons-only everywhere, name via long-press. */
+check("1.0.22: panel placement ladder + long-press toolbar labels", () => {
+  assert.ok(manifest, "manifest required");
+  assert.strictEqual(manifest.version, "1.0.22", "release version 1.0.22");
+  const yt = fs.readFileSync(path.join(EXT, "content/youtube.js"), "utf8");
+  // Ladder exists, tried sequentially in priority order.
+  const ladder = yt.slice(yt.indexOf("const PANEL_PLACEMENTS"), yt.indexOf("function bestPanelPlacement"));
+  assert.ok(ladder.includes("ytd-watch-metadata"), "desktop anchor in ladder");
+  assert.ok(ladder.includes("ytm-slim-video-metadata-section-renderer"), "mobile metadata section in ladder");
+  assert.ok(ladder.includes("ytm-expandable-video-description-body-renderer"), "description renderer in ladder");
+  assert.ok(ladder.indexOf("ytd-watch-metadata") < ladder.indexOf("#below"), "desktop anchor outranks #below");
+  assert.ok(yt.includes("document.querySelector(p.selector)"), "ladder queried one selector at a time");
+  // The old document-order trap is gone from the panel mount path (a
+  // comment in the ladder cites the old selector; code must not run it).
+  assert.ok(!yt.includes("querySelector('#player-container-id, #player, ytm-app, #movie_player')"),
+    "no comma-list player fallback call (document order made ytm-app win)");
+  assert.ok(!yt.includes("querySelector('#primary, #columns')"), "old comma mount removed");
+  // Relocation: same node moved to a strictly better anchor, observer-driven.
+  assert.ok(yt.includes("function relocatePanelIfNeeded"), "relocation helper exists");
+  assert.ok(yt.includes("relocatePanelIfNeeded(); // mobile metadata renders late"), "maybeInit relocates");
+  assert.ok(yt.includes("PANEL_PLACEMENTS"), "placement ladder shared by mount + relocate");
+  // findAnchorRoot prefers the watch column, sequentially.
+  const far = yt.slice(yt.indexOf("function findAnchorRoot"), yt.indexOf("function ensureAnchorObserver"));
+  assert.ok(far.indexOf("'ytm-watch'") < far.indexOf("'ytm-app'"), "watch column outranks the app root");
+  assert.ok(far.indexOf("'ytm-app'") < far.indexOf("'#player-container-id'"), "app root outranks the player subtree");
+  // Toolbar: icons only on touch; the name comes from a long-press.
+  const content = fs.readFileSync(path.join(EXT, "content/content.js"), "utf8");
+  const factory = content.slice(content.indexOf("function toolbarButton"), content.indexOf("function showToolbar"));
+  assert.ok(factory.includes("gs-toolbar-btn--labelled"), "long-press toggles the labelled class");
+  assert.ok(factory.includes("event.pointerType !== 'touch'"), "long-press is touch-gated");
+  assert.ok(factory.includes("stopImmediatePropagation"), "long-press click is suppressed before actions");
+  assert.ok(factory.includes("addEventListener('pointerdown', (event) => event.preventDefault())"),
+    "focus-preservation pointerdown unchanged");
+  const css = fs.readFileSync(path.join(EXT, "content/overlay.css"), "utf8");
+  const coarse = css.slice(css.indexOf("@media (pointer: coarse)"));
+  assert.ok(!/\.gs-toolbar-btn::after\s*\{[^}]*position:\s*static/.test(coarse),
+    "no static always-visible toolbar labels on coarse pointers");
+  assert.ok(!/\.gs-toolbar-btn::after\s*\{[^}]*font-size:\s*9px/.test(coarse),
+    "no 9px inline toolbar labels on coarse pointers");
+  assert.ok(css.includes(".gs-toolbar-btn--labelled::after"), "labelled state reveals the tooltip");
+  assert.ok(coarse.includes(".gs-yt-panel"), "coarse panel width hardening kept");
 });

@@ -881,6 +881,97 @@
   // observer (and any re-entrant schedule) can ignore our own writes.
   let panelMutating = false;
 
+  // Panel placement ladder. Each entry is tried IN ORDER, one
+  // querySelector per entry — never a comma list: querySelector returns
+  // the first match in document order, not the first selector listed, so
+  // a comma list makes an ancestor (ytm-app) win and the panel lands
+  // inside/behind the player subtree (the pre-1.0.22 mobile bug: mounted
+  // via '#player-container-id, #player, ytm-app, #movie_player', where
+  // afterend of #movie_player/#player leaves the static panel painted
+  // under the positioned video surface). rank drives relocation: a panel
+  // mounted at a worse (higher) rank is moved when a better anchor shows.
+  // Rank 0-1: after the title/description block — the target position.
+  // Rank 2: after the title/actions row (before the description) —
+  //   degraded but in-flow and visible.
+  // Rank 3+: under the player, inside the watch column — visible fallback.
+  const PANEL_PLACEMENTS = [
+    { selector: 'ytd-watch-metadata', position: 'afterend', rank: 0 }, // desktop
+    { selector: 'ytm-slim-video-metadata-section-renderer', position: 'afterend', rank: 0 }, // mobile: title+channel+description
+    { selector: 'ytm-expandable-video-description-body-renderer', position: 'afterend', rank: 1 },
+    { selector: 'ytm-slim-video-description-renderer', position: 'afterend', rank: 1 },
+    { selector: 'ytm-video-description-header-renderer', position: 'afterend', rank: 1 },
+    { selector: '#below', position: 'afterend', rank: 1 },
+    { selector: 'ytm-slim-video-information-renderer', position: 'afterend', rank: 2 },
+    { selector: 'ytm-single-column-watch-next-results-renderer', position: 'beforebegin', rank: 3 },
+    { selector: '#player-container-id', position: 'afterend', rank: 3 },
+    { selector: '#primary', position: 'afterbegin', rank: 3 },
+    { selector: 'main', position: 'afterbegin', rank: 4 }
+  ];
+  const PANEL_PLACEMENT_BODY_RANK = 5;
+
+  function bestPanelPlacement() {
+    for (let i = 0; i < PANEL_PLACEMENTS.length; i++) {
+      const p = PANEL_PLACEMENTS[i];
+      const el = document.querySelector(p.selector);
+      if (el && el.parentNode && !el.closest('.gs-yt-panel')) {
+        return { node: el, position: p.position, rank: p.rank };
+      }
+    }
+    return null;
+  }
+
+  function panelIsAt(panel, placement) {
+    if (!panel || !placement) return false;
+    if (placement.position === 'afterend') return panel.previousElementSibling === placement.node;
+    if (placement.position === 'beforebegin') {
+      return !!(placement.node.previousElementSibling === panel ||
+        (placement.node.parentNode && placement.node.parentNode === panel.parentNode && panel.nextElementSibling === placement.node));
+    }
+    if (placement.position === 'afterbegin') return placement.node.firstElementChild === panel;
+    return false;
+  }
+
+  function placePanel(panel, placement) {
+    if (!panel) return false;
+    if (placement) {
+      placement.node.insertAdjacentElement(placement.position, panel);
+      panel.dataset.gsPlacement = String(placement.rank);
+      return true;
+    }
+    if (document.body) {
+      document.body.insertAdjacentElement('afterbegin', panel);
+      panel.dataset.gsPlacement = String(PANEL_PLACEMENT_BODY_RANK);
+      return true;
+    }
+    return !!panel.isConnected;
+  }
+
+  // Move a panel that was mounted before YouTube rendered the metadata /
+  // description block (lazy on mobile) up to the best anchor now present.
+  // Moves the existing node — buttons, listeners and the model picker live
+  // on it — and only ever to a strictly better rank, so it runs at most a
+  // couple of times per video and then no-ops.
+  function relocatePanelIfNeeded() {
+    const panel = document.querySelector('.gs-yt-panel');
+    if (!panel) return;
+    const currentRank = parseInt(panel.dataset.gsPlacement || '99', 10);
+    const best = bestPanelPlacement();
+    if (best && best.rank < currentRank) {
+      if (panelIsAt(panel, best)) { panel.dataset.gsPlacement = String(best.rank); return; }
+      panelMutating = true;
+      try { placePanel(panel, best); } finally { panelMutating = false; }
+      return;
+    }
+    // No better anchor, but the panel may have been left detached or
+    // dropped into a recycled node after an SPA re-render: re-home it.
+    if (!panel.isConnected) {
+      panelMutating = true;
+      try { placePanel(panel, best); } finally { panelMutating = false; }
+    } else if (best && panelIsAt(panel, best)) {
+      panel.dataset.gsPlacement = String(best.rank);
+    }
+  }
+
   function ensurePanel() {
     let panel = document.querySelector('.gs-yt-panel');
     if (panel) return panel;
@@ -891,9 +982,9 @@
   function buildPanel() {
     let panel = document.querySelector('.gs-yt-panel');
     if (panel) return panel;
-    const anchor = document.querySelector('#below, ytd-watch-metadata, #meta-contents, #primary-inner');
     panel = document.createElement('div');
     panel.className = 'gs-yt-panel';
+    panel.dataset.gsPlacement = '99';
     var head = document.createElement('div');
     head.className = 'gs-yt-head';
     var titleSpan = document.createElement('span');
@@ -915,14 +1006,10 @@
     hint.textContent = 'Summarize this video, jump through chapters, or overlay translated subtitles.';
     bodyDiv.appendChild(hint);
     panel.append(head, bodyDiv);
-    if (anchor && anchor.parentNode) {
-      // Prefer directly below the title/meta block.
-      const meta = document.querySelector('ytd-watch-metadata') || anchor;
-      meta.insertAdjacentElement('afterend', panel);
-    } else {
-      const primary = document.querySelector('#primary, #columns');
-      if (primary) primary.prepend(panel);
-    }
+    // Single insertion site: the ordered placement ladder above. On
+    // desktop this is after ytd-watch-metadata; on m.youtube.com after
+    // the metadata/description section — never inside the player subtree.
+    placePanel(panel, bestPanelPlacement());
     panel.querySelector('[data-gs-yt="summarize"]').addEventListener('click', () => summarizeVideo());
     panel.querySelector('[data-gs-yt="chapters"]').addEventListener('click', () => showChapters());
     panel.querySelector('[data-gs-yt="bilingual"]').addEventListener('click', (event) => toggleBilingual(event.currentTarget));
@@ -941,17 +1028,6 @@
         ytModelPicker = GraphiteModelSelect.createPicker(head, {});
       }
     } catch (e) { ytModelPicker = null; }
-    // Mobile YouTube (m.youtube.com / narrow watch pages): the desktop
-    // meta anchors often never appear, so the panel was built but never
-    // inserted. Fall back to the player container, then to <main>/body.
-    if (!panel.isConnected) {
-      const playerWrap = document.querySelector('#player-container-id, #player, ytm-app, #movie_player');
-      if (playerWrap && playerWrap.parentNode) playerWrap.insertAdjacentElement('afterend', panel);
-      else {
-        const main = document.querySelector('main') || document.body;
-        if (main) main.prepend(panel);
-      }
-    }
     return panel;
   }
 
@@ -1260,8 +1336,19 @@
   }
 
   function findAnchorRoot() {
-    return document.querySelector('#primary-inner, #primary, #columns, ytd-watch-flexy, ytm-app, #player-container-id, #player, #watch-container, #movie_player') ||
-      document.querySelector('main') || document.body || null;
+    // Sequential priority (never a comma list — document order would
+    // decide instead): watch column first, because the panel lives there
+    // and the observer must see it dropped/re-rendered; player subtree
+    // later, only as a degraded watch root. Never documentElement
+    // (FREEZE FIX, top of file).
+    const roots = ['ytm-watch', 'ytm-single-column-watch-next-results-renderer', 'ytm-app',
+      '#primary-inner', '#primary', '#columns', 'ytd-watch-flexy',
+      '#player-container-id', '#player', '#watch-container', '#movie_player', 'main'];
+    for (let i = 0; i < roots.length; i++) {
+      const el = document.querySelector(roots[i]);
+      if (el) return el;
+    }
+    return document.body || null;
   }
 
   // Observe only the watch-column subtree (where the panel anchor lives),
@@ -1283,9 +1370,11 @@
         [...m.addedNodes].every(isOwnNode) &&
         [...m.removedNodes].every((n) => !n.classList || !n.classList.contains('gs-yt-panel')));
       if (onlyOwn) return;
-      // Only react when the panel is actually missing (YouTube re-render
-      // dropped it) or the anchor was replaced; otherwise do nothing.
-      if (!document.querySelector('.gs-yt-panel')) scheduleInit();
+      // React when the panel is actually missing (YouTube re-render
+      // dropped it), or when it sits at a fallback rank while a better
+      // anchor may have rendered (late mobile metadata/description).
+      const live = document.querySelector('.gs-yt-panel');
+      if (!live || parseInt(live.dataset.gsPlacement || '99', 10) > 0) scheduleInit();
     });
     anchorObserver.observe(root, { childList: true, subtree: true });
   }
@@ -1317,6 +1406,7 @@
     lastHref = location.href;
     injectPageScript(); // one-shot bridge ping; no DOM mutation
     if (!document.querySelector('.gs-yt-panel')) ensurePanel();
+    else relocatePanelIfNeeded(); // mobile metadata renders late; upgrade the mount
     ensureAnchorObserver();
   }
 
