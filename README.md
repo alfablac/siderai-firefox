@@ -8,7 +8,7 @@
 *An AI sidebar for Firefox that runs on your own API keys*
 
 [![Firefox](https://img.shields.io/badge/Firefox->=140-FF7139?style=flat-square&logo=firefoxbrowser&logoColor=white)](https://www.mozilla.org/firefox/)
-[![Version](https://img.shields.io/badge/version-1.0.26-blue?style=flat-square)](https://addons.mozilla.org/en-US/firefox/addon/graphite-sider-ai-sidebar-byo-/)
+[![Version](https://img.shields.io/badge/version-1.0.27-blue?style=flat-square)](https://addons.mozilla.org/en-US/firefox/addon/graphite-sider-ai-sidebar-byo-/)
 [![License](https://img.shields.io/badge/License-MIT-yellow?style=flat-square)](LICENSE)
 
 [Features](#features) • [Screenshots](#screenshots) • [Install](#install) • [Setup](#setup) • [Privacy](#privacy) • [Troubleshooting](#troubleshooting)

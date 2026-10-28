@@ -2298,6 +2298,7 @@
       if (video.paused === false) bits.push('playing');
       var tracksText = videoTracksSummary(video);
       if (tracksText) bits.push('Captions: ' + tracksText);
+      if (video.manifestUrls && video.manifestUrls.length) bits.push('stream manifest (separate audio track likely)');
       if (video.src && !/^blob:/i.test(String(video.src))) bits.push('direct file');
       else if (video.src) bits.push('streamed (no direct file)');
       desc.textContent = bits.join(' · ');
@@ -2335,7 +2336,7 @@
     renderVideoResult('');
     videoDetailStatus(video.youTube
       ? 'YouTube is transcribed via the YouTube transcript when available. Summarize / Translate run on that transcript.'
-      : 'Captions on this player are used first. If none, the direct media file is sent to your provider for transcription.');
+      : 'Captions on this player are used first. If none, the separate audio track from the stream manifest is sent to your provider; otherwise audio is extracted from the player in the page as MP3 (Options: Transcription model, e.g. cx/transcribe on 9Router).');
     detail.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
   }
   function renderVideoResult(markdown) {
@@ -2432,8 +2433,59 @@
       throw new Error('No captions found on this player.');
     });
   }
-  function videoAudioTranscript(video) {
-    return sendTabCommand('video-media', { index: video.index }).then(function (media) {
+  // Extracted-audio hand-off: the content script returns base64 MP3 chunks
+  // (WAV only as a last resort); we keep them only long enough to send
+  // them one by one to the background transcribe case, then drop the
+  // reference (plus a 10-minute safety timer) so large audio never
+  // lingers in sidebar memory.
+  var pendingAudio = null;
+  var pendingAudioTimer = null;
+  function clearPendingAudio() {
+    pendingAudio = null;
+    if (pendingAudioTimer) { clearTimeout(pendingAudioTimer); pendingAudioTimer = null; }
+  }
+  function holdPendingAudio(chunks) {
+    clearPendingAudio();
+    pendingAudio = chunks;
+    pendingAudioTimer = setTimeout(clearPendingAudio, 10 * 60 * 1000);
+    return chunks;
+  }
+  function transcribeAudioChunks(chunks, video) {
+    var texts = [];
+    var chain = Promise.resolve();
+    (chunks || []).forEach(function (chunk, i) {
+      chain = chain.then(function () {
+        if (chunks.length > 1) {
+          videoDetailStatus('Transcribing extracted audio part ' + (i + 1) + ' of ' + chunks.length + '...');
+        }
+        // NOTE: no `model` here — the background resolves transcription
+        // with { forTranscription: true } so the chat model cannot leak
+        // into /audio/transcriptions; Options > Transcription model (or
+        // whisper-1 fallback) is what reaches the provider.
+        var chunkExt = chunk.format ? String(chunk.format) : String(chunk.mimeType || '').split('/')[1] || 'mp3';
+        return sendMessage({
+          type: 'transcribe',
+          audioBase64: chunk.audioBase64,
+          mimeType: chunk.mimeType || 'audio/mpeg',
+          filename: 'page-video-' + (Number(video && video.index) || 0) + '-part' + (i + 1) + '.' + chunkExt,
+          providerId: state.activeProviderId
+        }).then(function (r) {
+          var text = (r && (r.text || r.transcript)) || '';
+          if (text) texts.push(text);
+        });
+      });
+    });
+    return chain.then(function () {
+      var joined = texts.join('\n').trim();
+      if (!joined) throw new Error('The transcription provider returned no text for the extracted audio.');
+      return joined;
+    });
+  }
+  function videoDirectUrlTranscript(video, srcOverride) {
+    var attempt = srcOverride
+      ? Promise.resolve({ ok: true, url: srcOverride })
+      : sendTabCommand('video-media', { index: video.index });
+    return attempt.then(function (media) {
       if (!media || !media.ok) throw new Error((media && media.error) || 'No direct media URL for transcription.');
       var src = String(media.url || '');
       if (!src) throw new Error('This player has no direct media URL.');
@@ -2442,11 +2494,72 @@
       return sendMessage({
         type: 'transcribe', dataUrl: src, audioDataUrl: src,
         filename: 'page-video-' + (Number(video.index) || 0),
-        providerId: state.activeProviderId, model: state.activeModel
+        providerId: state.activeProviderId
       }).then(function (r) {
         var text = (r && (r.text || r.transcript)) || '';
         if (!text) throw new Error('The transcription provider returned no text.');
         return text;
+      });
+    });
+  }
+  function videoManifestTranscript(video) {
+    // Best route: the site's OWN separate audio rendition. Most HLS/DASH
+    // players keep audio as compressed AAC/Opus segments in the manifest;
+    // the background fetches and uploads those bytes directly — no
+    // in-page re-encode, no WAV, no base64 hop through the sidebar.
+    videoDetailStatus('Looking for a separate audio track in the stream manifest (HLS/DASH)...');
+    return sendTabCommand('video-manifest-audio', {
+      index: video.index, srcs: video.srcs || [], manifestUrls: video.manifestUrls || []
+    }).then(function (res) {
+      if (!res || !res.ok) throw new Error((res && res.error) || 'No streaming manifest found for this player.');
+      var plan = { manifestUrl: res.manifestUrl || '' };
+      if (res.segments && res.segments.length) {
+        plan.manifestAudio = { init: res.init || null, segments: res.segments, mimeType: res.mimeType || '' };
+      }
+      var via = res.kind === 'dash' ? 'DASH' : 'HLS';
+      videoDetailStatus('Found the ' + via + ' audio track' + (res.lang ? ' (' + res.lang + ')' : '') + '. Sending it to your provider for transcription...');
+      return sendMessage({
+        type: 'transcribe',
+        manifestUrl: plan.manifestUrl,
+        manifestAudio: plan.manifestAudio,
+        providerId: state.activeProviderId
+      }).then(function (r) {
+        var text = (r && (r.text || r.transcript)) || '';
+        if (!text) throw new Error('The transcription provider returned no text for the manifest audio.');
+        return text;
+      });
+    });
+  }
+  function videoAudioTranscript(video) {
+    // Order: (1) manifest audio rendition (background fetches the site's
+    // compressed segments), (2) in-page extraction — fetch + decode in the
+    // page, convert to MP3 chunks (captureStream/WebM for pure MSE), (3)
+    // direct media file URL. Only the page can observe blob:/MSE media.
+    return videoManifestTranscript(video).catch(function (manifestErr) {
+      videoDetailStatus('No manifest audio track (' + manifestErr.message + ') Extracting audio from the player in the page...');
+      return sendTabCommand('video-extract-audio', { index: video.index, srcs: video.srcs || [] }).then(function (res) {
+        if (res && res.ok && res.chunks && res.chunks.length) {
+          var chunks = holdPendingAudio(res.chunks);
+          var fmt = String(res.format || 'mp3').toUpperCase();
+          videoDetailStatus('Extracted ' + chunks.length + ' ' + fmt + ' audio chunk' + (chunks.length === 1 ? '' : 's') + ' (' + (res.duration || '?') + 's' + (res.source === 'capture' ? ', captured from the player' : '') + '). Transcribing...');
+          return transcribeAudioChunks(chunks, video).then(function (text) {
+            clearPendingAudio();
+            return text;
+          }, function (err) {
+            clearPendingAudio();
+            throw err;
+          });
+        }
+        var extractError = (res && res.error) || 'Audio extraction was not possible on this player.';
+        var directUrl = '';
+        var candidates = [video.src].concat(video.srcs || []);
+        for (var i = 0; i < candidates.length; i++) {
+          var candidate = String(candidates[i] || '');
+          if (candidate && !/^blob:/i.test(candidate) && /^https?:/i.test(candidate)) { directUrl = candidate; break; }
+        }
+        if (!directUrl) throw new Error(extractError);
+        videoDetailStatus(extractError + ' Falling back to the direct media file...');
+        return videoDirectUrlTranscript(video, directUrl);
       });
     });
   }

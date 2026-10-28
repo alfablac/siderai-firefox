@@ -314,6 +314,16 @@ async function resolveProvider(msg, opts) {
   if (!found && msg && msg.provider && msg.provider.baseUrl) return msg.provider;
   if (!found) throw new Error('No provider configured. Open Graphite Sider options and add one.');
   var copy = JSON.parse(JSON.stringify(found));
+  if (opts && opts.forTranscription) {
+    // Transcription path: the chat-model override (msg.model /
+    // settings.activeModel) must never leak into /audio/transcriptions —
+    // a chat id like "muse-wonder" is not a Whisper model. Only an
+    // explicit transcription override wins; otherwise providers.js falls
+    // back to copy.transcriptionModel (Options page) or whisper-1.
+    if (msg && msg.provider && msg.provider.transcriptionModel) copy.transcriptionModel = msg.provider.transcriptionModel;
+    if (msg && msg.transcriptionModel) copy.transcriptionModel = msg.transcriptionModel;
+    return copy;
+  }
   if (opts && opts.forImage) {
     // Image path: only an explicit image-model override wins; the text model
     // (msg.model / settings.activeModel) must never leak into image calls.
@@ -717,6 +727,78 @@ function fetchJsonText(rawUrl) {
   });
 }
 
+/* --- Manifest-audio helpers (1.0.27+) --------------------------------------
+ * Most streaming sites keep a separate compressed audio rendition in the
+ * HLS/DASH manifest. Fetching THAT (background has <all_urls> fetch) beats
+ * re-encoding decoded audio in the page: no base64 hop through runtime
+ * messages, no WAV bloat. We fetch the manifest text, let
+ * lib/manifests.js find the audio rendition, then concatenate its
+ * (already compressed) segments into one Blob for the Whisper endpoint.
+ * Byte budget keeps a rogue manifest from exhausting memory. */
+var MANIFEST_MAX_BYTES = 24 * 1024 * 1024;
+
+async function fetchManifestAudio(msg) {
+  if (typeof GraphiteManifests === 'undefined' || !GraphiteManifests) {
+    throw new Error('fetchManifestAudio: GraphiteManifests (lib/manifests.js) is not loaded');
+  }
+  var manifestUrl = String((msg && (msg.url || msg.manifestUrl)) || '');
+  if (!/^https?:/i.test(manifestUrl)) throw new Error('fetchManifestAudio: an http(s) manifest URL is required');
+  var planOverride = (msg && msg.manifestAudio) || null; // { init, segments, mimeType } from the page
+  var plan = null;
+  if (planOverride && Array.isArray(planOverride.segments) && planOverride.segments.length) {
+    plan = planOverride;
+  } else {
+    var first = await fetch(manifestUrl);
+    if (!first.ok) throw new Error('Manifest fetch failed: HTTP ' + first.status);
+    var firstText = await first.text();
+    var ct = '';
+    try { ct = first.headers.get('content-type') || ''; } catch (e) { /* older engines */ }
+    if (GraphiteManifests.isHls(firstText) || GraphiteManifests.looksLikeHlsUrl(manifestUrl, ct)) {
+      var master = GraphiteManifests.parseHlsMaster(firstText, manifestUrl);
+      if (master && master.url) {
+        var mediaRes = await fetch(master.url);
+        if (!mediaRes.ok) throw new Error('Audio playlist fetch failed: HTTP ' + mediaRes.status);
+        var media = GraphiteManifests.parseHlsMedia(await mediaRes.text(), master.url);
+        if (!media || !media.segments.length) throw new Error('The audio playlist has no segments.');
+        plan = { init: media.init, segments: media.segments, mimeType: '', lang: master.lang || '' };
+      } else {
+        // The URL itself is the media playlist (muxed audio+video or
+        // audio-only stream): its segments already carry the audio.
+        var direct = GraphiteManifests.parseHlsMedia(firstText, manifestUrl);
+        if (!direct || !direct.segments.length) throw new Error('No audio rendition found in the HLS manifest.');
+        plan = { init: direct.init, segments: direct.segments, mimeType: '', lang: '' };
+      }
+    } else if (GraphiteManifests.looksLikeDashUrl(manifestUrl, ct) || firstText.indexOf('<MPD') !== -1) {
+      var dash = GraphiteManifests.parseDashAudio(firstText, manifestUrl);
+      if (!dash || !dash.segments.length) throw new Error('No separate audio adaptation found in the DASH manifest.');
+      plan = dash;
+    } else {
+      throw new Error('That URL is not an HLS or DASH manifest.');
+    }
+  }
+  var urls = [];
+  if (plan.init) urls.push(String(plan.init));
+  (plan.segments || []).forEach(function (u) { if (u) urls.push(String(u)); });
+  if (!urls.length) throw new Error('The manifest audio rendition has no segments.');
+  var mime = String(plan.mimeType || '');
+  var parts = [];
+  var total = 0;
+  var capped = false;
+  for (var i = 0; i < urls.length; i++) {
+    var segRes = await fetch(urls[i]);
+    if (!segRes.ok) throw new Error('Audio segment fetch failed: HTTP ' + segRes.status + ' (' + urls[i].slice(0, 120) + ')');
+    var buf = await segRes.arrayBuffer();
+    total += buf.byteLength;
+    if (total > MANIFEST_MAX_BYTES) { capped = true; break; }
+    if (!mime) { try { mime = segRes.headers.get('content-type') || ''; } catch (e) { /* ignore */ } }
+    parts.push(buf);
+  }
+  if (!parts.length) throw new Error('No audio segments could be fetched from the manifest.');
+  if (!mime) mime = /\.aac($|[?#])/i.test(urls[urls.length - 1]) ? 'audio/aac' : (plan.init ? 'audio/mp4' : 'audio/aac');
+  var blob = new Blob(parts, { type: mime.split(';')[0].trim() || 'audio/mp4' });
+  return { blob: blob, mime: blob.type, bytes: total, segmentCount: parts.length, capped: capped, lang: plan.lang || '' };
+}
+
 function resolveTabIdForMessage(tabId, label) {
   if (tabId != null) return Promise.resolve(tabId);
   return queryActiveTab().then(function (tabs) {
@@ -800,23 +882,56 @@ function handleMessage(msg) {
         });
       });
     }
+    case 'transcribeAudio': // alias of 'transcribe' (same contract)
     case 'transcribe': {
-      return resolveProvider(msg).then(async function (p) {
+      // Three audio sources, best first:
+      //  1. msg.manifestUrl / msg.manifestAudio — the site's own separate
+      //     audio rendition from its HLS/DASH manifest, fetched HERE and
+      //     uploaded as-is (compressed AAC/Opus; no base64 hop at all).
+      //  2. msg.audioBase64 — audio extracted in the page (MP3 chunks from
+      //     lib/audio-extract.js; WAV only as last resort), one runtime
+      //     message each, so the payload is capped below.
+      //  3. msg.dataUrl/audioDataUrl — a direct media URL fetched here.
+      var maxB64 = 900000;
+      if (typeof msg.maxBase64Chars === 'number' && msg.maxBase64Chars > 0) maxB64 = Math.floor(msg.maxBase64Chars);
+      if (typeof msg.audioBase64 === 'string' && msg.audioBase64.length > maxB64) {
+        return Promise.reject(new Error('Audio chunk is too large for one message (' + msg.audioBase64.length + ' > ' + maxB64 + ' base64 chars). Split the audio into smaller chunks.'));
+      }
+      if ((msg.dataUrl || msg.audioDataUrl) && !msg.manifestUrl && String(msg.dataUrl || msg.audioDataUrl).length > maxB64 * 2) {
+        return Promise.reject(new Error('Audio payload is too large for one message. Extract and chunk the audio in the page instead.'));
+      }
+      return resolveProvider(msg, { forTranscription: true }).then(async function (p) {
         var blob;
+        var filename = msg.filename || msg.name || 'audio.webm';
         var srcUrl = msg.dataUrl || msg.audioDataUrl;
-        if (srcUrl && !msg.audioBase64) {
-          blob = await (await fetch(srcUrl)).blob();
+        if (msg.manifestUrl || msg.manifestAudio) {
+          var fetched = await fetchManifestAudio(msg);
+          blob = fetched.blob;
+          var extByMime = { 'audio/mp4': '.mp4', 'audio/aac': '.aac', 'audio/mpeg': '.mp3', 'audio/ogg': '.ogg', 'audio/webm': '.webm', 'audio/wav': '.wav' };
+          filename = 'manifest-audio' + (extByMime[blob.type] || '.mp4');
         } else if (msg.audioBase64) {
           var bin = atob(msg.audioBase64);
           var arr = new Uint8Array(bin.length);
           for (var i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i);
-          blob = new Blob([arr], { type: msg.mimeType || 'audio/webm' });
-        } else if (false) {
-          blob = null; // unreachable: dataUrl/audioDataUrl handled above
+          blob = new Blob([arr], { type: msg.mimeType || msg.mime || 'audio/webm' });
+        } else if (srcUrl) {
+          blob = await (await fetch(srcUrl)).blob();
         } else {
-          throw new Error('transcribe: send audioBase64 or audioDataUrl (Blobs cannot cross runtime messages)');
+          throw new Error('transcribe: send manifestUrl, audioBase64 or audioDataUrl (Blobs cannot cross runtime messages)');
         }
-        return GraphiteProviders.transcribe(p, blob, msg.filename || msg.name || 'audio.webm');
+        var transcribeOpts = {};
+        if (msg.transcriptionModel) transcribeOpts.model = msg.transcriptionModel;
+        if (msg.language) transcribeOpts.language = msg.language;
+        if (typeof msg.segmentSeconds === 'number' && msg.segmentSeconds > 0) transcribeOpts.segmentSeconds = msg.segmentSeconds;
+        return GraphiteProviders.transcribe(p, blob, filename, transcribeOpts);
+      });
+    }
+    case 'manifestAudio': {
+      // Discovery only: resolve a manifest (or a page-supplied plan) to its
+      // audio rendition metadata WITHOUT transcribing, so the sidebar can
+      // show what will be sent. The actual bytes move in 'transcribe'.
+      return fetchManifestAudio(msg).then(function (r) {
+        return { ok: true, mime: r.mime, bytes: r.bytes, segmentCount: r.segmentCount, capped: r.capped, lang: r.lang };
       });
     }
     case 'generateImage': {

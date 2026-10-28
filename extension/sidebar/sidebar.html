@@ -185,7 +185,7 @@
   <!-- VIDEOS -->
   <section id="view-videos" class="view">
     <div class="row-between"><strong>Videos on this page</strong><span id="videoHost" class="chip">No active tab</span></div>
-    <p class="muted small">Finds every &lt;video&gt;/&lt;audio&gt; element on the open page — not only YouTube. Captions/subtitles on the player are used first; otherwise the direct media file is sent to your provider's transcription (Whisper) endpoint.</p>
+    <p class="muted small">Finds every &lt;video&gt;/&lt;audio&gt; element on the open page — not only YouTube. Captions/subtitles on the player are used first; otherwise the separate audio track from the site's streaming manifest (HLS/DASH) is sent to your provider's transcription (Whisper) endpoint, and if there is no manifest, the player's audio is extracted in the page and converted to small MP3 chunks (WAV only as a last resort).</p>
     <div class="row">
       <button id="videoScanBtn" class="btn primary small" type="button">Scan page</button>
       <span class="spacer"></span>
@@ -251,6 +251,8 @@
 <script src="../lib/youtube.js"></script>
 <script src="../lib/research.js"></script>
 <script src="../lib/captions.js"></script>
+<script src="../lib/audio-extract.js"></script>
+<script src="../lib/manifests.js"></script>
 <script src="markdown.js"></script>
 <script src="sidebar.js"></script>
 </body>

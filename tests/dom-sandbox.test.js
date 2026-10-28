@@ -617,6 +617,177 @@ check("captions: parseTimestamp accepts hh:mm:ss, mm:ss, comma and ms forms", ()
   assert.ok(Number.isNaN(C.parseTimestamp("nope")), "garbage is NaN");
 });
 
+/* ----------------------- lib/audio-extract.js (GraphiteAudioExtract) -----
+   Pure WAV codec: run the lib in a vm with a Blob shim and a fake
+   AudioBuffer, the way the content script uses it after decodeAudioData. */
+
+function loadAudioExtract() {
+  const src = fs.readFileSync(path.join(EXT, "lib/audio-extract.js"), "utf8");
+  const sandbox = {
+    Float32Array: Float32Array, ArrayBuffer: ArrayBuffer, DataView: DataView,
+    Math: Math, Number: Number,
+    Blob: class {
+      constructor(parts, opts) {
+        this.parts = parts || [];
+        this.type = (opts && opts.type) || "";
+        this.size = this.parts.reduce((n, p) => n + (p.byteLength != null ? p.byteLength : (p.length || 0)), 0);
+      }
+    }
+  };
+  vm.createContext(sandbox);
+  vm.runInContext(src, sandbox, { filename: "audio-extract.js" });
+  assert.ok(sandbox.GraphiteAudioExtract, "GraphiteAudioExtract global exported");
+  return sandbox.GraphiteAudioExtract;
+}
+
+function fakeAudioBuffer(channels, sampleRate, seconds) {
+  const len = Math.floor(sampleRate * seconds);
+  const data = channels.map((gain, ci) => {
+    const arr = new Float32Array(len);
+    for (let i = 0; i < len; i++) arr[i] = Math.sin(i / 10 + ci) * gain;
+    return arr;
+  });
+  return {
+    numberOfChannels: channels.length, sampleRate: sampleRate, length: len,
+    duration: seconds,
+    getChannelData: (i) => data[i]
+  };
+}
+
+check("audio-extract: downmix averages channels, resample halves 48k->16k by ratio 3", () => {
+  const A = loadAudioExtract();
+  const buf = fakeAudioBuffer([1, 0.5], 48000, 0.1);
+  const mono = A.downmixDecodeAudioBuffer(buf);
+  assert.strictEqual(mono.length, 4800, "downmix keeps frame count");
+  const expectedAvg = (buf.getChannelData(0)[0] * 1 + buf.getChannelData(1)[0]) / 2;
+  assert.ok(Math.abs(mono[0] - expectedAvg) < 1e-6, "first frame is the channel average");
+  assert.ok(Math.abs(mono[0]) > 0.1, "fixture channel 1 starts at sin(1) != 0 (guards the old vacuous check)");
+  const res = A.resampleMonoSamples(new Float32Array([0, 0.3, 0.6, 0.9, 0, 0]), 48000, 16000);
+  assert.strictEqual(res.length, 2, "48k->16k keeps every third sample");
+  assert.ok(Math.abs(res[0] - 0) < 1e-6 && Math.abs(res[1] - 0.9) < 1e-6, "resampled values");
+  const same = A.resampleMonoSamples(new Float32Array([1, 2]), 16000, 16000);
+  assert.strictEqual(same.length, 2, "same-rate resample is a copy");
+});
+
+check("audio-extract: WAV size estimate matches the encoder", () => {
+  const A = loadAudioExtract();
+  assert.strictEqual(A.estimatePcm16WavSize(1, 16000), 44 + 32000, "1s mono 16k PCM16");
+  assert.strictEqual(A.estimatePcm16WavSize(0, 16000), 44, "empty is header only");
+  const wav = A.renderToWavBlob(fakeAudioBuffer([1], 16000, 1), {});
+  assert.strictEqual(wav.size, A.estimatePcm16WavSize(1, 16000), "encoder byte count matches estimate");
+  assert.strictEqual(wav.type, "audio/wav", "wav mime");
+});
+
+check("audio-extract: chunks stay under the base64 ceiling and keep timing", () => {
+  const A = loadAudioExtract();
+  const chunks = A.renderWavBlobInChunks(fakeAudioBuffer([1], 16000, 30), {});
+  assert.ok(chunks.length >= 2, "30s at 16kHz needs multiple chunks, got " + chunks.length);
+  chunks.forEach((c, i) => {
+    assert.ok(A._b64CharsForBytes(c.size) <= A.DEFAULT_MAX_B64_CHARS,
+      "chunk " + i + " base64 fits the ceiling");
+    assert.strictEqual(c.size, 44 + Math.round(c.dur * 16000) * 2, "chunk size matches its duration");
+    if (i) assert.ok(Math.abs(c.start - (chunks[i - 1].start + chunks[i - 1].dur)) < 0.001, "chunks are contiguous");
+  });
+  const totalDur = chunks.reduce((n, c) => n + c.dur, 0);
+  assert.ok(Math.abs(totalDur - 30) < 0.01, "chunk durations cover the whole buffer");
+});
+
+check("audio-extract: MP3 chunks are valid audio/mpeg and ~8x smaller than WAV", () => {
+  const A = loadAudioExtract();
+  const chunks = A.renderMp3BlobInChunks(fakeAudioBuffer([1, 0.5], 48000, 10), {});
+  assert.ok(chunks.length >= 1, "mp3 chunks produced");
+  const totalBytes = chunks.reduce((n, c) => n + c.size, 0);
+  const wavBytes = A.estimatePcm16WavSize(10, 16000);
+  assert.ok(totalBytes < wavBytes / 4, "mp3 (" + totalBytes + "B) is far smaller than wav (" + wavBytes + "B)");
+  chunks.forEach((c, i) => {
+    assert.strictEqual(c.blob.type, "audio/mpeg", "chunk " + i + " is audio/mpeg");
+    assert.ok(A._b64CharsForBytes(c.size) <= A.DEFAULT_MAX_B64_CHARS, "chunk " + i + " fits the ceiling");
+    // MP3 frame sync: 0xFFE* header at offset 0.
+    const buf = c.blob.parts[0];
+    assert.ok(buf[0] === 0xFF && (buf[1] & 0xE0) === 0xE0, "chunk " + i + " starts with an MP3 sync word");
+  });
+  const totalDur = chunks.reduce((n, c) => n + c.dur, 0);
+  assert.ok(Math.abs(totalDur - 10) < 0.01, "mp3 chunk durations cover the buffer");
+});
+
+/* ----------------------- lib/manifests.js (GraphiteManifests) ----------
+   HLS/DASH separate-audio-track discovery: the manifest's compressed
+   audio rendition is what the background fetches for transcription. */
+
+function loadManifests() {
+  const src = fs.readFileSync(path.join(EXT, "lib/manifests.js"), "utf8");
+  const sandbox = { URL: URL, Math: Math, Number: Number, RegExp: RegExp, String: String };
+  vm.createContext(sandbox);
+  vm.runInContext(src, sandbox, { filename: "manifests.js" });
+  assert.ok(sandbox.GraphiteManifests, "GraphiteManifests global exported");
+  return sandbox.GraphiteManifests;
+}
+
+check("manifests: HLS master picks the DEFAULT audio rendition, media lists segments", () => {
+  const M = loadManifests();
+  const base = "https://cdn.example.com/v/123/master.m3u8";
+  const master = [
+    "#EXTM3U",
+    '#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="aud",NAME="English",LANGUAGE="en",DEFAULT=YES,AUTOSELECT=YES,URI="audio/en.m3u8"',
+    '#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="aud",NAME="Spanish",LANGUAGE="es",DEFAULT=NO,URI="audio/es.m3u8"',
+    '#EXT-X-STREAM-INF:BANDWIDTH=800000,AUDIO="aud"',
+    "video/360.mp4.m3u8",
+    ""
+  ].join("\n");
+  const pick = M.parseHlsMaster(master, base);
+  assert.strictEqual(pick.url, "https://cdn.example.com/v/123/audio/en.m3u8");
+  assert.strictEqual(pick.lang, "en");
+  const media = [
+    "#EXTM3U", "#EXT-X-TARGETDURATION:6", '#EXT-X-MAP:URI="init.mp4"',
+    "#EXTINF:6.0,", "seg1.m4s", "#EXTINF:6.0,", "../seg2.m4s", "#EXT-X-ENDLIST", ""
+  ].join("\n");
+  const parsed = M.parseHlsMedia(media, "https://cdn.example.com/v/123/audio/en.m3u8");
+  assert.strictEqual(parsed.init, "https://cdn.example.com/v/123/audio/init.mp4");
+  assert.strictEqual(parsed.segments.length, 2);
+  assert.strictEqual(parsed.segments[1], "https://cdn.example.com/v/123/seg2.m4s");
+  assert.ok(M.isHls(master) && M.looksLikeHlsUrl(base) && !M.looksLikeDashUrl(base));
+  assert.strictEqual(M.parseHlsMaster("#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=1\nv.m3u8\n", base), null, "no audio group -> null");
+});
+
+check("manifests: DASH picks the audio AdaptationSet and expands its segments", () => {
+  const M = loadManifests();
+  const mpd = [
+    '<?xml version="1.0"?>',
+    '<MPD mediaPresentationDuration="PT0H1M0S"><Period>',
+    '<AdaptationSet mimeType="video/mp4"><Representation id="v1" bandwidth="800000">',
+    '<SegmentTemplate timescale="1000" duration="4000" media="v/$Number$.m4s" initialization="v/init.mp4"/></Representation></AdaptationSet>',
+    '<AdaptationSet mimeType="audio/mp4" lang="en"><Representation id="a1" bandwidth="64000">',
+    '<SegmentTemplate timescale="1000" duration="4000" media="a/$Number%03d$.m4s" initialization="a/init-$RepresentationID$.mp4"/></Representation></AdaptationSet>',
+    "</Period></MPD>"
+  ].join("\n");
+  const audio = M.parseDashAudio(mpd, "https://cdn.example.com/dash/manifest.mpd");
+  assert.ok(audio, "audio adaptation found");
+  assert.strictEqual(audio.init, "https://cdn.example.com/dash/a/init-a1.mp4");
+  assert.strictEqual(audio.segments.length, 15, "60s / 4s segments");
+  assert.strictEqual(audio.segments[0], "https://cdn.example.com/dash/a/001.m4s");
+  assert.strictEqual(audio.mimeType, "audio/mp4");
+  const noAudio = mpd.replace('mimeType="audio/mp4" lang="en"', 'mimeType="text/vtt"');
+  // text/vtt set has no audio codecs either, so it must not be picked.
+  assert.strictEqual(M.parseDashAudio(noAudio, "https://cdn.example.com/dash/manifest.mpd"), null);
+});
+
+check("manifests: resolveUrl handles relative, root and protocol-relative refs", () => {
+  const M = loadManifests();
+  assert.strictEqual(M.resolveUrl("https://a.b/c/d.m3u8", "e/f.m3u8"), "https://a.b/c/e/f.m3u8");
+  assert.strictEqual(M.resolveUrl("https://a.b/c/d.m3u8", "/x.m3u8"), "https://a.b/x.m3u8");
+  assert.strictEqual(M.resolveUrl("https://a.b/c/d.m3u8", "//cdn.b/x.m3u8"), "https://cdn.b/x.m3u8");
+  assert.strictEqual(M.resolveUrl("https://a.b/c/d.m3u8", "https://z.b/x.m3u8"), "https://z.b/x.m3u8");
+  assert.strictEqual(M.resolveUrl("https://a.b/c/d/e.m3u8", "../x.m3u8"), "https://a.b/c/x.m3u8");
+});
+
+check("audio-extract: explicit secondsPerChunk and source-rate resampling", () => {
+  const A = loadAudioExtract();
+  const chunks = A.renderWavBlobInChunks(fakeAudioBuffer([1, 1], 48000, 3), { secondsPerChunk: 1 });
+  assert.strictEqual(chunks.length, 3, "one chunk per second");
+  assert.ok(chunks.every((c) => Math.abs(c.dur - 1) < 0.001), "each chunk is one second at the target rate");
+  assert.strictEqual(chunks[1].start, 1, "second chunk starts at 1s");
+});
+
 /* ---------------------------------------------------------------- summary */
 
 console.log(failures === 0 ? "\nall dom-sandbox tests passed" : "\n" + failures + " failure(s)");

@@ -649,12 +649,12 @@ check("background prompt path guarded and loads settings", () => {
   assert.ok(!/(^|[^\w.$])global\./.test(bg), "background.js must not use the bare global object");
 });
 
-check("manifest background order and release version 1.0.26", () => {
+check("manifest background order and release version 1.0.27", () => {
   assert.ok(manifest, "manifest required");
   const scripts = (manifest.background && manifest.background.scripts) || [];
   const iP = scripts.indexOf("lib/prompts.js"), iY = scripts.indexOf("lib/youtube.js"), iB = scripts.indexOf("background.js");
   assert.ok(iP >= 0 && iY >= 0 && iB > iP && iB > iY, "lib/prompts.js + lib/youtube.js load before background.js");
-  assert.strictEqual(manifest.version, "1.0.26", "release version");
+  assert.strictEqual(manifest.version, "1.0.27", "release version");
 });
 
 /* ---------- 1.0.6 bug: transcript truncated at 22:52 of a 44:59 video -----
@@ -1517,7 +1517,7 @@ Promise.all([Promise.resolve(sseDone), Promise.resolve(imageDone), Promise.resol
    fallback, widened liveness, touch selection, helper payloads. */
 check("1.0.21: version, model-select wiring, detach transport, mobile surfaces", () => {
   assert.ok(manifest, "manifest required");
-  assert.strictEqual(manifest.version, "1.0.26", "release version");
+  assert.strictEqual(manifest.version, "1.0.27", "release version");
   assert.ok(manifest.browser_specific_settings.gecko_android, "gecko_android block present");
   // Shared picker loads before both helpers.
   const ytEntry = (manifest.content_scripts || []).find((cs) => (cs.js || []).includes("content/youtube.js"));
@@ -1613,7 +1613,7 @@ check("1.0.19: icons built as same-document SVG nodes (no DOMParser import)", ()
    static 9px text; now icons-only everywhere, name via long-press. */
 check("1.0.23: panel placement ladder + long-press toolbar labels", () => {
   assert.ok(manifest, "manifest required");
-  assert.strictEqual(manifest.version, "1.0.26", "release version 1.0.26");
+  assert.strictEqual(manifest.version, "1.0.27", "release version 1.0.27");
   const yt = fs.readFileSync(path.join(EXT, "content/youtube.js"), "utf8");
   // Ladder exists, tried sequentially in priority order.
   const ladder = yt.slice(yt.indexOf("const PANEL_PLACEMENTS"), yt.indexOf("function bestPanelPlacement"));
@@ -1881,4 +1881,67 @@ check("1.0.26 Videos tab: any-page video inventory, transcribe/summarize/transla
   [".video-row", ".video-row.selected", ".video-detail", ".video-seek-row", ".video-result"].forEach((sel) => {
     assert.ok(css.includes(sel), "sidebar css defines " + sel);
   });
+});
+
+check("1.0.27 blob/MSE extraction + per-provider transcription model", () => {
+  const manifest = fs.readFileSync(path.join(EXT, "manifest.json"), "utf8");
+  assert.ok(manifest.includes('"lib/audio-extract.js"'), "manifest registers lib/audio-extract.js");
+  assert.ok(manifest.includes('"lib/manifests.js"'), "manifest registers lib/manifests.js");
+
+  const content = fs.readFileSync(path.join(EXT, "content/content.js"), "utf8");
+  assert.ok(content.includes("case 'video-extract-audio'"), "content handles video-extract-audio");
+  assert.ok(content.includes("extractPageVideoAudio"), "content implements extractPageVideoAudio");
+  assert.ok(content.includes("decodeAudioData"), "content decodes media with Web Audio");
+  assert.ok(content.includes("renderWavBlobInChunks"), "content keeps the WAV chunk path as last resort");
+  assert.ok(content.includes("case 'video-manifest-audio'"), "content handles video-manifest-audio");
+  assert.ok(content.includes("detectVideoManifestAudio"), "content detects manifest audio renditions");
+  assert.ok(content.includes("collectManifestUrls"), "content collects manifest URLs (performance entries + sources)");
+  assert.ok(content.includes("renderMp3BlobInChunks"), "content converts extracted audio to MP3 chunks");
+  assert.ok(content.includes("captureElementAudio"), "content can capture pure-MSE players via captureStream");
+  assert.ok(content.includes("MediaRecorder"), "capture path records compressed audio, not WAV");
+  const mediaCase = content.slice(content.indexOf("case 'video-media'"), content.indexOf("case 'video-extract-audio'"));
+  assert.ok(!mediaCase.includes("cannot be sent to the transcription provider"), "old blob dead-end message is gone from video-media");
+
+  const side = fs.readFileSync(path.join(EXT, "sidebar/sidebar.js"), "utf8");
+  assert.ok(side.includes("'video-extract-audio'"), "sidebar asks the page to extract audio when no manifest track exists");
+  assert.ok(side.includes("'video-manifest-audio'"), "sidebar asks the page for the manifest audio rendition first");
+  assert.ok(side.includes("videoManifestTranscript"), "sidebar tries manifest audio before extraction");
+  assert.ok(side.includes("transcribeAudioChunks"), "sidebar transcribes chunk by chunk");
+  assert.ok(side.includes("holdPendingAudio") && side.includes("clearPendingAudio"), "sidebar holds/releases extracted chunks");
+  assert.ok(side.includes("10 * 60 * 1000"), "pending audio auto-clears after 10 minutes");
+  const audioFlow = side.slice(side.indexOf("function videoAudioTranscript"), side.indexOf("function transcribeSelectedVideo"));
+  assert.ok(!audioFlow.includes("model: state.activeModel"), "chat model never sent on the transcribe path");
+  const extractIdx = side.indexOf("function videoAudioTranscript");
+  const manifestIdx = side.indexOf("videoManifestTranscript(video)", extractIdx);
+  const extractCmdIdx = side.indexOf("'video-extract-audio'", extractIdx);
+  assert.ok(manifestIdx > -1 && extractCmdIdx > manifestIdx, "manifest route is attempted before in-page extraction");
+
+  const bg = fs.readFileSync(path.join(EXT, "background.js"), "utf8");
+  assert.ok(bg.includes("forTranscription"), "background resolves transcription providers separately");
+  assert.ok(bg.includes("900000"), "background enforces the base64 chunk ceiling");
+  assert.ok(bg.includes("audioBase64"), "background accepts chunked base64 audio");
+  assert.ok(bg.includes("fetchManifestAudio"), "background fetches manifest audio renditions itself");
+  assert.ok(bg.includes("msg.manifestUrl"), "transcribe accepts a manifest URL (no base64 hop)");
+  assert.ok(bg.includes("GraphiteManifests"), "background uses the manifest parser lib");
+  assert.ok(bg.includes("case 'manifestAudio'"), "background exposes manifest discovery");
+  const sliceStart = bg.indexOf("case 'buildYouTubePrompt':");
+  const sliceEnd = bg.indexOf("case 'getActiveTab':");
+  assert.ok(sliceStart > -1 && sliceEnd > sliceStart, "pinned slice anchors present");
+  assert.ok(!bg.slice(sliceStart, sliceEnd).includes("case 'transcribe'"), "transcribe case stays outside the pinned slice");
+
+  const prov = fs.readFileSync(path.join(EXT, "lib/providers.js"), "utf8");
+  assert.ok(prov.includes("provider.transcriptionModel"), "transcribe reads the per-provider model");
+  assert.ok(prov.includes("whisper-1"), "transcribe falls back to whisper-1");
+  assert.ok(!prov.includes("form.append('model', 'whisper-1')"), "transcribe model is no longer hardcoded");
+
+  const storage = fs.readFileSync(path.join(EXT, "lib/storage.js"), "utf8");
+  assert.ok(storage.includes("transcriptionModel: p.transcriptionModel"), "storage preserves transcriptionModel");
+
+  const options = fs.readFileSync(path.join(EXT, "options/options.js"), "utf8");
+  assert.ok(options.includes('data-field="transcriptionModel"'), "options renders the transcription model field");
+  assert.ok(options.includes("if (p.transcriptionModel) out.transcriptionModel"), "options preserves transcriptionModel on save");
+
+  const html = fs.readFileSync(path.join(EXT, "sidebar/sidebar.html"), "utf8");
+  assert.ok(html.includes("../lib/audio-extract.js"), "sidebar loads the extract lib");
+  assert.ok(html.includes("../lib/manifests.js"), "sidebar loads the manifests lib");
 });

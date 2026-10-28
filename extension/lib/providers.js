@@ -438,12 +438,22 @@
    * @param {object} provider @param {Blob} blob @param {string} [filename]
    * @returns {Promise<{text:string, raw:object}>}
    */
-  async function transcribe(provider, blob, filename) {
+  async function transcribe(provider, blob, filename, opts) {
     if (isAnthropic(provider)) throw new Error('Transcription is not supported by the Anthropic provider');
     if (!provider || !provider.baseUrl) throw new Error('Provider baseUrl is empty');
+    opts = opts || {};
+    // Transcription model is per-provider (Options page) and decoupled from
+    // the chat model, exactly like imageModel: an explicit opts.model /
+    // opts.transcriptionModel wins, then the stored provider field, then
+    // the OpenAI-compatible default. Gateways such as 9Router expose
+    // router-specific ids here (e.g. cx/transcribe).
+    var model = String(opts.model || opts.transcriptionModel ||
+      provider.transcriptionModel || 'whisper-1').trim() || 'whisper-1';
     var form = new FormData();
     form.append('file', blob, filename || 'audio.webm');
-    form.append('model', 'whisper-1');
+    form.append('model', model);
+    form.append('response_format', 'json');
+    if (opts.language) form.append('language', String(opts.language));
     var headers = {};
     if (provider.apiKey) headers.Authorization = 'Bearer ' + provider.apiKey;
     var res;
@@ -452,7 +462,16 @@
     } catch (e) { throw networkError(e, provider); }
     if (!res.ok) throw providerError(res.status, await readBody(res), provider);
     var json = await res.json();
-    return { text: json.text || '', raw: json };
+    var text = '';
+    if (json && typeof json.text === 'string') text = json.text;
+    else if (Array.isArray(json) && json.length && json[0] && typeof json[0].text === 'string') text = json[0].text;
+    else if (json && typeof json.transcript === 'string') text = json.transcript;
+    // Whisper-style segment responses ([{start, end, text}]) join in order.
+    var segments = (json && (json.segments || json.words)) || null;
+    if (Array.isArray(segments) && segments.length && segments.every(function (s) { return s && typeof s.text === 'string'; })) {
+      if (!text) text = segments.map(function (s) { return s.text; }).join(' ');
+    }
+    return { text: text, segments: Array.isArray(segments) ? segments : null, raw: json };
   }
 
   /**

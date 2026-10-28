@@ -291,6 +291,7 @@
           models: normalizeModelList(p.models, model),
           visionModel: p.visionModel ? String(p.visionModel) : undefined,
           imageModel: p.imageModel ? String(p.imageModel) : undefined,
+          transcriptionModel: p.transcriptionModel ? String(p.transcriptionModel) : undefined,
           enabled: p.enabled !== false
         };
       });

@@ -291,6 +291,7 @@ function normalizeState(raw) {
       };
       if (p.visionModel) out.visionModel = String(p.visionModel); // preserve lib field
       if (p.imageModel) out.imageModel = String(p.imageModel); // preserve lib field
+      if (p.transcriptionModel) out.transcriptionModel = String(p.transcriptionModel); // preserve lib field
       return out;
     });
   }
@@ -565,6 +566,9 @@ function renderProviders() {
       "</label>" +
       '<label class="field"><span>Image model <em class="hint">(used by /images/generations, e.g. gpt-image-1 — not the chat model; Anthropic providers may leave blank)</em></span>' +
         '<input type="text" data-field="imageModel" value="' + esc(p.imageModel || "") + '" placeholder="e.g. gpt-image-1" spellcheck="false">' +
+      "</label>" +
+      '<label class="field"><span>Transcription model <em class="hint">(used by /audio/transcriptions, e.g. whisper-1 — or cx/transcribe on 9Router; blank = whisper-1; not the chat model)</em></span>' +
+        '<input type="text" data-field="transcriptionModel" value="' + esc(p.transcriptionModel || "") + '" placeholder="e.g. whisper-1 or cx/transcribe" spellcheck="false">' +
       "</label>" +
       '<div class="row-actions wrap">' +
         '<button type="button" class="btn btn-small" data-action="test">Test Connection</button>' +

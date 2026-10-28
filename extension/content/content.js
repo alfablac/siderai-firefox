@@ -2156,12 +2156,120 @@
         if (!mediaTarget) return { ok: false, error: 'Video not found — rescan the page, then try again.' };
         const mediaUrl = mediaTarget.currentSrc || mediaTarget.src || '';
         if (!mediaUrl) return { ok: false, error: 'This player has no direct media URL (likely an MSE/streaming source).' };
-        if (/^blob:/i.test(mediaUrl)) return { ok: false, error: 'This player streams via a blob/MSE source that cannot be sent to the transcription provider.' };
+        if (/^blob:/i.test(mediaUrl)) return { ok: false, error: 'This player streams via a blob/MSE source. Use in-page audio extraction instead.' };
         return { ok: true, url: mediaUrl, duration: (isFinite(mediaTarget.duration) ? Math.round(mediaTarget.duration) : 0), label: videoLabel(mediaTarget, Number(payload.index) || 0) };
       }
+      case 'video-manifest-audio':
+        // Streaming manifests usually carry a SEPARATE compressed audio
+        // rendition. Detect it here (page sees the player's requests via
+        // performance entries / <source> URLs) and hand the sidebar a
+        // fetch plan; the background downloads those segments directly.
+        return detectVideoManifestAudio(payload || {});
+      case 'video-extract-audio':
+        // Only the page context can observe blob:/MSE media. Fetch the
+        // element's current source (blob: URLs resolve here), decode it
+        // with Web Audio, and hand the sidebar small mono 16 kHz MP3
+        // chunks (base64; WAV only when MP3 encoding is unavailable)
+        // that fit the runtime-message ceiling.
+        return extractPageVideoAudio(payload || {});
       default:
         return { ok: false, error: 'Unknown command: ' + command };
     }
+  }
+
+  /* Streaming manifest URLs (.m3u8/.mpd) this media element has used.
+   * MSE players rarely expose them in the DOM, but the page's own
+   * resource-timing entries record every manifest fetch, and some
+   * players keep the URL on <source> or data-* attributes. Collect from
+   * all three so the sidebar can prefer the manifest's separate audio
+   * rendition over re-encoding decoded audio. */
+  function collectManifestUrls(video) {
+    var urls = [];
+    var push = (u) => {
+      var s = String(u || '').trim();
+      if (s && urls.indexOf(s) === -1 && /\.(m3u8|mpd)($|[?#])/i.test(s)) urls.push(s);
+    };
+    if (video) {
+      push(video.currentSrc);
+      push(video.getAttribute && video.getAttribute('src'));
+      Array.from(video.querySelectorAll ? video.querySelectorAll('source[src]') : []).forEach((s) => push(s.src));
+      try {
+        ['data-src', 'data-manifest', 'data-stream', 'data-url'].forEach((attr) => {
+          if (video.getAttribute) push(video.getAttribute(attr));
+        });
+      } catch (e) { /* attributes not readable */ }
+    }
+    try {
+      var entries = (window.performance && performance.getEntriesByType)
+        ? performance.getEntriesByType('resource') : [];
+      entries.forEach((entry) => { if (entry && entry.name) push(entry.name); });
+    } catch (e) { /* resource timing unavailable */ }
+    return urls.slice(0, 8);
+  }
+
+  /* Resolve the separate audio rendition of the player's manifest.
+   * Fetches happen here only when the manifest itself must be read from
+   * the page origin; the returned plan ({ manifestUrl } or
+   * { init, segments, mimeType }) lets the background download the
+   * compressed segments itself. Never throws. */
+  async function detectVideoManifestAudio(payload) {
+    var GM = (typeof GraphiteManifests !== 'undefined') ? GraphiteManifests : null;
+    if (!GM) return { ok: false, error: 'Manifest library is not loaded on this page. Reload the page and try again.' };
+    var video = findIndexedVideo(payload || {});
+    var candidates = [];
+    var push = (u) => { var s = String(u || '').trim(); if (s && candidates.indexOf(s) === -1) candidates.push(s); };
+    (Array.isArray(payload.manifestUrls) ? payload.manifestUrls : []).forEach(push);
+    if (video) collectManifestUrls(video).forEach(push);
+    (Array.isArray(payload.srcs) ? payload.srcs : []).forEach(push);
+    if (video) { push(video.currentSrc); push(video.src); }
+    candidates = candidates.filter((u) => /\.(m3u8|mpd)($|[?#])/i.test(u));
+    if (!candidates.length) return { ok: false, error: 'No HLS/DASH manifest URL found for this player.' };
+
+    var lastError = '';
+    for (const url of candidates) {
+      try {
+        // Cheap path: hand the URL to the background, which fetches the
+        // manifest + segments itself. Only fetch in-page when the
+        // background route is unavailable (sendMessage is background-only
+        // from here, so in-page parse is the actual implementation).
+        const resp = await fetch(url, { credentials: 'omit' });
+        if (!resp.ok) { lastError = 'HTTP ' + resp.status + ' fetching ' + url; continue; }
+        const text = await resp.text();
+        const ct = resp.headers.get('content-type') || '';
+        if (GM.isHls(text) || GM.looksLikeHlsUrl(url, ct)) {
+          const master = GM.parseHlsMaster(text, url);
+          if (master && master.url) {
+            const mediaResp = await fetch(master.url, { credentials: 'omit' });
+            if (!mediaResp.ok) { lastError = 'HTTP ' + mediaResp.status + ' fetching the audio playlist'; continue; }
+            const media = GM.parseHlsMedia(await mediaResp.text(), master.url);
+            if (media && media.segments.length) {
+              return { ok: true, kind: 'hls', manifestUrl: url, audioPlaylistUrl: master.url, init: media.init, segments: media.segments, lang: master.lang || '', name: master.name || '', source: 'page-manifest' };
+            }
+            lastError = 'The audio playlist in the manifest has no segments';
+            continue;
+          }
+          const direct = GM.parseHlsMedia(text, url);
+          if (direct && direct.segments.length) {
+            // Media playlist directly (audio-only or muxed stream).
+            return { ok: true, kind: 'hls', manifestUrl: url, audioPlaylistUrl: url, init: direct.init, segments: direct.segments, lang: '', name: '', source: 'page-manifest' };
+          }
+          lastError = 'No audio rendition or segments in the HLS manifest';
+          continue;
+        }
+        if (GM.looksLikeDashUrl(url, ct) || text.indexOf('<MPD') !== -1) {
+          const dash = GM.parseDashAudio(text, url);
+          if (dash && dash.segments.length) {
+            return { ok: true, kind: 'dash', manifestUrl: url, init: dash.init, segments: dash.segments, mimeType: dash.mimeType || '', lang: dash.lang || '', source: 'page-manifest' };
+          }
+          lastError = 'No separate audio adaptation in the DASH manifest';
+          continue;
+        }
+        lastError = 'The manifest URL did not return an HLS/DASH manifest';
+      } catch (e) {
+        lastError = String(e && e.message || e);
+      }
+    }
+    return { ok: false, error: 'Manifest audio detection failed: ' + (lastError || 'no usable manifest') + '.' };
   }
 
   // ------------------------------------------------------- page videos
@@ -2235,12 +2343,14 @@
         if (s.src) srcs.push(s.src);
       });
       var trackTracks = readTextTrackCues(el);
+      var manifestUrls = collectManifestUrls(el);
       var base = {
         index: index,
         kind: kind,
         label: videoLabel(el, index),
         src: src || srcs[0] || '',
         srcs: Array.from(new Set(srcs)).slice(0, 6),
+        manifestUrls: manifestUrls,
         duration: (isFinite(el.duration) && el.duration > 0) ? Math.round(el.duration) : 0,
         currentTime: Math.round(el.currentTime || 0),
         paused: !!el.paused,
@@ -2306,6 +2416,232 @@
       return { error: 'The caption file could not be fetched (usually CORS). Try audio transcription instead.' };
     }
     return { error: 'No captions/subtitles on this video. Try audio transcription instead.' };
+  }
+
+  function blobToBase64(blob) {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => {
+        const text = String(reader.result || '');
+        resolve(text.indexOf(',') >= 0 ? text.slice(text.indexOf(',') + 1) : text);
+      };
+      reader.onerror = () => reject(new Error('Could not encode the extracted audio.'));
+      reader.readAsDataURL(blob);
+    });
+  }
+
+  /* Capture the media element's own output via captureStream +
+   * MediaRecorder. This is the ONLY route for true MSE players whose
+   * segments the page never exposes as a fetchable URL: the element is
+   * already decoding the stream, so we record its audio track in real
+   * time (seeking to 0 first) into compressed WebM/Opus (or MP4/AAC)
+   * chunks — no WAV involved at all. Resolves { ok:false } when the
+   * element cannot be captured (DRM / cross-origin protected), letting
+   * the caller fall back to fetch+decode. Never throws. */
+  function captureElementAudio(video, maxSeconds) {
+    return new Promise((resolve) => {
+      try {
+        var capture = video.captureStream || video.mozCaptureStream;
+        if (typeof capture !== 'function' || typeof MediaRecorder === 'undefined') {
+          resolve({ ok: false, error: 'This browser cannot capture the player stream (no captureStream/MediaRecorder).' });
+          return;
+        }
+        var stream = capture.call(video);
+        var audioTracks = stream && stream.getAudioTracks ? stream.getAudioTracks() : [];
+        if (!audioTracks.length) {
+          resolve({ ok: false, error: 'The player stream has no audio track to capture.' });
+          return;
+        }
+        var audioOnly = new MediaStream(audioTracks);
+        var mime = '';
+        ['audio/webm;codecs=opus', 'audio/webm', 'audio/mp4', 'audio/ogg;codecs=opus', 'audio/ogg'].forEach((c) => {
+          if (!mime && MediaRecorder.isTypeSupported && MediaRecorder.isTypeSupported(c)) mime = c;
+        });
+        var recorder;
+        try {
+          recorder = new MediaRecorder(audioOnly, mime ? { mimeType: mime, audioBitsPerSecond: 64000 } : { audioBitsPerSecond: 64000 });
+        } catch (e) {
+          resolve({ ok: false, error: 'MediaRecorder refused the player stream (protected/DRM content cannot be captured).' });
+          return;
+        }
+        var blobs = [];
+        var startedAt = 0;
+        var wasPaused = !!video.paused;
+        var prevTime = Number(video.currentTime) || 0;
+        var duration = isFinite(video.duration) && video.duration > 0 ? video.duration : 0;
+        var budget = Math.min(maxSeconds || 3600, duration > 0 ? duration : 3600);
+        var timer = null;
+        var done = false;
+        function finish(ok, error) {
+          if (done) return;
+          done = true;
+          if (timer) clearTimeout(timer);
+          try { video.removeEventListener('ended', onEnded); } catch (e) { /* ignore */ }
+          try { if (recorder.state !== 'inactive') recorder.stop(); } catch (e) { /* ignore */ }
+          try { if (wasPaused) video.pause(); } catch (e) { /* ignore */ }
+          try { video.currentTime = prevTime; } catch (e) { /* ignore */ }
+          if (!ok) { resolve({ ok: false, error: error || 'Capture failed.' }); return; }
+          var type = mime || recorder.mimeType || 'audio/webm';
+          var blob = new Blob(blobs, { type: type.split(';')[0] });
+          resolve({ ok: true, blob: blob, mimeType: blob.type, duration: Math.round((Date.now() - startedAt) / 1000) });
+        }
+        function onEnded() { finish(true); }
+        recorder.ondataavailable = (ev) => { if (ev.data && ev.data.size) blobs.push(ev.data); };
+        recorder.onstop = () => { if (!done) finish(blobs.length > 0); };
+        recorder.onerror = () => finish(false, 'Recording the player audio failed.');
+        try { video.currentTime = 0; } catch (e) { /* not seekable yet */ }
+        video.addEventListener('ended', onEnded);
+        var playPromise = null;
+        try { playPromise = video.play(); } catch (e) { /* handled below */ }
+        Promise.resolve(playPromise).catch(() => {}).then(() => {
+          startedAt = Date.now();
+          try { recorder.start(1000); } catch (e) { finish(false, 'Could not start recording the player audio.'); return; }
+          timer = setTimeout(() => finish(true), Math.max(1000, budget * 1000 + 500));
+        });
+      } catch (e) {
+        resolve({ ok: false, error: String(e && e.message || e) });
+      }
+    });
+  }
+
+  /* Split a captured/extracted Blob into base64 chunks that each fit the
+   * ~900k-char runtime-message ceiling. Slices cut on byte boundaries;
+   * MP3/WebM decoders resync per chunk when the sidebar transcribes the
+   * pieces one by one (same contract as the old WAV chunks). */
+  async function blobToBase64Chunks(blob, mimeType) {
+    var maxBytes = Math.floor(900000 * 3 / 4) - 1024;
+    var out = [];
+    for (var off = 0; off < blob.size; off += maxBytes) {
+      var part = blob.slice(off, Math.min(blob.size, off + maxBytes), mimeType || blob.type || '');
+      out.push({
+        audioBase64: await blobToBase64(part),
+        mimeType: mimeType || blob.type || 'application/octet-stream',
+        start: 0, dur: 0, size: part.size
+      });
+    }
+    return out;
+  }
+
+  /* Fetch + decode the player's audio IN THIS PAGE and return chunked
+   * base64 pieces. A blob:/MSE element exposes no URL the background
+   * can fetch, but fetch(currentSrc) works here because the blob lives
+   * in this origin. Decoded audio is converted to MP3 (lib/audio-
+   * extract.js, ~0.24 MB/min at 32 kbps) instead of WAV (~1.9 MB/min);
+   * WAV survives only when MP3 encoding itself fails. When no source is
+   * fetchable at all (pure MSE), the element's own output is captured
+   * with captureStream as a final resort. Chunk payloads stay below
+   * the ~900k-char base64 ceiling. Never throws: failures resolve as
+   * { ok:false, error } so the sidebar can fall back further. */
+  async function extractPageVideoAudio(payload) {
+    const video = findIndexedVideo(payload || {});
+    if (!video) return { ok: false, error: 'Video not found — rescan the page, then try again.' };
+    let srcCandidates = [];
+    const pushSrc = (u) => { const s = String(u || '').trim(); if (s && srcCandidates.indexOf(s) === -1) srcCandidates.push(s); };
+    pushSrc(video.currentSrc);
+    pushSrc(video.src);
+    Array.from(video.querySelectorAll('source[src]')).forEach((s) => pushSrc(s.src || s.getAttribute('src')));
+    (Array.isArray(payload.srcs) ? payload.srcs : []).forEach(pushSrc);
+    // Drop page URLs that are not media (MSE players often have none).
+    srcCandidates = srcCandidates.filter((u) => !/^https?:/i.test(u) || u !== location.href);
+    const GA = (typeof GraphiteAudioExtract !== 'undefined') ? GraphiteAudioExtract : null;
+    if (!GA || typeof GA.renderWavBlobInChunks !== 'function') {
+      return { ok: false, error: 'Audio extraction library is not loaded on this page. Reload the page and try again.' };
+    }
+    if (!srcCandidates.length) {
+      // Pure MSE with no fetchable URL: record the element's own decoded
+      // output (compressed WebM/Opus) in real time.
+      const capturedOnly = await captureElementAudio(video, Number(payload.maxSeconds) || 3600);
+      if (capturedOnly.ok && capturedOnly.blob && capturedOnly.blob.size) {
+        const capChunks = await blobToBase64Chunks(capturedOnly.blob, capturedOnly.mimeType);
+        return {
+          ok: true, chunks: capChunks, chunkCount: capChunks.length,
+          maxB64Chars: capChunks.reduce((m, c) => Math.max(m, c.audioBase64.length), 0),
+          duration: capturedOnly.duration || Math.round(video.duration || 0),
+          sampleRate: GA.DEFAULT_SAMPLE_RATE || 16000,
+          format: (capturedOnly.mimeType || 'audio/webm').split('/')[1] || 'webm',
+          label: videoLabel(video, Number(payload.index) || 0),
+          source: 'capture'
+        };
+      }
+      return { ok: false, error: 'This player exposes no fetchable media source in the page (pure MSE with no blob/file URL), and stream capture failed: ' + (capturedOnly.error || 'unknown error') };
+    }
+    const AC = window.AudioContext || window.webkitAudioContext;
+    if (typeof AC !== 'function') return { ok: false, error: 'Web Audio is not available in this browser.' };
+
+    let lastError = '';
+    for (const src of srcCandidates) {
+      try {
+        const resp = await fetch(src, { credentials: 'omit' });
+        if (!resp.ok) { lastError = 'HTTP ' + resp.status + ' fetching the media source'; continue; }
+        const raw = await resp.arrayBuffer();
+        if (!raw || !raw.byteLength) { lastError = 'The media source came back empty'; continue; }
+        const ctx = new AC();
+        let decoded = null;
+        try {
+          decoded = await ctx.decodeAudioData(raw.slice(0));
+        } finally {
+          try { ctx.close(); } catch (e) { /* ignore */ }
+        }
+        if (!decoded || !decoded.duration) { lastError = 'The browser could not decode this media audio'; continue; }
+        // Convert to MP3 first (~8x smaller than WAV); WAV is only the
+        // fallback when MP3 encoding itself fails on this buffer.
+        let chunks = null;
+        let format = 'mp3';
+        try {
+          if (typeof GA.renderMp3BlobInChunks !== 'function') throw new Error('mp3 path not loaded');
+          chunks = GA.renderMp3BlobInChunks(decoded, {});
+          if (!chunks.length || !chunks[0].blob || !chunks[0].blob.size) throw new Error('empty mp3');
+        } catch (mp3Err) {
+          chunks = GA.renderWavBlobInChunks(decoded, {});
+          format = 'wav';
+        }
+        const encoded = [];
+        let maxB64 = 0;
+        for (const chunk of chunks) {
+          const b64 = await blobToBase64(chunk.blob);
+          if (b64.length > maxB64) maxB64 = b64.length;
+          if (b64.length > 900000) {
+            return { ok: false, error: 'An extracted audio chunk is still too large for one extension message. Try a shorter video.' };
+          }
+          encoded.push({
+            audioBase64: b64,
+            mimeType: format === 'mp3' ? 'audio/mpeg' : 'audio/wav',
+            format: format,
+            start: chunk.start, dur: chunk.dur, size: chunk.size
+          });
+        }
+        if (!encoded.length) { lastError = 'No audio could be extracted from this media'; continue; }
+        return {
+          ok: true,
+          chunks: encoded,
+          chunkCount: encoded.length,
+          maxB64Chars: maxB64,
+          duration: Math.round(decoded.duration),
+          sampleRate: GA.DEFAULT_SAMPLE_RATE || 16000,
+          format: format,
+          label: videoLabel(video, Number(payload.index) || 0),
+          source: /^blob:/i.test(src) ? 'blob' : 'file'
+        };
+      } catch (e) {
+        lastError = String(e && e.message || e);
+      }
+    }
+    // Fetch+decode failed for every candidate; last resort is recording
+    // the element's own output in real time.
+    const captured = await captureElementAudio(video, Number(payload.maxSeconds) || 3600);
+    if (captured.ok && captured.blob && captured.blob.size) {
+      const capChunks2 = await blobToBase64Chunks(captured.blob, captured.mimeType);
+      return {
+        ok: true, chunks: capChunks2, chunkCount: capChunks2.length,
+        maxB64Chars: capChunks2.reduce((m, c) => Math.max(m, c.audioBase64.length), 0),
+        duration: captured.duration || Math.round(video.duration || 0),
+        sampleRate: GA.DEFAULT_SAMPLE_RATE || 16000,
+        format: (captured.mimeType || 'audio/webm').split('/')[1] || 'webm',
+        label: videoLabel(video, Number(payload.index) || 0),
+        source: 'capture'
+      };
+    }
+    return { ok: false, error: 'Audio extraction failed: ' + (lastError || 'no usable media source') + (captured.error ? ' Capture also failed: ' + captured.error : '') };
   }
 
   // ------------------------------------------------------------- listeners
