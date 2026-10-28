@@ -396,22 +396,26 @@
   // shows a duplicate POST for one click.
   //
   // Slow-model heartbeat (do not collapse these timers back into one):
-  // gateways such as 9Router fronting a reasoning model routinely need
-  // minutes before the first visible token on a 160k-char transcript, and
-  // can pause between tokens while thinking. The background proves it is
+  // gateways such as 9Router fronting a reasoning model can need a while
+  // before the first visible token on a 160k-char transcript, and can
+  // pause between tokens while thinking. The background proves it is
   // alive with {type:'ping'} every ~15s (accepted / waiting / streaming).
-  // Pings — and any provider byte, including SSE keepalives and reasoning
-  // deltas forwarded as ping activity — reset only the background-liveness
-  // watchdog below. They do NOT reset the provider no-activity ceiling:
-  // that bounds a genuinely hung request. Expiring liveness (no ping at
-  // all) means the background really is gone; expiring the activity
-  // ceiling means the provider stopped producing anything, which is
-  // reported honestly — never as a lost extension connection.
+  // Pings reset only the background-liveness watchdog below. The provider
+  // ceiling is a 120s INACTIVITY deadline (not a total timeout): while
+  // provider bytes keep flowing the request may run indefinitely, but
+  // 120s with no provider byte at all is a stall. The deadline is
+  // anchored to the last actual activity (via ping lastActivityMs), so
+  // repeated 'streaming' pings cannot extend it past 120s of real
+  // inactivity. Expiring liveness (no ping at all) means the background
+  // really is gone; expiring the activity ceiling means the provider
+  // stopped producing anything, reported honestly — never as a lost
+  // extension connection. The background enforces the same 120s idle
+  // rule authoritatively; this client timer mirrors it.
   const CONNECTION_LOST_MESSAGE = 'Connection to the extension background was lost. Reload the page and try again.';
-  const PROVIDER_STALLED_MESSAGE = 'The model has not responded for several minutes. It may still be busy — check your provider, or try again.';
+  const PROVIDER_STALLED_MESSAGE = 'Provider stalled: no activity for 120s. It may still be busy — check your provider, or try again.';
   const SUMMARY_BACKGROUND_TIMEOUT_MS = 45000;   // no ping/chunk from the background at all
-  const SUMMARY_FIRST_ACTIVITY_TIMEOUT_MS = 600000; // no provider byte before the first token
-  const SUMMARY_STALL_TIMEOUT_MS = 600000;       // no provider byte between tokens
+  const SUMMARY_FIRST_ACTIVITY_TIMEOUT_MS = 120000; // no provider byte before the first token
+  const SUMMARY_STALL_TIMEOUT_MS = 120000;       // no provider byte between tokens
 
   function isConnectionLostError(error) {
     const text = String((error && error.message) || error || '');
@@ -476,10 +480,16 @@
       // Provider activity: reset by chunks and by 'streaming' pings (raw
       // provider bytes / reasoning). 'waiting' pings leave it running, so a
       // provider that never answers still fails — with the honest message.
-      function armActivityTimer() {
+      // `lastActivityAgeMs` anchors the deadline to the last ACTUAL
+      // activity: a ping reporting lastActivityMs=90000 leaves only ~30s,
+      // so repeated pings cannot push the deadline out indefinitely.
+      function armActivityTimer(lastActivityAgeMs) {
         clearTimeout(activityTimer);
+        const ceiling = sawChunk ? SUMMARY_STALL_TIMEOUT_MS : SUMMARY_FIRST_ACTIVITY_TIMEOUT_MS;
+        const age = (typeof lastActivityAgeMs === 'number' && isFinite(lastActivityAgeMs) && lastActivityAgeMs >= 0)
+          ? lastActivityAgeMs : 0;
         activityTimer = setTimeout(() => finish(new Error(PROVIDER_STALLED_MESSAGE)),
-          sawChunk ? SUMMARY_STALL_TIMEOUT_MS : SUMMARY_FIRST_ACTIVITY_TIMEOUT_MS);
+          Math.max(0, ceiling - age));
       }
       armBackgroundTimer();
       armActivityTimer();
@@ -511,7 +521,8 @@
           if (msg.stage === 'streaming' ||
               (typeof msg.lastActivityMs === 'number' && msg.lastActivityMs < SUMMARY_STALL_TIMEOUT_MS)) {
             if (!sawActivity) { sawActivity = true; ytLog('chatStream first activity', { durationMs: Date.now() - startedAt }); }
-            armActivityTimer();
+            // Anchor to the reported activity age, not a fresh ceiling.
+            armActivityTimer(typeof msg.lastActivityMs === 'number' ? msg.lastActivityMs : 0);
           } else if (msg.stage === 'waiting' && !sawChunk && onWaiting) {
             try { onWaiting(typeof msg.elapsedMs === 'number' ? msg.elapsedMs : (Date.now() - startedAt)); } catch (e) {}
           }

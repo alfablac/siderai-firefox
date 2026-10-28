@@ -497,6 +497,16 @@
     return String(content || '');
   }
 
+  function hasSelectionInside(el) {
+    if (!el) return false;
+    try {
+      var sel = window.getSelection ? window.getSelection() : null;
+      if (!sel || sel.isCollapsed || !sel.toString()) return false;
+      var anchor = sel.anchorNode;
+      if (!anchor) return false;
+      return anchor === el || el.contains(anchor);
+    } catch (e) { return false; }
+  }
   function addMessageEl(role, label, rawText) {
     var wrap = $('messages');
     var el = document.createElement('div');
@@ -509,9 +519,12 @@
     headEl.appendChild(labelEl); headEl.appendChild(actionsEl); el.appendChild(headEl);
     var bodyDivEl = document.createElement('div'); bodyDivEl.className = 'body'; el.appendChild(bodyDivEl);
     el.querySelector('[data-act="copy"]').addEventListener('click', function () {
-      var t = el.dataset.raw || '';
+      var sel = null;
+      try { sel = window.getSelection ? window.getSelection() : null; } catch (e) { sel = null; }
+      var selected = hasSelectionInside(el) && sel ? String(sel.toString()) : '';
+      var t = selected || el.dataset.raw || '';
       if (navigator.clipboard) navigator.clipboard.writeText(t);
-      status('Copied');
+      status(selected ? 'Selection copied' : 'Copied');
     });
     var speakBtn = el.querySelector('[data-act="speak"]');
     if (speakBtn) speakBtn.addEventListener('click', function () { speak(el.dataset.raw || ''); });
@@ -525,6 +538,27 @@
     if (window.GraphiteMarkdown) setGeneratedHtml(body, GraphiteMarkdown.render(rawText, markdownOpts())); else body.textContent = rawText;
     wireCodeButtons(el, rawText);
     scrollBottom();
+  }
+  function formatMs(ms) {
+    if (ms == null || !isFinite(Number(ms))) return '';
+    var n = Number(ms);
+    if (n < 1000) return Math.round(n) + 'ms';
+    return (Math.round(n / 100) / 10).toFixed(1) + 's';
+  }
+  // Standalone .msg-meta line under the body. Works for single chat
+  // (.msg > .body) and group columns (bare .msg without .msg-head).
+  function renderMsgMeta(el, stats) {
+    if (!el || !stats) return;
+    var parts = [];
+    if (stats.model) parts.push(String(stats.model));
+    if (stats.ttftMs != null) parts.push('TTFT ' + formatMs(stats.ttftMs));
+    if (stats.totalMs != null) parts.push('total ' + formatMs(stats.totalMs));
+    var existing = el.querySelector('.msg-meta');
+    if (!parts.length) { if (existing) existing.remove(); return; }
+    var meta = existing || document.createElement('div');
+    meta.className = 'msg-meta';
+    meta.textContent = parts.join(' \u00B7 ');
+    if (!existing) el.appendChild(meta);
   }
   function wireCodeButtons(el, rawText) {
     var blocks = [];
@@ -570,6 +604,8 @@
     $('sendBtn').classList.toggle('hidden', on);
     $('stopBtn').classList.toggle('hidden', !on);
   }
+  var STREAM_BACKGROUND_TIMEOUT_MS = 45000; // no port message at all
+  var STREAM_PROVIDER_IDLE_TIMEOUT_MS = 120000; // no provider activity
   function streamChat(apiMessages, providerId, model, targetEl, onDone) {
     return new Promise(function (resolve) {
       var text = '';
@@ -580,27 +616,67 @@
       var bodyEl = targetEl ? targetEl.querySelector('.body') : null;
       if (bodyEl) bodyEl.classList.add('streaming-cursor');
       var finished = false;
+      var doneStats = null;
+      var lastPortMsgAt = Date.now();
+      var lastActivityAt = Date.now();
+      var livenessTimer = 0;
+      var idleTimer = 0;
+      function clearWatchdogs() { clearTimeout(livenessTimer); clearTimeout(idleTimer); }
+      function armWatchdogs() {
+        clearWatchdogs();
+        var now = Date.now();
+        livenessTimer = setTimeout(function () {
+          finish('Connection to the extension background was lost. Reload the sidebar and try again.');
+        }, Math.max(0, STREAM_BACKGROUND_TIMEOUT_MS - (now - lastPortMsgAt)));
+        idleTimer = setTimeout(function () {
+          finish('Provider stalled: no activity for 120s');
+        }, Math.max(0, STREAM_PROVIDER_IDLE_TIMEOUT_MS - (now - lastActivityAt)));
+      }
+      armWatchdogs();
       function finish(err) {
         if (finished) return; finished = true;
+        clearWatchdogs();
         if (bodyEl) bodyEl.classList.remove('streaming-cursor');
         state.ports = state.ports.filter(function (p) { return p !== port; });
         try { port.disconnect(); } catch (e) {}
         if (err && !text) { text = 'Error: ' + err; if (targetEl) setMessageBody(targetEl, text); }
+        else if (targetEl && text) setMessageBody(targetEl, text);
+        if (targetEl && doneStats) renderMsgMeta(targetEl, doneStats);
         onDone(text); resolve(text);
       }
       port.onMessage.addListener(function (msg) {
         if (!msg) return;
+        lastPortMsgAt = Date.now();
         // Background heartbeat: proof the request is alive while a slow
         // provider (e.g. 9Router + reasoning model) produces nothing yet.
         // Never rendered, never appended to the answer text.
         if (msg.type === 'ping') {
+          // Any port message proves background liveness; only fresh
+          // provider activity (chunk, or streaming with recent
+          // lastActivityMs) resets the 120s inactivity watchdog.
+          if (msg.stage === 'streaming' &&
+              (typeof msg.lastActivityMs !== 'number' || msg.lastActivityMs <= 30000)) {
+            lastActivityAt = Date.now() - (typeof msg.lastActivityMs === 'number' ? msg.lastActivityMs : 0);
+          }
+          armWatchdogs();
           if (!text && msg.stage === 'waiting') status('Waiting for the model...');
           else if (!text && msg.stage === 'streaming') status('Generating...');
           return;
         }
-        if (msg.type === 'chunk') { text += msg.text || ''; if (targetEl) setMessageBody(targetEl, text); }
-        else if (msg.type === 'done') finish(null);
-        else if (msg.type === 'error') finish(msg.message || 'Stream error');
+        if (msg.type === 'chunk') {
+          lastActivityAt = Date.now(); armWatchdogs();
+          text += msg.text || ''; if (targetEl && !hasSelectionInside(targetEl)) setMessageBody(targetEl, text);
+        }
+        else if (msg.type === 'done') {
+          doneStats = {
+            model: msg.model || model || '',
+            ttftMs: (typeof msg.ttftMs === 'number' ? msg.ttftMs : null),
+            totalMs: (typeof msg.totalMs === 'number' ? msg.totalMs : null)
+          };
+          finish(null);
+        }
+        else if (msg.type === 'error') finish(msg.message || msg.error || 'Stream error');
+        else armWatchdogs();
       });
       port.onDisconnect.addListener(function () {
         var err = (api.runtime.lastError && api.runtime.lastError.message) || null;
@@ -612,10 +688,15 @@
     });
   }
   function chatSyncFallback(apiMessages, providerId, model, targetEl) {
+    var syncStartedAt = Date.now();
     return sendMessage({ type: 'chatSync', messages: apiMessages, providerId: providerId, model: model }).then(function (r) {
       var text = typeof r === 'string' ? r : (r && (r.text || r.content || (r.message && r.message.content))) || '';
       if (!text && r && r.error) text = 'Error: ' + r.error;
       if (targetEl) setMessageBody(targetEl, text);
+      // No streaming here, so TTFT == total: show total only.
+      if (targetEl && text && text.indexOf('Error:') !== 0) {
+        renderMsgMeta(targetEl, { model: (r && r.model) || model || '', totalMs: Date.now() - syncStartedAt });
+      }
       return text;
     }).catch(function (e) { var t = 'Error: ' + e.message; if (targetEl) setMessageBody(targetEl, t); return t; });
   }
@@ -1333,6 +1414,10 @@
       });
     } catch (e) {}
     $('messages').addEventListener('click', function (event) {
+      try {
+        var clickSel = window.getSelection ? window.getSelection() : null;
+        if (clickSel && !clickSel.isCollapsed && String(clickSel.toString() || '')) return;
+      } catch (e) { /* fall through to seek */ }
       var target = event.target && event.target.closest ? event.target.closest('[data-seek-seconds]') : null;
       if (!target) return;
       var inBody = target.closest && target.closest('.msg .body');

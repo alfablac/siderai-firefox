@@ -58,6 +58,9 @@ main{flex:1;overflow:hidden;display:flex;flex-direction:column;min-height:0}
 .mini-btn{background:var(--panel2);border:1px solid var(--border);border-radius:5px;padding:1px 7px;font-size:11px;cursor:pointer;color:var(--muted)}
 .mini-btn:hover{color:var(--accent);border-color:var(--accent)}
 .msg .body{word-wrap:break-word;overflow-wrap:anywhere}
+.msg-meta{font-size:11px;color:var(--muted);margin-top:6px}
+.msg .body, .msg .body * { user-select:text }
+.msg .body button, .msg .body a { user-select:none }
 .msg .body p{margin:5px 0}.msg .body h1,.msg .body h2,.msg .body h3,.msg .body h4{margin:8px 0 4px;line-height:1.3}
 .msg .body h1{font-size:16px}.msg .body h2{font-size:15px}.msg .body h3{font-size:14px}
 .msg .body ul,.msg .body ol{margin:4px 0;padding-left:20px}

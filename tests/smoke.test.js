@@ -649,12 +649,12 @@ check("background prompt path guarded and loads settings", () => {
   assert.ok(!/(^|[^\w.$])global\./.test(bg), "background.js must not use the bare global object");
 });
 
-check("manifest background order and release version 1.0.19", () => {
+check("manifest background order and release version 1.0.20", () => {
   assert.ok(manifest, "manifest required");
   const scripts = (manifest.background && manifest.background.scripts) || [];
   const iP = scripts.indexOf("lib/prompts.js"), iY = scripts.indexOf("lib/youtube.js"), iB = scripts.indexOf("background.js");
   assert.ok(iP >= 0 && iY >= 0 && iB > iP && iB > iY, "lib/prompts.js + lib/youtube.js load before background.js");
-  assert.strictEqual(manifest.version, "1.0.19", "release version");
+  assert.strictEqual(manifest.version, "1.0.20", "release version");
 });
 
 /* ---------- 1.0.6 bug: transcript truncated at 22:52 of a 44:59 video -----
@@ -790,8 +790,9 @@ check("maxTokens: explicit wins everywhere; truncation surfaced", () => {
 /* ---------- Heartbeat: slow 9Router/reasoning TTFT must not read as
    "connection lost" -------------------------------------------------------
    The background pings every 15s; pings reset only the short background-
-   liveness watchdog in the YouTube panel. The provider no-activity ceiling
-   is separate and much longer, and reasoning/SSE bytes count as activity. */
+   liveness watchdog in the YouTube panel. The provider ceiling is a 120s
+   INACTIVITY deadline (not total): while bytes flow the request may run
+   indefinitely, and reasoning/SSE bytes count as activity. */
 check("heartbeat: background pings, provider activity, split client timers", () => {
   const bg = fs.readFileSync(path.join(EXT, "background.js"), "utf8");
   assert.ok(bg.includes("CHAT_HEARTBEAT_INTERVAL_MS = 15000"), "background heartbeat interval constant");
@@ -810,9 +811,10 @@ check("heartbeat: background pings, provider activity, split client timers", () 
   const yt = fs.readFileSync(path.join(EXT, "content/youtube.js"), "utf8");
   assert.ok(yt.includes("msg.type === 'ping'"), "youtube panel handles ping messages");
   assert.ok(yt.includes("SUMMARY_BACKGROUND_TIMEOUT_MS = 45000"), "short background-liveness watchdog");
-  assert.ok(yt.includes("SUMMARY_FIRST_ACTIVITY_TIMEOUT_MS = 600000"), "long first-activity ceiling");
-  assert.ok(yt.includes("SUMMARY_STALL_TIMEOUT_MS = 600000"), "long stall ceiling");
-  assert.ok(!yt.includes("SUMMARY_FIRST_CHUNK_TIMEOUT_MS = 120000"), "old 120s first-chunk watchdog gone");
+  assert.ok(yt.includes("SUMMARY_FIRST_ACTIVITY_TIMEOUT_MS = 120000"), "120s first-activity inactivity ceiling");
+  assert.ok(yt.includes("SUMMARY_STALL_TIMEOUT_MS = 120000"), "120s stall inactivity ceiling");
+  assert.ok(!yt.includes("600000"), "old 600000 ceilings gone from youtube.js");
+  assert.ok(!yt.includes("SUMMARY_FIRST_CHUNK_TIMEOUT_MS = 120000"), "old first-chunk watchdog name gone");
   assert.ok(yt.includes("PROVIDER_STALLED_MESSAGE"), "provider silence gets its own honest message");
   const stream = yt.slice(yt.indexOf("function runSummaryStream"), yt.indexOf("  // Every panel chat path"));
   assert.ok(stream.includes("armBackgroundTimer") && stream.includes("armActivityTimer"), "split timers in stream");
@@ -829,6 +831,82 @@ check("heartbeat: background pings, provider activity, split client timers", () 
   assert.ok(side.includes("msg.type === 'ping'"), "sidebar tolerates heartbeat pings");
   const sideStream = side.slice(side.indexOf("function streamChat"), side.indexOf("function chatSyncFallback"));
   assert.ok(sideStream.includes("msg.type === 'ping'"), "sidebar ping handling lives in streamChat");
+});
+
+/* ---------- Stats + 120s inactivity timeout hardening --------------------
+   Per-response stats (TTFT from first VISIBLE chunk, total) ride the done
+   message; the background enforces the 120s idle ceiling authoritatively
+   with an honest stage; sidebar + youtube mirror it with split watchdogs
+   whose activity deadlines anchor to lastActivityMs, never re-arm fresh. */
+check("stats + timeout: ttft/total, msg-meta, 120s idle, honest stage", () => {
+  const bg = fs.readFileSync(path.join(EXT, "background.js"), "utf8");
+  // A) per-response stats
+  assert.ok(bg.includes("ttftMs: firstChunkAt ? (firstChunkAt - startedAt) : null"), "done carries ttftMs from first visible chunk");
+  assert.ok(bg.includes("totalMs: Date.now() - startedAt"), "done carries totalMs");
+  assert.ok(bg.includes("var firstChunkAt = 0"), "firstChunkAt tracked separately");
+  const chunkFn = bg.slice(bg.indexOf("chatRequest(msg, function (chunk, full)"), bg.indexOf("}, controller ? controller.signal"));
+  assert.ok(chunkFn.includes("firstChunkAt"), "onChunk sets firstChunkAt");
+  const activityFn = bg.slice(bg.indexOf("}, controller ? controller.signal"), bg.indexOf("}).then(function (result)"));
+  assert.ok(!activityFn.includes("firstChunkAt"), "onActivity must NOT set firstChunkAt (TTFT is visible text only)");
+  // B) background 120s idle enforcement + honest stage
+  assert.ok(bg.includes("CHAT_PROVIDER_IDLE_TIMEOUT_MS = 120000"), "background 120s idle constant");
+  assert.ok(bg.includes("Date.now() - (providerActivityAt || startedAt)"), "idle computed from last activity (or start)");
+  assert.ok(bg.includes("idleMs > CHAT_PROVIDER_IDLE_TIMEOUT_MS"), "idle ceiling enforced in heartbeat");
+  assert.ok(bg.includes("Provider stalled: no activity for 120s"), "clear stall error message");
+  assert.ok(bg.includes("controller.abort()"), "stall aborts the provider request");
+  assert.ok(bg.includes("var stalled = false") && bg.includes("if (stalled) return"), "stall error not overwritten by abort rejection");
+  assert.ok(bg.includes("CHAT_STREAMING_FRESH_MS"), "streaming freshness window constant");
+  assert.ok(/<=\s*CHAT_STREAMING_FRESH_MS \? 'streaming' : 'waiting'/.test(bg.replace(/\s+/g, " ")),
+    "stage is 'streaming' only when activity is recent, else 'waiting'");
+  assert.ok(bg.includes("elapsedMs: Date.now() - startedAt") && bg.includes("lastActivityMs"), "pings keep elapsedMs/lastActivityMs");
+
+  const side = fs.readFileSync(path.join(EXT, "sidebar/sidebar.js"), "utf8");
+  const sideStream = side.slice(side.indexOf("function streamChat"), side.indexOf("function chatSyncFallback"));
+  assert.ok(side.includes("function renderMsgMeta"), "msg-meta rendering hook");
+  assert.ok(side.includes("msg-meta"), "msg-meta class used");
+  assert.ok(sideStream.includes("msg.ttftMs") && sideStream.includes("msg.totalMs"), "sidebar captures ttftMs/totalMs from done");
+  assert.ok(sideStream.includes("msg.model") || sideStream.includes("model: msg.model"), "sidebar captures model from done");
+  assert.ok(sideStream.includes("renderMsgMeta(targetEl, doneStats)"), "streamChat renders msg-meta on finish");
+  assert.ok(side.includes("function formatMs"), "ms formatter (850ms / 1.2s)");
+  assert.ok(/n < 1000/.test(side) && side.includes("'ms'"), "sub-second format is NNNms");
+  // sidebar watchdogs: 45s liveness + 120s provider idle
+  assert.ok(side.includes("STREAM_BACKGROUND_TIMEOUT_MS = 45000"), "sidebar 45s liveness watchdog");
+  assert.ok(side.includes("STREAM_PROVIDER_IDLE_TIMEOUT_MS = 120000"), "sidebar 120s idle watchdog");
+  assert.ok(sideStream.includes("lastPortMsgAt") && sideStream.includes("lastActivityAt"), "split liveness/activity anchors");
+  assert.ok(sideStream.includes("msg.lastActivityMs"), "sidebar activity anchored to ping lastActivityMs");
+  assert.ok(sideStream.includes("Provider stalled: no activity for 120s"), "sidebar stall error text");
+  assert.ok(sideStream.includes("Connection to the extension background was lost"), "sidebar liveness error text");
+  // chatSync fallback: total-only stats
+  const sync = side.slice(side.indexOf("function chatSyncFallback"), side.indexOf("function runStreamOrSync"));
+  assert.ok(sync.includes("renderMsgMeta") && sync.includes("totalMs: Date.now() - syncStartedAt"), "chatSync measures total around sendMessage");
+  assert.ok(!sync.includes("ttftMs"), "chatSync shows total only (no fabricated TTFT)");
+  // partial-copy preservation (other change): must not regress
+  assert.ok(side.includes("hasSelectionInside"), "partial-copy hasSelectionInside preserved");
+
+  const css = fs.readFileSync(path.join(EXT, "sidebar/sidebar.css"), "utf8");
+  assert.ok(/\.msg-meta\s*\{[^}]*font-size:\s*11px/.test(css), ".msg-meta is 11px");
+  assert.ok(/\.msg-meta\s*\{[^}]*margin-top:/.test(css), ".msg-meta has margin-top");
+  assert.ok(/\.msg-meta\s*\{[^}]*(var\(--muted\)|#9aa1ab)/.test(css), ".msg-meta is muted");
+
+  const yt = fs.readFileSync(path.join(EXT, "content/youtube.js"), "utf8");
+  assert.ok(!yt.includes("600000"), "youtube 600000 constants fully replaced");
+  const ytStream = yt.slice(yt.indexOf("function runSummaryStream"), yt.indexOf("  // Every panel chat path"));
+  assert.ok(ytStream.includes("armActivityTimer(typeof msg.lastActivityMs === 'number' ? msg.lastActivityMs : 0)"),
+    "stall re-arm anchored to reported lastActivityMs");
+  assert.ok(ytStream.includes("Math.max(0, ceiling - age)"), "deadline is ceiling minus activity age, not a fresh 120s per ping");
+  assert.ok(yt.includes("SUMMARY_BACKGROUND_TIMEOUT_MS = 45000"), "youtube 45s liveness stays");
+});
+
+check("stats format: formatMs renders 850ms and 1.2s", () => {
+  const side = fs.readFileSync(path.join(EXT, "sidebar/sidebar.js"), "utf8");
+  const fnSrc = side.match(/function formatMs\(ms\) \{[\s\S]*?\n  \}/);
+  assert.ok(fnSrc, "formatMs extractable");
+  const formatMs = new Function(fnSrc[0] + "; return formatMs;")();
+  assert.strictEqual(formatMs(850), "850ms");
+  assert.strictEqual(formatMs(999), "999ms");
+  assert.strictEqual(formatMs(1200), "1.2s");
+  assert.strictEqual(formatMs(8400), "8.4s");
+  assert.strictEqual(formatMs(null), "");
 });
 
 let activityDone = Promise.resolve();

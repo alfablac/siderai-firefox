@@ -382,22 +382,27 @@ function errorMessage(e) { return (e && e.message) ? e.message : String(e); }
  * ('chat-stream' also accepted) and posts { type: 'chatStream', requestId, ... }
  * (legacy { type: 'chat', ... } on the port works too).
  * Background replies: {type:'chunk',requestId,chunk,full}
- *                     {type:'ping', requestId, stage, elapsedMs}
- *                     {type:'done', requestId,text,model,usage}
+ *                     {type:'ping', requestId, stage, elapsedMs, lastActivityMs}
+ *                     {type:'done', requestId,text,model,usage,ttftMs,totalMs}
  *                     {type:'error',requestId,error}
  * Send {type:'abort', requestId} or disconnect to cancel.
  *
  * Heartbeat: slow gateways (e.g. 9Router fronting a reasoning model) can
- * take minutes to produce the first visible token on a large YouTube
+ * take a while to produce the first visible token on a large YouTube
  * transcript. The background therefore posts {type:'ping'} every
  * CHAT_HEARTBEAT_INTERVAL_MS: an immediate 'accepted' ping once the request
- * is taken, a 'waiting' ping while the provider has sent nothing at all,
- * and a 'streaming' ping whenever provider bytes (SSE keepalives, reasoning
- * deltas — anything) have flowed since the last beat. Pings prove the
- * background + provider request are alive so clients never mistake a slow
- * model for a lost connection; a separate, longer no-activity ceiling in
- * the client still bounds a genuinely hung request. */
+ * is taken, a 'waiting' ping while the provider has sent nothing recently,
+ * and a 'streaming' ping only while provider bytes (SSE keepalives,
+ * reasoning deltas — anything) flowed recently (lastActivityMs within
+ * CHAT_STREAMING_FRESH_MS). Pings prove the background is alive so clients
+ * never mistake a slow model for a lost connection. Separately, this
+ * handler is the authoritative inactivity timeout: after
+ * CHAT_PROVIDER_IDLE_TIMEOUT_MS with NO provider activity at all it aborts
+ * and reports a stalled provider. While bytes keep flowing a request may
+ * run indefinitely — this is an idle ceiling, not a total timeout. */
 var CHAT_HEARTBEAT_INTERVAL_MS = 15000;
+var CHAT_PROVIDER_IDLE_TIMEOUT_MS = 120000;
+var CHAT_STREAMING_FRESH_MS = 15000;
 if (ext.runtime && ext.runtime.onConnect) {
   ext.runtime.onConnect.addListener(function (port) {
     if (port.name !== 'graphite-chat' && port.name !== 'chat-stream') return;
@@ -418,6 +423,8 @@ if (ext.runtime && ext.runtime.onConnect) {
       if (controller) controllers[requestId] = controller;
       var startedAt = Date.now();
       var providerActivityAt = 0; // last raw provider byte / reasoning delta
+      var firstChunkAt = 0; // first VISIBLE chunk only (not onActivity)
+      var stalled = false;
       var beat = { timer: 0 };
       heartbeats[requestId] = beat;
       function postPing(stage) {
@@ -433,17 +440,32 @@ if (ext.runtime && ext.runtime.onConnect) {
       // owns this request long before the provider answers.
       postPing('accepted');
       beat.timer = setInterval(function () {
-        postPing(providerActivityAt ? 'streaming' : 'waiting');
+        var idleMs = Date.now() - (providerActivityAt || startedAt);
+        if (idleMs > CHAT_PROVIDER_IDLE_TIMEOUT_MS) {
+          // Authoritative inactivity timeout: no provider byte for 120s.
+          // Flag first so the request rejection below is reported as a
+          // stall, not as a user abort / disconnect.
+          stalled = true;
+          stopHeartbeat(requestId);
+          try { port.postMessage({ type: 'error', requestId: requestId, error: 'Provider stalled: no activity for 120s', message: 'Provider stalled: no activity for 120s' }); } catch (e) {}
+          if (controller) { try { controller.abort(); } catch (e) {} }
+          return;
+        }
+        // Honest stage: 'streaming' only when activity is recent.
+        postPing(providerActivityAt && (Date.now() - providerActivityAt) <= CHAT_STREAMING_FRESH_MS ? 'streaming' : 'waiting');
       }, CHAT_HEARTBEAT_INTERVAL_MS);
       if (beat.timer && typeof beat.timer.unref === 'function') beat.timer.unref();
       chatRequest(msg, function (chunk, full) {
         providerActivityAt = Date.now();
+        if (!firstChunkAt) firstChunkAt = Date.now();
         try { port.postMessage({ type: 'chunk', requestId: requestId, chunk: chunk, text: chunk, full: full }); } catch (e) {}
       }, controller ? controller.signal : undefined, function () {
         providerActivityAt = Date.now();
       }).then(function (result) {
-        try { port.postMessage({ type: 'done', requestId: requestId, text: result.text, chunk: result.text, full: result.text, model: result.model, usage: result.usage || null, finishReason: result.finishReason || null, truncated: !!result.truncated }); } catch (e) {}
+        if (stalled) return; // stall error already posted by the heartbeat
+        try { port.postMessage({ type: 'done', requestId: requestId, text: result.text, chunk: result.text, full: result.text, model: result.model, usage: result.usage || null, finishReason: result.finishReason || null, truncated: !!result.truncated, ttftMs: firstChunkAt ? (firstChunkAt - startedAt) : null, totalMs: Date.now() - startedAt }); } catch (e) {}
       }).catch(function (e) {
+        if (stalled) return; // heartbeat already posted the stall error
         try { port.postMessage({ type: 'error', requestId: requestId, error: errorMessage(e), message: errorMessage(e) }); } catch (ignored) {}
       }).then(function () { stopHeartbeat(requestId); delete controllers[requestId]; });
     });
