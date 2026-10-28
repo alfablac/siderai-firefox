@@ -143,8 +143,9 @@
     var finishReason = null;
     await consumeSSE(res, function (data) {
       if (data === '[DONE]') return;
-      try {
-        var j = JSON.parse(data);
+      var j;
+      try { j = JSON.parse(data); } catch (e) { return; /* keepalive / non-JSON line */ }
+      {
         if (j.choices && j.choices[0] && j.choices[0].finish_reason) finishReason = j.choices[0].finish_reason;
         var delta = j.choices && j.choices[0] && (j.choices[0].delta || j.choices[0].message);
         // Some gateways (e.g. 9Router/Muse) stream reasoning before — or
@@ -160,7 +161,7 @@
         if (reasoning && opts.onActivity) opts.onActivity();
         var piece = (delta && delta.content) || '';
         if (piece) { full += piece; if (opts.onChunk) opts.onChunk(piece, full); }
-      } catch (e) { /* keepalive / non-JSON line */ }
+      }
     }, opts.signal, opts.onActivity);
     return { text: full, model: body.model, usage: null, raw: null, finishReason: finishReason, truncated: finishReason === 'length' };
   }

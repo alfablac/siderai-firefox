@@ -715,14 +715,65 @@
   function streamChat(apiMessages, providerId, model, targetEl, onDone) {
     return new Promise(function (resolve) {
       var text = '';
+      var requestId = newRequestId();
       var port = null;
-      try { port = api.runtime.connect({ name: 'graphite-chat' }); }
-      catch (e) { if (targetEl) setMessageBody(targetEl, 'Error: ' + e.message); onDone(''); resolve(''); return; }
-      state.ports.push(port);
+      var reconnectTimer = 0;
+      var reconnectAttempts = 0;
+      function connectPort(initial) {
+        var p = null;
+        try { p = api.runtime.connect({ name: 'graphite-chat' }); } catch (e) { return false; }
+        port = p;
+        state.ports.push(port);
+        try {
+          port.onMessage.addListener(onPortMessage);
+          port.onDisconnect.addListener(onPortDisconnect);
+        } catch (e) { detachPort(); return false; }
+        try {
+          if (initial) port.postMessage({ type: 'start', requestId: requestId, messages: apiMessages, providerId: providerId, model: model });
+          else port.postMessage({ type: 'attach', requestId: requestId });
+        } catch (e) { detachPort(); return false; }
+        return true;
+      }
+      function detachPort() {
+        if (!port) return;
+        var p = port; port = null;
+        state.ports = state.ports.filter(function (q) { return q !== p; });
+        try { p.onMessage.removeListener(onPortMessage); } catch (e) {}
+        try { p.onDisconnect.removeListener(onPortDisconnect); } catch (e) {}
+        try { p.disconnect(); } catch (e) {}
+      }
+      function tryReconnect() {
+        if (finished) return;
+        detachPort();
+        clearWatchdogs();
+        // Bounded ladder under the background job's 10-minute result TTL.
+        var ladder = [1000, 2000, 5000, 10000];
+        var delay = ladder[Math.min(ladder.length - 1, reconnectAttempts)];
+        reconnectAttempts += 1;
+        reconnectTimer = setTimeout(function () {
+          if (finished) return;
+          if (Date.now() - startedAt > 10 * 60 * 1000) { giveUp(); return; }
+          if (!connectPort(false)) { tryReconnect(); return; }
+          lastPortMsgAt = Date.now();
+          armWatchdogs();
+        }, delay);
+      }
+      function giveUp() {
+        // Resolve empty (like a clean disconnect) so the caller's sync
+        // fallback gets exactly one retry — never render the watchdog
+        // string as the answer.
+        finish(null, true);
+      }
+      if (!connectPort(true)) {
+        if (targetEl) setMessageBody(targetEl, 'Error: could not connect to the extension background.');
+        onDone(''); resolve(''); return;
+      }
       var bodyEl = targetEl ? targetEl.querySelector('.body') : null;
       if (bodyEl) bodyEl.classList.add('streaming-cursor');
       var finished = false;
+      var restartedOnce = false;
       var doneStats = null;
+      var startedAt = Date.now();
       var lastPortMsgAt = Date.now();
       var lastActivityAt = Date.now();
       var livenessTimer = 0;
@@ -732,26 +783,31 @@
         clearWatchdogs();
         var now = Date.now();
         livenessTimer = setTimeout(function () {
-          finish('Connection to the extension background was lost. Reload the sidebar and try again.');
+          // Total silence past the window: the background may have been
+          // unloaded mid-request. Re-attach to the persisted job instead
+          // of pronouncing the connection lost.
+          if (text) finish(null); else tryReconnect();
         }, Math.max(0, STREAM_BACKGROUND_TIMEOUT_MS - (now - lastPortMsgAt)));
         idleTimer = setTimeout(function () {
           finish('Provider stalled: no activity for 120s');
         }, Math.max(0, STREAM_PROVIDER_IDLE_TIMEOUT_MS - (now - lastActivityAt)));
       }
       armWatchdogs();
-      function finish(err) {
+      function finish(err, silent) {
         if (finished) return; finished = true;
         clearWatchdogs();
+        clearTimeout(reconnectTimer);
         if (bodyEl) bodyEl.classList.remove('streaming-cursor');
-        state.ports = state.ports.filter(function (p) { return p !== port; });
-        try { port.disconnect(); } catch (e) {}
+        detachPort();
+        if (silent) { onDone(''); resolve(''); return; }
         if (err && !text) { text = 'Error: ' + err; if (targetEl) setMessageBody(targetEl, text); }
         else if (targetEl && text) setMessageBody(targetEl, text);
         if (targetEl && doneStats) renderMsgMeta(targetEl, doneStats);
         onDone(text); resolve(text);
       }
-      port.onMessage.addListener(function (msg) {
+      function onPortMessage(msg) {
         if (!msg) return;
+        if (msg.requestId != null && msg.requestId !== requestId) return;
         lastPortMsgAt = Date.now();
         // Background heartbeat: proof the request is alive while a slow
         // provider (e.g. 9Router + reasoning model) produces nothing yet.
@@ -769,6 +825,17 @@
           else if (!text && msg.stage === 'streaming') status('Generating...');
           return;
         }
+        if (msg.type === 'snapshot') {
+          // Attach replay: replace, never append (mirror of youtube.js).
+          lastActivityAt = Date.now(); armWatchdogs();
+          var snap = (typeof msg.full === 'string') ? msg.full
+            : (typeof msg.text === 'string' ? msg.text : '');
+          if (snap) {
+            text = snap;
+            if (targetEl && !hasSelectionInside(targetEl)) setMessageBody(targetEl, text);
+          }
+          return;
+        }
         if (msg.type === 'chunk') {
           lastActivityAt = Date.now(); armWatchdogs();
           text += msg.text || ''; if (targetEl && !hasSelectionInside(targetEl)) setMessageBody(targetEl, text);
@@ -781,16 +848,29 @@
           };
           finish(null);
         }
-        else if (msg.type === 'error') finish(msg.message || msg.error || 'Stream error');
+        else if (msg.type === 'error') {
+          // An attach that found nothing live means the job never really
+          // ran (or the event page died with it): one clean fresh start,
+          // not another spin through the reconnect ladder. A second
+          // not-found (or one arriving mid-text) is a real error.
+          if (!text && !restartedOnce && /not found/i.test(String(msg.error || msg.message || ''))) {
+            restartedOnce = true;
+            if (!connectPort(true)) tryReconnect();
+            return;
+          }
+          finish(msg.message || msg.error || 'Stream error');
+        }
         else armWatchdogs();
-      });
-      port.onDisconnect.addListener(function () {
-        var err = (api.runtime.lastError && api.runtime.lastError.message) || null;
-        if (text) finish(null); else finish(state.stopRequested ? null : err);
-        if (!text && state.stopRequested) { text = text || ''; onDone(text); resolve(text); }
-      });
-      try { port.postMessage({ type: 'start', requestId: newRequestId(), messages: apiMessages, providerId: providerId, model: model }); }
-      catch (e) { finish(e.message); }
+      }
+      function onPortDisconnect() {
+        // The background keeps the job running across a disconnect
+        // (detach-don't-abort); re-attach instead of losing the answer.
+        port = null;
+        if (finished) return;
+        if (text) { finish(null); return; }
+        if (state.stopRequested) { finish(null); return; }
+        tryReconnect();
+      }
     });
   }
   function chatSyncFallback(apiMessages, providerId, model, targetEl) {

@@ -474,7 +474,10 @@ var JOB_PERSIST_GAP_MS = 1500;
 var chatJobs = {};
 
 function jobPost(job, message) {
-  Array.prototype.slice.call(job.ports).forEach(function (p) {
+  // job.ports is a Set: iterate it directly. (Array.prototype.slice.call on
+  // a Set returns [] — that one-liner silently dropped every heartbeat,
+  // chunk, snapshot and done/error from 1.0.21 until 1.0.28.)
+  job.ports.forEach(function (p) {
     try { p.postMessage(message); } catch (e) {}
   });
 }
@@ -513,9 +516,11 @@ function result_finishReason(job) {
   // finishReason: result.finishReason (from the chatRequest result, kept on the job)
   return job.finishReason;
 }
-function jobCleanup(requestId) {
+function jobCleanup(requestId, expectedJob) {
   var job = chatJobs[requestId];
   if (!job) return;
+  // A stale TTL timer must not evict a newer job reusing the same requestId.
+  if (expectedJob && job !== expectedJob) return;
   if (job.timer) clearInterval(job.timer);
   delete chatJobs[requestId];
 }
@@ -548,7 +553,7 @@ function jobFinish(job, err, result) {
   // the job leaves the registry when registerCleanupTimer fires.)
   // var stalled = false (now job.stalled); `if (stalled) return` guards the
   // request continuations in startChatJob the same way it did per-port.
-  var registerCleanupTimer = setTimeout(function () { jobCleanup(job.requestId); }, JOB_RESULT_TTL_MS);
+  var registerCleanupTimer = setTimeout(function () { jobCleanup(job.requestId, job); }, JOB_RESULT_TTL_MS);
   if (registerCleanupTimer && typeof registerCleanupTimer.unref === 'function') registerCleanupTimer.unref();
 }
 

@@ -649,12 +649,12 @@ check("background prompt path guarded and loads settings", () => {
   assert.ok(!/(^|[^\w.$])global\./.test(bg), "background.js must not use the bare global object");
 });
 
-check("manifest background order and release version 1.0.28", () => {
+check("manifest background order and release version 1.0.29", () => {
   assert.ok(manifest, "manifest required");
   const scripts = (manifest.background && manifest.background.scripts) || [];
   const iP = scripts.indexOf("lib/prompts.js"), iY = scripts.indexOf("lib/youtube.js"), iB = scripts.indexOf("background.js");
   assert.ok(iP >= 0 && iY >= 0 && iB > iP && iB > iY, "lib/prompts.js + lib/youtube.js load before background.js");
-  assert.strictEqual(manifest.version, "1.0.28", "release version");
+  assert.strictEqual(manifest.version, "1.0.29", "release version");
 });
 
 /* ---------- 1.0.6 bug: transcript truncated at 22:52 of a 44:59 video -----
@@ -875,7 +875,10 @@ check("stats + timeout: ttft/total, msg-meta, 120s idle, honest stage", () => {
   assert.ok(sideStream.includes("lastPortMsgAt") && sideStream.includes("lastActivityAt"), "split liveness/activity anchors");
   assert.ok(sideStream.includes("msg.lastActivityMs"), "sidebar activity anchored to ping lastActivityMs");
   assert.ok(sideStream.includes("Provider stalled: no activity for 120s"), "sidebar stall error text");
-  assert.ok(sideStream.includes("Connection to the extension background was lost"), "sidebar liveness error text");
+  // 1.0.29: the liveness trip re-attaches to the background job instead of
+  // rendering the lost-connection string (kept only in youtube.js).
+  assert.ok(!sideStream.includes("Connection to the extension background was lost"),
+    "sidebar no longer renders the lost-connection string");
   // chatSync fallback: total-only stats
   const sync = side.slice(side.indexOf("function chatSyncFallback"), side.indexOf("function runStreamOrSync"));
   assert.ok(sync.includes("renderMsgMeta") && sync.includes("totalMs: Date.now() - syncStartedAt"), "chatSync measures total around sendMessage");
@@ -1517,7 +1520,7 @@ Promise.all([Promise.resolve(sseDone), Promise.resolve(imageDone), Promise.resol
    fallback, widened liveness, touch selection, helper payloads. */
 check("1.0.21: version, model-select wiring, detach transport, mobile surfaces", () => {
   assert.ok(manifest, "manifest required");
-  assert.strictEqual(manifest.version, "1.0.28", "release version");
+  assert.strictEqual(manifest.version, "1.0.29", "release version");
   assert.ok(manifest.browser_specific_settings.gecko_android, "gecko_android block present");
   // Shared picker loads before both helpers.
   const ytEntry = (manifest.content_scripts || []).find((cs) => (cs.js || []).includes("content/youtube.js"));
@@ -1613,7 +1616,7 @@ check("1.0.19: icons built as same-document SVG nodes (no DOMParser import)", ()
    static 9px text; now icons-only everywhere, name via long-press. */
 check("1.0.23: panel placement ladder + long-press toolbar labels", () => {
   assert.ok(manifest, "manifest required");
-  assert.strictEqual(manifest.version, "1.0.28", "release version 1.0.28");
+  assert.strictEqual(manifest.version, "1.0.29", "release version 1.0.29");
   const yt = fs.readFileSync(path.join(EXT, "content/youtube.js"), "utf8");
   // Ladder exists, tried sequentially in priority order.
   const ladder = yt.slice(yt.indexOf("const PANEL_PLACEMENTS"), yt.indexOf("function bestPanelPlacement"));
@@ -1954,7 +1957,7 @@ check("1.0.27 blob/MSE extraction + per-provider transcription model", () => {
    per-video summary language + model selectors. */
 check("1.0.28 manifest recovery + chunking + summary controls", () => {
   assert.ok(manifest, "manifest required");
-  assert.strictEqual(manifest.version, "1.0.28", "release version");
+  assert.strictEqual(manifest.version, "1.0.29", "release version");
 
   // Watcher: registered at document_start in its OWN entry, before the
   // document_end content entry; webRequest present, blocking variant absent.
@@ -2032,4 +2035,46 @@ check("1.0.28 manifest recovery + chunking + summary controls", () => {
   const tr = side.slice(side.indexOf("function translateSelectedVideo"), side.indexOf("function downloadVideoResult"));
   assert.ok(!tr.includes("videoSummaryLangSel"), "translate keeps its own language select");
   assert.ok(!tr.includes("Write the entire summary in"), "translate prompt unchanged");
+});
+
+/* ---------- 1.0.29: sidebar chat transport repair -------------------------
+   Regression: jobPost iterated job.ports (a Set) via Array.prototype.slice,
+   which returns [] on a Set — every heartbeat/chunk/snapshot/done was
+   silently dropped (1.0.21–1.0.28) and the sidebar died on its 90s liveness
+   watchdog. Pins: Set iteration in jobPost, sidebar attach/snapshot mirror
+   of youtube.js, silent give-up so chatSyncFallback retries exactly once. */
+check("1.0.29 chat transport: jobPost delivers, sidebar re-attaches", () => {
+  const bg = fs.readFileSync(path.join(EXT, "background.js"), "utf8");
+  assert.ok(bg.includes("job.ports.forEach"), "jobPost iterates the Set directly");
+  assert.ok(!bg.includes("slice.call(job.ports)"), "the Set-slice regression is gone");
+  assert.ok(bg.includes("function jobCleanup(requestId, expectedJob)"), "jobCleanup has the identity check");
+  assert.ok(bg.includes("jobCleanup(job.requestId, job)"), "TTL cleanup passes its job");
+  // Behavioural pin: slice on a Set really is empty, forEach really delivers.
+  assert.deepStrictEqual(Array.prototype.slice.call(new Set(["a", "b"])), [], "slice on a Set yields []");
+  const delivered = [];
+  const fakeJob = { ports: new Set([{ postMessage: (m) => delivered.push(m) }]) };
+  fakeJob.ports.forEach(function (p) { try { p.postMessage({ type: "chunk", text: "x" }); } catch (e) {} });
+  assert.strictEqual(delivered.length, 1, "forEach over the Set posts to the port");
+
+  const side = fs.readFileSync(path.join(EXT, "sidebar/sidebar.js"), "utf8");
+  const stream = side.slice(side.indexOf("function streamChat"), side.indexOf("function chatSyncFallback"));
+  assert.ok(stream.includes("var requestId = newRequestId()"), "sidebar keeps its requestId for the whole job");
+  assert.ok(stream.includes("type: 'attach'"), "sidebar re-attaches instead of restarting the job");
+  assert.ok(stream.includes("type: 'start'"), "sidebar still starts fresh jobs");
+  assert.ok(stream.includes("msg.type === 'snapshot'"), "sidebar applies snapshot replays (replace)");
+  assert.ok(stream.includes("msg.requestId !== requestId"), "sidebar filters foreign requestIds");
+  assert.ok(stream.includes("tryReconnect()"), "disconnect/liveness trips re-attach");
+  assert.ok(stream.includes("[1000, 2000, 5000, 10000]"), "reconnect ladder stays under the job TTL");
+  assert.ok(stream.includes("finish(null, true)"), "give-up resolves empty so the sync fallback retries");
+  assert.ok(stream.includes("restartedOnce") && stream.includes("connectPort(true)"),
+    "attach not-found gets exactly one clean fresh start, not a reconnect spin");
+  assert.ok(!stream.includes("Connection to the extension background was lost"),
+    "sidebar never renders the lost-connection string again");
+  // youtube.js remains the reference attach implementation.
+  const yt = fs.readFileSync(path.join(EXT, "content/youtube.js"), "utf8");
+  assert.ok(yt.includes("msg.type === 'snapshot'"), "youtube snapshot mirror intact");
+
+  const prov = fs.readFileSync(path.join(EXT, "lib/providers.js"), "utf8");
+  assert.ok(prov.includes("try { j = JSON.parse(data); } catch (e) { return;"),
+    "SSE catch is scoped to JSON.parse (consumer errors still surface)");
 });
