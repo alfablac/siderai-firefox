@@ -12,8 +12,12 @@
     contextText: '', contextLabel: '', attachment: null,
     conversationId: null, groupMode: false, groupResults: [],
     editingPromptId: null, lastArtifact: '', slashIndex: 0,
-    currentTab: null, stopRequested: false, ytTranscript: ''
+    currentTab: null, stopRequested: false, ytTranscript: '',
+    toolFavorites: [], selectedToolId: '',
+    handSteps: [], handStop: false,
+    researchRaw: '', researchSources: [], researchId: null
   };
+  var TOOL_FAVORITES_KEY = 'graphiteSider.toolFavorites.v1';
 
   function esc(s) { return window.GraphiteMarkdown ? GraphiteMarkdown.escapeHtml(s) : String(s).replace(/[&<>"]/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]; }); }
   function setGeneratedHtml(el, html) {
@@ -288,6 +292,59 @@
     Array.prototype.forEach.call(document.querySelectorAll('.view'), function (v) { v.classList.toggle('active', v.id === 'view-' + name); });
     if (name === 'history') renderHistory();
     if (name === 'prompts') renderPrompts();
+    if (name === 'code') { refreshCodeHost(); renderCodeRules(); }
+    if (name === 'research') renderResearchList();
+  }
+
+  /* Send a graphite-command to the content script in the active (or
+   * originating) tab. Resolves with the command result object even when
+   * it reports { ok:false } so callers can inspect needsConfirm etc.;
+   * rejects only on transport failure. */
+  function sendTabCommand(command, payload) {
+    return getActiveTab().then(function (tab) {
+      if (!tab || tab.id == null) throw new Error('No active tab');
+      state.currentTab = tab;
+      var msg = { type: 'graphite-command', command: command };
+      if (payload) Object.keys(payload).forEach(function (k) { msg[k] = payload[k]; });
+      return api.tabs.sendMessage(tab.id, msg).then(function (resp) {
+        if (resp && typeof resp === 'object' && 'ok' in resp && ('result' in resp || 'error' in resp)) {
+          if (resp.ok) return resp.result;
+          throw new Error(resp.error || 'Command failed');
+        }
+        return resp;
+      });
+    });
+  }
+  function activeTabId() {
+    return getActiveTab().then(function (tab) {
+      if (!tab || tab.id == null) throw new Error('No active tab');
+      state.currentTab = tab;
+      return tab.id;
+    });
+  }
+  function hostOf(url) {
+    try { return new URL(url || '').hostname || ''; } catch (e) { return ''; }
+  }
+  /* Models often wrap JSON in fences or prose; extract the outermost
+   * object/array and parse it. Returns null when nothing parses. */
+  function extractJsonValue(text) {
+    var s = String(text || '').trim();
+    s = s.replace(/^```(?:json)?\s*/i, '').replace(/```\s*$/, '').trim();
+    var objAt = s.indexOf('{'), arrAt = s.indexOf('[');
+    var start = objAt === -1 ? arrAt : (arrAt === -1 ? objAt : Math.min(objAt, arrAt));
+    if (start === -1) return null;
+    var end = Math.max(s.lastIndexOf('}'), s.lastIndexOf(']'));
+    if (end <= start) return null;
+    try { return JSON.parse(s.slice(start, end + 1)); } catch (e) { return null; }
+  }
+  function outlineSummary(outline) {
+    if (!outline) return 'Page outline unavailable (content script not reachable).';
+    return (outline.title || 'Untitled') + ' — ' +
+      ((outline.headings || []).length) + ' headings, ' +
+      ((outline.landmarks || []).length) + ' landmarks, ' +
+      ((outline.links || []).length) + ' links, ' +
+      ((outline.buttons || []).length) + ' buttons, ' +
+      ((outline.fields || []).length) + ' fields';
   }
 
   /* ---------------- current tab / context ---------------- */
@@ -1139,31 +1196,86 @@
 
   /* ---------------- tools ---------------- */
   var TOOLS = [
-    { id: 'summarize-page', name: 'Summarize Page', desc: 'Summarize current tab', form: 'page' },
-    { id: 'youtube', name: 'YouTube Summary', desc: 'Transcript summary + chapters', form: 'youtube' },
-    { id: 'translate', name: 'Translate', desc: 'Text translation', form: 'translate' },
-    { id: 'ocr', name: 'OCR Image', desc: 'Extract text from image', form: 'ocr' },
-    { id: 'chatpdf', name: 'ChatPDF', desc: 'Ask a PDF', form: 'pdf' },
-    { id: 'vision', name: 'Chat with Image', desc: 'Vision Q&A', form: 'vision' },
-    { id: 'audio', name: 'Audio Transcribe', desc: 'Transcribe + summarize', form: 'audio' },
-    { id: 'grammar', name: 'Grammar Checker', desc: 'Fix grammar', form: 'text', prompt: 'Fix grammar and punctuation. Return corrected text first, then brief notes on changes:\n\n{{input}}' },
-    { id: 'rewrite', name: 'Rewrite / Tone', desc: 'Rewrite in a tone', form: 'rewrite' },
-    { id: 'outline', name: 'Outline Composer', desc: 'Structured outline', form: 'text', prompt: 'Create a detailed hierarchical outline on this topic. Use headings and bullet points:\n\n{{input}}' },
-    { id: 'essay', name: 'Essay Writer', desc: 'Draft an essay', form: 'essay' },
-    { id: 'imagegen', name: 'Image Generator', desc: 'Generate an image', form: 'imagegen' },
-    { id: 'tts', name: 'TTS Read Aloud', desc: 'Read text aloud', form: 'tts' },
-    { id: 'websearch', name: 'Web Search Answer', desc: 'Answer from a search tab', form: 'websearch' },
-    { id: 'data', name: 'Data Analysis', desc: 'Paste CSV and ask', form: 'data' },
-    { id: 'mindmap', name: 'Mind Map', desc: 'Mermaid mind map', form: 'text', prompt: 'Create a Mermaid mindmap diagram for this topic. Output only a ```mermaid code block using mindmap syntax:\n\n{{input}}' },
-    { id: 'artifacts', name: 'Artifacts', desc: 'HTML artifact preview', form: 'artifact' }
+    { id: 'summarize-page', name: 'Summarize Page', desc: 'Summarize current tab', form: 'page', cat: 'Read' },
+    { id: 'youtube', name: 'YouTube Summary', desc: 'Transcript summary + chapters', form: 'youtube', cat: 'Read' },
+    { id: 'translate', name: 'Translate', desc: 'Text translation', form: 'translate', cat: 'Read' },
+    { id: 'ocr', name: 'OCR Image', desc: 'Extract text from image', form: 'ocr', cat: 'Read' },
+    { id: 'chatpdf', name: 'ChatPDF', desc: 'Ask a PDF', form: 'pdf', cat: 'Read' },
+    { id: 'vision', name: 'Chat with Image', desc: 'Vision Q&A', form: 'vision', cat: 'Read' },
+    { id: 'audio', name: 'Audio Transcribe', desc: 'Transcribe + summarize', form: 'audio', cat: 'Read' },
+    { id: 'grammar', name: 'Grammar Checker', desc: 'Fix grammar', form: 'text', cat: 'Write', prompt: 'Fix grammar and punctuation. Return corrected text first, then brief notes on changes:\n\n{{input}}' },
+    { id: 'rewrite', name: 'Rewrite / Tone', desc: 'Rewrite in a tone', form: 'rewrite', cat: 'Write' },
+    { id: 'outline', name: 'Outline Composer', desc: 'Structured outline', form: 'text', cat: 'Write', prompt: 'Create a detailed hierarchical outline on this topic. Use headings and bullet points:\n\n{{input}}' },
+    { id: 'essay', name: 'Essay Writer', desc: 'Draft an essay', form: 'essay', cat: 'Write' },
+    { id: 'imagegen', name: 'Image Generator', desc: 'Generate an image', form: 'imagegen', cat: 'Create' },
+    { id: 'tts', name: 'TTS Read Aloud', desc: 'Read text aloud', form: 'tts', cat: 'Create' },
+    { id: 'websearch', name: 'Web Search Answer', desc: 'Answer from a search tab', form: 'websearch', cat: 'Data' },
+    { id: 'data', name: 'Data Analysis', desc: 'Paste CSV and ask', form: 'data', cat: 'Data' },
+    { id: 'mindmap', name: 'Mind Map', desc: 'Mermaid mind map', form: 'text', cat: 'Create', prompt: 'Create a Mermaid mindmap diagram for this topic. Output only a ```mermaid code block using mindmap syntax:\n\n{{input}}' },
+    { id: 'artifacts', name: 'Artifacts', desc: 'HTML artifact preview', form: 'artifact', cat: 'Create' }
   ];
+  var TOOL_CATS = ['Read', 'Write', 'Create', 'Data'];
+  var TOOL_FAV_GROUP = 'Favorites';
+  function isToolFav(id) { return state.toolFavorites.indexOf(id) !== -1; }
+  function loadToolFavorites() {
+    return storageGet(TOOL_FAVORITES_KEY).then(function (o) {
+      var list = o && o[TOOL_FAVORITES_KEY];
+      state.toolFavorites = Array.isArray(list) ? list.filter(function (id) { return typeof id === 'string'; }) : [];
+    }).catch(function () { state.toolFavorites = []; });
+  }
+  function saveToolFavorites() {
+    var payload = {};
+    payload[TOOL_FAVORITES_KEY] = state.toolFavorites.slice();
+    return storageSet(payload).catch(function () {});
+  }
+  function toggleToolFavorite(id) {
+    var at = state.toolFavorites.indexOf(id);
+    if (at === -1) state.toolFavorites.push(id); else state.toolFavorites.splice(at, 1);
+    saveToolFavorites();
+    renderTools();
+  }
+  function toolCard(tool) {
+    var fav = isToolFav(tool.id);
+    var b = document.createElement('button'); b.type = 'button'; b.className = 'tool-card' + (state.selectedToolId === tool.id ? ' selected' : '');
+    var cardName = document.createElement('strong'); cardName.textContent = tool.name;
+    var cardDesc = document.createElement('span'); cardDesc.textContent = tool.desc;
+    var star = document.createElement('span'); star.className = 'tool-fav' + (fav ? ' on' : '');
+    star.textContent = fav ? '\u2605' : '\u2606';
+    star.setAttribute('role', 'button');
+    star.setAttribute('aria-label', fav ? ('Remove ' + tool.name + ' from favorites') : ('Add ' + tool.name + ' to favorites'));
+    star.title = fav ? 'Remove from favorites' : 'Add to favorites';
+    star.addEventListener('click', function (e) { e.stopPropagation(); toggleToolFavorite(tool.id); });
+    b.appendChild(star); b.appendChild(cardName); b.appendChild(cardDesc);
+    b.addEventListener('click', function () { state.selectedToolId = tool.id; renderTools(); openTool(tool); });
+    return b;
+  }
+  function toolCategoryHeading(text) {
+    var h = document.createElement('div'); h.className = 'tool-cat'; h.textContent = text; return h;
+  }
   function renderTools() {
-    var grid = $('toolGrid'); grid.textContent = '';
-    TOOLS.forEach(function (t) {
-      var b = document.createElement('button'); b.type = 'button'; b.className = 'tool-card';
-      var cardName = document.createElement('strong'); cardName.textContent = t.name; var cardDesc = document.createElement('span'); cardDesc.textContent = t.desc; b.appendChild(cardName); b.appendChild(cardDesc);
-      b.addEventListener('click', function () { openTool(t); });
-      grid.appendChild(b);
+    var grid = $('toolGrid'); if (!grid) return;
+    grid.textContent = '';
+    var query = ($('toolsSearch') ? $('toolsSearch').value : '').trim().toLowerCase();
+    var matches = TOOLS.filter(function (t) {
+      return !query || (t.name + ' ' + t.desc + ' ' + t.cat).toLowerCase().indexOf(query) !== -1;
+    });
+    if (!matches.length) { grid.appendChild(emptyNoteEl('No tools match "' + query + '".')); return; }
+    var shown = {};
+    if (!query) {
+      var favTools = matches.filter(function (t) { return isToolFav(t.id); });
+      if (favTools.length) {
+        grid.appendChild(toolCategoryHeading(TOOL_FAV_GROUP));
+        favTools.forEach(function (t) { grid.appendChild(toolCard(t)); shown[t.id] = true; });
+      }
+    }
+    TOOL_CATS.forEach(function (cat) {
+      var group = matches.filter(function (t) { return t.cat === cat && !shown[t.id]; });
+      if (!group.length) return;
+      grid.appendChild(toolCategoryHeading(cat));
+      group.forEach(function (t) { grid.appendChild(toolCard(t)); shown[t.id] = true; });
+    });
+    matches.forEach(function (t) {
+      if (!shown[t.id]) grid.appendChild(toolCard(t));
     });
   }
   function runToolPrompt(prompt) { switchView('chat'); return sendCurrent(prompt, { single: true }); }
@@ -1298,10 +1410,483 @@
     TOOLS.forEach(function (t) { if (t.form === 'translate') tool = t; });
     if (!tool) tool = { id: 'translate', name: 'Translate', desc: 'Text translation', form: 'translate' };
     switchView('tools');
+    state.selectedToolId = tool.id;
+    renderTools();
     openTool(tool);
     if (prefillText != null && $('tText')) $('tText').value = prefillText;
     if ($('tLangSel')) { $('tLangSel').focus(); try { $('tLangSel').scrollIntoView({ behavior: 'smooth', block: 'nearest' }); } catch (e) {} }
     status('Choose a target language, then Translate');
+  }
+
+  /* ---------------- code (per-site CSS/JS) ---------------- */
+  function codeStatus(text) { var el = $('codeStatus'); if (el) el.textContent = text; }
+  function refreshCodeHost() {
+    var chip = $('codeHost'); if (!chip) return Promise.resolve(null);
+    return getActiveTab().then(function (tab) {
+      state.currentTab = tab;
+      var host = hostOf(tab && tab.url);
+      chip.textContent = host || ((tab && tab.title) ? truncate(tab.title, 40) : 'No active tab');
+      chip.title = (tab && (tab.title + '\n' + (tab.url || ''))) || '';
+      return tab;
+    }).catch(function () { chip.textContent = 'No active tab'; return null; });
+  }
+  function codeGenerate() {
+    var btn = $('codeGenerateBtn');
+    var request = $('codePrompt').value.trim();
+    if (!request) { codeStatus('Describe the change you want first.'); $('codePrompt').focus(); return; }
+    if (btn) btn.disabled = true;
+    codeStatus('Inspecting page and generating...');
+    sendTabCommand('page-outline', {}).catch(function () { return null; }).then(function (outline) {
+      return refreshCodeHost().then(function (tab) {
+        var prompt = [
+          'You restyle web pages with custom CSS and JavaScript (like a userscript).',
+          'Page title: ' + ((tab && tab.title) || (outline && outline.title) || ''),
+          'Page URL: ' + ((tab && tab.url) || (outline && outline.url) || ''),
+          'User request: ' + request,
+          '',
+          'Page outline (headings, landmarks, interactive elements):',
+          truncate(JSON.stringify(outline || {}), 6000),
+          '',
+          'Return ONLY a JSON object (no prose, no markdown fences): {"css":"...","js":"...","notes":"..."}',
+          '- css: a stylesheet applied to the page. Prefer stable selectors from the outline; keep it focused on the request.',
+          '- js: plain JavaScript with no imports; only include it when CSS cannot do the job, otherwise use "".',
+          '- notes: one short sentence describing what the code does.'
+        ].join('\n');
+        return chatSyncFallback([{ role: 'user', content: prompt }], state.activeProviderId, state.activeModel, null).then(function (text) {
+          if (!text || text.indexOf('Error:') === 0) throw new Error((text || 'Generation failed').replace(/^Error:\s*/, ''));
+          var parsed = extractJsonValue(text);
+          if (!parsed) throw new Error('The model did not return JSON. Try again or simplify the request.');
+          $('codeCss').value = String(parsed.css || '');
+          $('codeJs').value = String(parsed.js || '');
+          if (parsed.js) $('codeJsEnabled').checked = false;
+          codeStatus((parsed.notes ? String(parsed.notes) + ' ' : '') + 'Review the code, then Apply preview or Save rule.');
+        });
+      });
+    }).catch(function (e) { codeStatus('Generate failed: ' + e.message); }).then(function () { if (btn) btn.disabled = false; });
+  }
+  function codeApply() {
+    var css = $('codeCss').value;
+    var js = $('codeJs').value;
+    var jsEnabled = $('codeJsEnabled').checked;
+    if (!css.trim() && !jsEnabled) { codeStatus('Nothing to apply: add CSS or enable JavaScript.'); return; }
+    codeStatus('Applying...');
+    sendTabCommand('code-apply', { css: css, js: js, jsEnabled: jsEnabled }).then(function (r) {
+      if (r && r.ok === false && !('jsError' in r)) throw new Error(r.error || 'Apply failed');
+      codeStatus('Applied to this tab.' + (r && r.jsError ? ' JS error: ' + r.jsError : ''));
+    }).catch(function () {
+      activeTabId().then(function (tabId) {
+        return sendMessage({ type: 'applyCodeToTab', css: css, js: js, jsEnabled: jsEnabled, tabId: tabId });
+      }).then(function (r) {
+        codeStatus('Applied to this tab.' + (r && r.jsError ? ' JS error: ' + r.jsError : ''));
+      }).catch(function (e) { codeStatus('Apply failed: ' + e.message); });
+    });
+  }
+  function codeRemove() {
+    sendTabCommand('code-remove', {}).then(function () { codeStatus('Removed from this tab.'); }).catch(function () {
+      activeTabId().then(function (tabId) {
+        return sendMessage({ type: 'removeCodeFromTab', tabId: tabId });
+      }).then(function () { codeStatus('Removed from this tab.'); }).catch(function (e) { codeStatus('Remove failed: ' + e.message); });
+    });
+  }
+  function codeOutline() {
+    codeStatus('Inspecting page...');
+    sendTabCommand('page-outline', {}).then(function (outline) {
+      codeStatus(outlineSummary(outline));
+    }).catch(function (e) { codeStatus('Inspect failed: ' + e.message); });
+  }
+  function codeSave() {
+    refreshCodeHost().then(function (tab) {
+      var host = hostOf(tab && tab.url);
+      if (!host) { codeStatus('Save failed: the active tab has no site host.'); return; }
+      var rule = {
+        host: host,
+        prompt: $('codePrompt').value.trim(),
+        css: $('codeCss').value,
+        js: $('codeJs').value,
+        jsEnabled: $('codeJsEnabled').checked,
+        enabled: true
+      };
+      if (!rule.css.trim() && !(rule.jsEnabled && rule.js.trim())) { codeStatus('Nothing to save: generate or write CSS/JS first.'); return; }
+      sendMessage({ type: 'saveCodeRule', rule: rule }).then(function (saved) {
+        codeStatus('Rule saved for ' + ((saved && saved.host) || host) + '. It auto-applies on every visit.');
+        renderCodeRules();
+      }).catch(function (e) { codeStatus('Save failed: ' + e.message); });
+    });
+  }
+  function codeApplyRule(rule) {
+    $('codePrompt').value = rule.prompt || '';
+    $('codeCss').value = rule.css || '';
+    $('codeJs').value = rule.js || '';
+    $('codeJsEnabled').checked = !!rule.jsEnabled;
+    codeApply();
+  }
+  function renderCodeRules() {
+    var list = $('codeRuleList'); if (!list) return Promise.resolve();
+    return sendMessage({ type: 'listCodeRules' }).then(function (rules) {
+      list.textContent = '';
+      rules = Array.isArray(rules) ? rules : [];
+      if (!rules.length) { list.appendChild(emptyNoteEl('No saved rules yet. Generate a restyle and save it for this site.')); return; }
+      rules.forEach(function (rule) {
+        var row = document.createElement('div'); row.className = 'rule-row' + (rule.enabled === false ? ' off' : '');
+        var head = document.createElement('div'); head.className = 'row-between';
+        var hostEl = document.createElement('strong'); hostEl.textContent = rule.host || '(no host)';
+        var toggleLabel = document.createElement('label'); toggleLabel.className = 'toggle';
+        var toggle = document.createElement('input'); toggle.type = 'checkbox'; toggle.checked = rule.enabled !== false;
+        toggle.title = 'Auto-apply on visit';
+        toggle.addEventListener('change', function () {
+          var on = toggle.checked;
+          sendMessage({ type: 'setCodeRuleEnabled', id: rule.id, enabled: on }).then(function () {
+            row.classList.toggle('off', !on);
+            codeStatus('Rule for ' + (rule.host || '') + (on ? ' enabled.' : ' disabled.'));
+          }).catch(function (e) { toggle.checked = !on; codeStatus('Update failed: ' + e.message); });
+        });
+        toggleLabel.appendChild(toggle);
+        head.appendChild(hostEl); head.appendChild(toggleLabel);
+        row.appendChild(head);
+        var desc = document.createElement('div'); desc.className = 'desc';
+        desc.textContent = (rule.prompt || rule.notes || (rule.css ? 'Custom CSS' : 'Custom JS')) + (rule.jsEnabled && rule.js ? ' · JS on' : '');
+        row.appendChild(desc);
+        var actions = document.createElement('div'); actions.className = 'row';
+        var applyBtn = document.createElement('button'); applyBtn.type = 'button'; applyBtn.className = 'btn small'; applyBtn.textContent = 'Apply';
+        applyBtn.addEventListener('click', function () { codeApplyRule(rule); });
+        var deleteBtn = document.createElement('button'); deleteBtn.type = 'button'; deleteBtn.className = 'btn small danger-outline'; deleteBtn.textContent = 'Delete';
+        deleteBtn.addEventListener('click', function () {
+          sendMessage({ type: 'deleteCodeRule', id: rule.id }).then(function () {
+            codeStatus('Rule deleted.');
+            renderCodeRules();
+          }).catch(function (e) { codeStatus('Delete failed: ' + e.message); });
+        });
+        actions.appendChild(applyBtn); actions.appendChild(deleteBtn);
+        row.appendChild(actions);
+        list.appendChild(row);
+      });
+    }).catch(function (e) {
+      list.textContent = '';
+      list.appendChild(emptyNoteEl('Could not load rules: ' + e.message));
+    });
+  }
+
+  /* ---------------- hand (supervised browser operation) ---------------- */
+  function handLog(line) {
+    var box = $('handLog'); if (!box) return;
+    var text = String(line == null ? '' : line);
+    box.textContent = box.textContent ? box.textContent + '\n' + text : text;
+    box.scrollTop = box.scrollHeight;
+  }
+  function handStepLabel(step) {
+    var action = String((step && step.action) || 'step');
+    if (action === 'navigate') return 'Navigate to ' + (step.url || '');
+    if (action === 'wait') return 'Wait ' + (step.ms || step.amount || 800) + 'ms';
+    if (action === 'scroll') return 'Scroll by ' + (step.amount || 600) + 'px';
+    if (action === 'extract') return 'Extract page text';
+    if (action === 'click') return 'Click ' + (step.text || step.selector || 'element');
+    if (action === 'fill') return 'Fill ' + (step.label || step.selector || 'field') + ' with "' + truncate(step.value || '', 40) + '"';
+    return action;
+  }
+  function renderHandSteps() {
+    var box = $('handSteps'); if (!box) return;
+    box.textContent = '';
+    state.handSteps.forEach(function (step, i) {
+      var row = document.createElement('div'); row.className = 'hand-step ' + (step.state || '');
+      var idx = document.createElement('span'); idx.className = 'idx'; idx.textContent = String(i + 1);
+      var main = document.createElement('span'); main.className = 'detail'; main.style.flex = '1';
+      var label = document.createElement('span'); label.textContent = handStepLabel(step);
+      main.appendChild(label);
+      if (step.reason) { var why = document.createElement('span'); why.textContent = ' — ' + step.reason; main.appendChild(why); }
+      if (step.statusText) { var st = document.createElement('span'); st.textContent = ' [' + step.statusText + ']'; main.appendChild(st); }
+      var runBtn = document.createElement('button'); runBtn.type = 'button'; runBtn.className = 'btn small'; runBtn.textContent = 'Run';
+      runBtn.addEventListener('click', function () { runHandStep(i); });
+      row.appendChild(idx); row.appendChild(main); row.appendChild(runBtn);
+      box.appendChild(row);
+    });
+  }
+  function handPlan() {
+    var btn = $('handPlanBtn');
+    var task = $('handTask').value.trim();
+    if (!task) { handLog('Describe the task first.'); $('handTask').focus(); return; }
+    if (btn) btn.disabled = true;
+    handLog('Planning...');
+    sendTabCommand('page-outline', {}).catch(function () { return null; }).then(function (outline) {
+      var prompt = [
+        'You plan supervised browser tasks. Break the task into at most 12 concrete steps for the current page.',
+        'Current page outline:',
+        truncate(JSON.stringify(outline || {}), 6000),
+        '',
+        'Task: ' + task,
+        '',
+        'Return ONLY a JSON array (no prose, no markdown fences). Step shapes:',
+        '{"action":"navigate","url":"https://...","reason":"..."}',
+        '{"action":"click","selector":"css selector (optional)","text":"visible text (optional)","reason":"..."}',
+        '{"action":"fill","selector":"css selector (optional)","label":"field label or placeholder (optional)","value":"...","reason":"..."}',
+        '{"action":"extract","reason":"..."} — read the page text',
+        '{"action":"scroll","amount":600,"reason":"..."}',
+        '{"action":"wait","ms":800,"reason":"..."}',
+        'Prefer selectors from the outline. Never plan steps that fill password fields, enter payment details, or confirm purchases/deletions; stop before those and let the user act.'
+      ].join('\n');
+      return chatSyncFallback([{ role: 'user', content: prompt }], state.activeProviderId, state.activeModel, null).then(function (text) {
+        if (!text || text.indexOf('Error:') === 0) throw new Error((text || 'Planning failed').replace(/^Error:\s*/, ''));
+        var parsed = extractJsonValue(text);
+        if (!parsed || !Array.isArray(parsed) || !parsed.length) throw new Error('The model did not return a step list. Try again.');
+        state.handSteps = parsed.slice(0, 12).map(function (s) {
+          return {
+            action: String((s && s.action) || 'wait'), url: s && s.url || '',
+            selector: s && s.selector || '', text: s && s.text || '',
+            label: s && s.label || '', value: s && s.value != null ? String(s.value) : '',
+            amount: s && s.amount, ms: s && s.ms, reason: s && s.reason || '',
+            state: '', statusText: '', confirmed: false
+          };
+        });
+        state.handStop = false;
+        renderHandSteps();
+        handLog('Plan ready: ' + state.handSteps.length + ' steps. Run them one at a time or Run all.');
+      });
+    }).catch(function (e) { handLog('Plan failed: ' + e.message); }).then(function () { if (btn) btn.disabled = false; });
+  }
+  function runHandStep(index) {
+    var step = state.handSteps[index];
+    if (!step) return Promise.resolve('done');
+    var action = String(step.action || '').toLowerCase();
+    function mark(stateName, statusText) {
+      step.state = stateName; step.statusText = statusText || '';
+      renderHandSteps();
+    }
+    mark('', 'running');
+    if (action === 'navigate' || action === 'wait') {
+      var bgPayload = { type: 'handStep', action: action, url: step.url || '', ms: step.ms || step.amount || 800, amount: step.amount };
+      return activeTabId().then(function (tabId) {
+        bgPayload.tabId = tabId;
+        return sendMessage(bgPayload);
+      }).then(function (r) {
+        if (action === 'navigate' && r && r.url) { refreshCodeHost(); }
+        mark('done', 'done');
+        handLog('Step ' + (index + 1) + ' ' + action + ': OK');
+        return 'done';
+      }).catch(function (e) {
+        mark('failed', 'failed');
+        handLog('Step ' + (index + 1) + ' ' + action + ' failed: ' + e.message);
+        return 'failed';
+      });
+    }
+    var command = { click: 'hand-click', fill: 'hand-fill', extract: 'hand-extract', scroll: 'hand-scroll' }[action];
+    if (!command) {
+      mark('failed', 'unknown action');
+      handLog('Step ' + (index + 1) + ': unknown action "' + action + '"');
+      return Promise.resolve('failed');
+    }
+    var payload = { selector: step.selector, text: step.text, label: step.label, value: step.value, amount: step.amount || 600, maxLength: 20000 };
+    return sendTabCommand(command, payload).then(function (r) {
+      if (r && r.needsConfirm) {
+        if (!step.confirmed) {
+          mark('failed', 'needs confirmation');
+          var ok = false;
+          try { ok = window.confirm('This click looks sensitive: "' + (r.text || step.text || 'element') + '".\n\nRun it anyway?'); } catch (e) { ok = false; }
+          if (!ok) { handLog('Step ' + (index + 1) + ' paused: confirmation declined. Click Run again to retry.'); return 'confirm'; }
+          step.confirmed = true;
+          return runHandStep(index);
+        }
+        step.confirmed = false;
+        mark('failed', 'blocked');
+        handLog('Step ' + (index + 1) + ' blocked: the page still requires confirmation.');
+        return 'confirm';
+      }
+      if (r && r.ok === false) throw new Error(r.error || 'Step failed');
+      if (action === 'extract' && r && r.text) {
+        handLog('Extracted from ' + (r.title || r.url || 'page') + ':\n' + truncate(r.text, 2000));
+      } else {
+        handLog('Step ' + (index + 1) + ' ' + action + ': OK' + (r && r.text ? ' (' + truncate(r.text, 80) + ')' : ''));
+      }
+      mark('done', 'done');
+      return 'done';
+    }).catch(function (e) {
+      mark('failed', 'failed');
+      handLog('Step ' + (index + 1) + ' ' + action + ' failed: ' + e.message);
+      return 'failed';
+    });
+  }
+  function handRunAll() {
+    if (!state.handSteps.length) { handLog('Plan steps first.'); return; }
+    state.handStop = false;
+    handLog('Running all steps (supervised)...');
+    var chain = Promise.resolve('done');
+    state.handSteps.forEach(function (step, i) {
+      chain = chain.then(function (prev) {
+        if (state.handStop) return 'stopped';
+        if (prev === 'failed' || prev === 'confirm' || prev === 'stopped') return prev;
+        return runHandStep(i);
+      });
+    });
+    chain.then(function (outcome) {
+      if (state.handStop || outcome === 'stopped') handLog('Stopped by user.');
+      else if (outcome === 'failed') handLog('Run stopped: a step failed.');
+      else if (outcome === 'confirm') handLog('Run paused: a step needs confirmation.');
+      else handLog('All steps done.');
+    });
+  }
+  function handOutline() {
+    sendTabCommand('page-outline', {}).then(function (outline) {
+      handLog(outlineSummary(outline));
+    }).catch(function (e) { handLog('Inspect failed: ' + e.message); });
+  }
+
+  /* ---------------- research (Deep Research) ---------------- */
+  function researchStatus(text) { var el = $('researchStatus'); if (el) el.textContent = text; }
+  function selectedResearchSources() {
+    var box = $('researchSources');
+    var checked = [];
+    if (box) {
+      Array.prototype.forEach.call(box.querySelectorAll('input[type="checkbox"]'), function (cb) {
+        if (cb.checked) checked.push(cb.value);
+      });
+    }
+    return checked.length ? checked : ['openalex', 'crossref', 'arxiv', 'semanticscholar'];
+  }
+  function sourceLabel(id) {
+    var labels = { openalex: 'OpenAlex', crossref: 'Crossref', arxiv: 'arXiv', semanticscholar: 'Semantic Scholar' };
+    return labels[id] || id || 'source';
+  }
+  function renderResearchSources(sources) {
+    state.researchSources = Array.isArray(sources) ? sources : [];
+    var box = $('researchSourcesList'); if (!box) return;
+    box.textContent = '';
+    state.researchSources.forEach(function (s, i) {
+      var card = document.createElement('div'); card.className = 'research-source';
+      var titleEl = document.createElement('strong');
+      if (s.url) {
+        var a = document.createElement('a'); a.href = s.url; a.target = '_blank'; a.rel = 'noopener noreferrer';
+        a.textContent = (i + 1) + '. ' + (s.title || 'Untitled');
+        a.addEventListener('click', function (e) { e.preventDefault(); try { api.tabs.create({ url: s.url }); } catch (err) {} });
+        titleEl.appendChild(a);
+      } else {
+        titleEl.textContent = (i + 1) + '. ' + (s.title || 'Untitled');
+      }
+      card.appendChild(titleEl);
+      var meta = [s.authors, s.year, s.venue, sourceLabel(s.source)].filter(function (x) { return !!x; }).join(' · ');
+      if (meta) { var metaEl = document.createElement('div'); metaEl.className = 'src-meta'; metaEl.textContent = meta; card.appendChild(metaEl); }
+      if (s.doi) { var doiEl = document.createElement('div'); doiEl.className = 'src-meta'; doiEl.textContent = 'DOI: ' + s.doi; card.appendChild(doiEl); }
+      if (s.abstract) {
+        var absEl = document.createElement('div'); absEl.className = 'src-meta';
+        absEl.textContent = truncate(s.abstract, 280);
+        card.appendChild(absEl);
+      }
+      if (s.pdfUrl) {
+        var pdf = document.createElement('a'); pdf.href = s.pdfUrl; pdf.target = '_blank'; pdf.rel = 'noopener noreferrer';
+        pdf.textContent = 'PDF';
+        pdf.addEventListener('click', function (e) { e.preventDefault(); try { api.tabs.create({ url: s.pdfUrl }); } catch (err) {} });
+        card.appendChild(pdf);
+      }
+      box.appendChild(card);
+    });
+  }
+  function renderResearchReport(markdown) {
+    state.researchRaw = String(markdown || '');
+    var box = $('researchReport'); if (!box) return;
+    box.textContent = '';
+    if (!state.researchRaw) return;
+    // Same rendering path as chat messages; no timestamp/youtube opts here.
+    if (window.GraphiteMarkdown) setGeneratedHtml(box, GraphiteMarkdown.render(state.researchRaw, {}));
+    else box.textContent = state.researchRaw;
+    var has = !!state.researchRaw.trim();
+    $('researchCopyBtn').disabled = !has;
+    $('researchDownloadBtn').disabled = !has;
+  }
+  function runResearch() {
+    var btn = $('researchRunBtn');
+    var query = $('researchQuery').value.trim();
+    if (!query) { researchStatus('Enter a research question first.'); $('researchQuery').focus(); return; }
+    if (!window.GraphiteResearch || typeof GraphiteResearch.buildResearchPrompt !== 'function') {
+      researchStatus('Research library failed to load; try reloading the sidebar.');
+      return;
+    }
+    if (btn) btn.disabled = true;
+    state.researchId = null;
+    renderResearchSources([]);
+    renderResearchReport('');
+    researchStatus('Searching academic sources...');
+    sendMessage({
+      type: 'researchSearch', query: query,
+      sources: selectedResearchSources(),
+      perSource: Number($('researchPerSource').value || 6)
+    }).then(function (r) {
+      var sources = (r && r.sources) || [];
+      state.researchId = (r && r.id) || null;
+      renderResearchSources(sources);
+      var errNote = '';
+      if (r && r.errors && r.errors.length) {
+        errNote = ' Failed: ' + r.errors.map(function (e) { return sourceLabel(e.source) + ' (' + e.error + ')'; }).join('; ');
+      }
+      if (!sources.length) {
+        researchStatus('No sources found in the selected databases.' + errNote);
+        return null;
+      }
+      researchStatus('Found ' + sources.length + ' sources. Writing the report...' + errNote);
+      var prompt = GraphiteResearch.buildResearchPrompt(query, sources, { depth: $('researchDepth').value });
+      return chatSyncFallback([{ role: 'user', content: prompt }], state.activeProviderId, state.activeModel, null).then(function (text) {
+        if (!text || text.indexOf('Error:') === 0) throw new Error((text || 'Report generation failed').replace(/^Error:\s*/, ''));
+        renderResearchReport(text);
+        return sendMessage({
+          type: 'saveResearchReport',
+          report: { id: state.researchId || undefined, query: query, title: truncate(query, 80), report: text, sources: sources }
+        }).then(function (saved) {
+          state.researchId = (saved && saved.id) || state.researchId;
+          researchStatus('Report ready — ' + sources.length + ' sources cited. Saved to your reports.');
+          renderResearchList();
+        });
+      });
+    }).catch(function (e) {
+      if (e) researchStatus('Research failed: ' + e.message);
+    }).then(function () { if (btn) btn.disabled = false; });
+  }
+  function openResearchReport(id) {
+    sendMessage({ type: 'getResearchReport', id: id }).then(function (rec) {
+      if (!rec) { researchStatus('That report no longer exists.'); renderResearchList(); return; }
+      state.researchId = rec.id;
+      $('researchQuery').value = rec.query || '';
+      renderResearchSources(rec.sources || []);
+      renderResearchReport(rec.report || '');
+      researchStatus('Opened saved report from ' + new Date(rec.updatedAt || rec.createdAt || Date.now()).toLocaleString() + '.');
+      $('researchReport').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    }).catch(function (e) { researchStatus('Open failed: ' + e.message); });
+  }
+  function renderResearchList() {
+    var list = $('researchList'); if (!list) return Promise.resolve();
+    return sendMessage({ type: 'listResearchReports' }).then(function (items) {
+      list.textContent = '';
+      items = Array.isArray(items) ? items : [];
+      if (!items.length) { list.appendChild(emptyNoteEl('No saved reports yet. Run a research question above.')); return; }
+      items.forEach(function (item) {
+        var row = document.createElement('div'); row.className = 'list-item';
+        var titleEl = document.createElement('strong'); titleEl.textContent = item.title || item.query || 'Research report';
+        row.appendChild(titleEl);
+        var desc = document.createElement('div'); desc.className = 'desc';
+        desc.textContent = (item.sourceCount || 0) + ' sources · ' + new Date(item.updatedAt || item.createdAt || Date.now()).toLocaleString();
+        row.appendChild(desc);
+        var actions = document.createElement('div'); actions.className = 'row';
+        var openBtn = document.createElement('button'); openBtn.type = 'button'; openBtn.className = 'btn small'; openBtn.textContent = 'Open';
+        openBtn.addEventListener('click', function () { openResearchReport(item.id); });
+        var deleteBtn = document.createElement('button'); deleteBtn.type = 'button'; deleteBtn.className = 'btn small danger-outline'; deleteBtn.textContent = 'Delete';
+        deleteBtn.addEventListener('click', function () {
+          sendMessage({ type: 'deleteResearchReport', id: item.id }).then(function () {
+            if (state.researchId === item.id) { state.researchId = null; renderResearchReport(''); renderResearchSources([]); }
+            researchStatus('Report deleted.');
+            renderResearchList();
+          }).catch(function (e) { researchStatus('Delete failed: ' + e.message); });
+        });
+        actions.appendChild(openBtn); actions.appendChild(deleteBtn);
+        row.appendChild(actions);
+        list.appendChild(row);
+      });
+    }).catch(function (e) {
+      list.textContent = '';
+      list.appendChild(emptyNoteEl('Could not load reports: ' + e.message));
+    });
+  }
+  function downloadResearchReport() {
+    if (!state.researchRaw) return;
+    var name = (($('researchQuery').value.trim() || 'research-report').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 50) || 'research-report') + '.md';
+    var blob = new Blob([state.researchRaw], { type: 'text/markdown' });
+    var a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = name; a.click();
+    setTimeout(function () { URL.revokeObjectURL(a.href); }, 2000);
+    status('Report downloaded');
   }
 
   /* ---------------- pending actions ---------------- */
@@ -1427,6 +2012,22 @@
     if ($('promptEditBtn')) $('promptEditBtn').addEventListener('click', editSelectedPrompt);
     if ($('promptDeleteBtn')) $('promptDeleteBtn').addEventListener('click', deleteSelectedPrompt);
     $('clearHistoryBtn').addEventListener('click', function () { storageSet({ graphite_history: [] }).then(renderHistory); });
+    if ($('toolsSearch')) $('toolsSearch').addEventListener('input', function () { renderTools(); });
+    if ($('codeGenerateBtn')) $('codeGenerateBtn').addEventListener('click', codeGenerate);
+    if ($('codeOutlineBtn')) $('codeOutlineBtn').addEventListener('click', codeOutline);
+    if ($('codeApplyBtn')) $('codeApplyBtn').addEventListener('click', codeApply);
+    if ($('codeRemoveBtn')) $('codeRemoveBtn').addEventListener('click', codeRemove);
+    if ($('codeSaveBtn')) $('codeSaveBtn').addEventListener('click', codeSave);
+    if ($('handPlanBtn')) $('handPlanBtn').addEventListener('click', handPlan);
+    if ($('handOutlineBtn')) $('handOutlineBtn').addEventListener('click', handOutline);
+    if ($('handRunAllBtn')) $('handRunAllBtn').addEventListener('click', handRunAll);
+    if ($('handStopBtn')) $('handStopBtn').addEventListener('click', function () { state.handStop = true; handLog('Stop requested — the current step will finish, then the run halts.'); });
+    if ($('researchRunBtn')) $('researchRunBtn').addEventListener('click', runResearch);
+    if ($('researchCopyBtn')) $('researchCopyBtn').addEventListener('click', function () {
+      if (!state.researchRaw) return;
+      if (navigator.clipboard) navigator.clipboard.writeText(state.researchRaw).then(function () { status('Report copied'); }).catch(function () { status('Copy failed'); });
+    });
+    if ($('researchDownloadBtn')) $('researchDownloadBtn').addEventListener('click', downloadResearchReport);
     $('closeArtifactBtn').addEventListener('click', function () { $('artifactBar').classList.add('hidden'); });
     $('downloadArtifactBtn').addEventListener('click', function () {
       var blob = new Blob([state.lastArtifact], { type: 'text/html' });
@@ -1473,6 +2074,7 @@
       seekActiveVideo(seconds);
     });
     var initMsgBox = $('messages'); initMsgBox.textContent = ''; initMsgBox.appendChild(emptyNoteEl('Attach a page, YouTube video, or file - or just ask.'));
+    loadToolFavorites().then(function () { renderTools(); });
     renderTools();
     loadSettings().then(function () { refreshPageChip(); checkPendingAction(); });
   }

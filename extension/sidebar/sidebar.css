@@ -24,6 +24,7 @@ select,input[type=text],textarea{background:var(--panel2);border:1px solid var(-
 .model-item:hover,.model-item.highlighted{background:var(--panel);color:var(--accent)}
 .model-item.selected{color:var(--accent);font-weight:600}
 .model-empty{padding:8px 9px;color:var(--muted);font-size:12px}
+button:focus-visible,a:focus-visible{outline:1px solid var(--accent);outline-offset:2px}
 textarea{max-width:none;width:100%;resize:vertical}
 select:focus,input:focus,textarea:focus{outline:1px solid var(--accent);border-color:var(--accent)}
 .icon-btn,.btn,.chip-btn{background:var(--panel2);border:1px solid var(--border);border-radius:6px;padding:5px 9px;cursor:pointer}
@@ -35,8 +36,8 @@ select:focus,input:focus,textarea:focus{outline:1px solid var(--accent);border-c
 .btn.small{padding:3px 8px;font-size:12px}
 .link-btn{background:none;border:0;color:var(--accent);cursor:pointer;padding:0;text-decoration:underline}
 .banner{padding:7px 10px;background:#2a2320;border-bottom:1px solid var(--danger);color:#f0c9c9}
-.tabs{display:flex;background:var(--panel);border-bottom:1px solid var(--border)}
-.tab{flex:1;background:none;border:0;border-bottom:2px solid transparent;padding:7px 4px;cursor:pointer;color:var(--muted)}
+.tabs{display:flex;flex-wrap:wrap;background:var(--panel);border-bottom:1px solid var(--border)}
+.tab{flex:1 1 auto;background:none;border:0;border-bottom:2px solid transparent;padding:7px 3px;cursor:pointer;color:var(--muted);font-size:12px;white-space:nowrap}
 .tab.active{color:var(--accent);border-bottom-color:var(--accent)}
 main{flex:1;overflow:hidden;display:flex;flex-direction:column;min-height:0}
 .view{display:none;flex:1;overflow-y:auto;padding:10px;min-height:0}
@@ -100,6 +101,14 @@ th{background:var(--panel2)}
 .tool-card:hover{border-color:var(--accent)}
 .tool-card strong{display:block;font-size:12px;margin-bottom:3px}
 .tool-card span{color:var(--muted);font-size:11px}
+#toolsSearch{width:100%;max-width:none;margin-bottom:8px}
+.tool-grid>.tool-cat{grid-column:1/-1}
+.tool-cat{font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);margin:10px 0 5px}
+.tool-cat:first-child{margin-top:0}
+.tool-card{position:relative}
+.tool-card.selected{border-color:var(--accent)}
+.tool-fav{position:absolute;top:4px;right:4px;background:none;border:0;color:var(--muted);cursor:pointer;font-size:13px;padding:2px 4px;display:flex;align-items:center;justify-content:center}
+.tool-fav.on{color:var(--accent)}
 .tool-panel{background:var(--panel);border:1px solid var(--accent);border-radius:9px;padding:10px;margin-top:9px}
 .tool-panel h3{margin:0 0 7px;font-size:13px}
 .tool-panel .row,.row{display:flex;gap:6px;flex-wrap:wrap;margin-top:7px;align-items:center}
@@ -110,6 +119,36 @@ th{background:var(--panel2)}
 .list-item{background:var(--panel);border:1px solid var(--border);border-radius:8px;padding:8px}
 .list-item strong{display:block;font-size:12px}
 .list-item .desc{color:var(--muted);font-size:11px;max-height:44px;overflow:hidden}
+.view textarea.code-input,textarea#codeCss,textarea#codeJs{font-family:ui-monospace,Consolas,monospace;font-size:12px}
+.view label.field-label{display:block;margin-top:8px;color:var(--muted);font-size:11px}
+.log-box{background:var(--code);border:1px solid var(--border);border-radius:8px;padding:8px;font-family:ui-monospace,Consolas,monospace;font-size:11px;white-space:pre-wrap;word-break:break-word;max-height:220px;overflow-y:auto;margin-top:8px}
+.hand-step{display:flex;gap:7px;align-items:flex-start;background:var(--panel);border:1px solid var(--border);border-radius:8px;padding:7px 8px;margin-top:6px}
+.hand-step .idx{color:var(--accent);font-weight:700}
+.hand-step.done{border-color:var(--accent)}
+.hand-step.failed{border-color:var(--danger)}
+.hand-step .detail{color:var(--muted);font-size:11px}
+.check-row{display:flex;gap:10px;flex-wrap:wrap;margin:6px 0}
+.check-row label{display:flex;gap:4px;align-items:center;font-size:12px}
+.research-source{background:var(--panel);border:1px solid var(--border);border-radius:8px;padding:8px}
+.research-source strong{display:block;font-size:12px}
+.research-source a{color:var(--accent)}
+.research-source .src-meta{color:var(--muted);font-size:11px}
+.rule-row{background:var(--panel);border:1px solid var(--border);border-radius:8px;padding:8px}
+.rule-row strong{display:block;font-size:12px}
+.rule-row .desc{color:var(--muted);font-size:11px;max-height:44px;overflow:hidden}
+.rule-row.off{opacity:.55}
+.research-source+.research-source{margin-top:6px}
+#researchReport:empty{display:none}
+#researchReport{background:var(--panel);border:1px solid var(--border);border-radius:10px;padding:9px 10px;margin-top:8px;word-wrap:break-word;overflow-wrap:anywhere}
+#researchReport p{margin:5px 0}#researchReport h1,#researchReport h2,#researchReport h3,#researchReport h4{margin:8px 0 4px;line-height:1.3}
+#researchReport h1{font-size:16px}#researchReport h2{font-size:15px}#researchReport h3{font-size:14px}
+#researchReport ul,#researchReport ol{margin:4px 0;padding-left:20px}
+#researchReport blockquote{border-left:3px solid var(--accent);margin:6px 0;padding:2px 8px;color:var(--accent2)}
+#researchReport a{color:var(--accent)}
+#researchReport code{font-family:ui-monospace,Consolas,monospace;font-size:12px;background:var(--code);padding:1px 4px;border-radius:4px}
+#researchReport pre{background:var(--code);border:1px solid var(--border);border-radius:7px;padding:8px;overflow-x:auto}
+#researchReport pre code{background:none;padding:0}
+#researchReport img{max-width:100%}
 /* Prompt library: prompts live only inside the closed <select> above. */
 #view-prompts select{max-width:none;width:100%}
 .row-between{display:flex;justify-content:space-between;align-items:center;gap:6px}
@@ -130,7 +169,7 @@ th{background:var(--panel2)}
   .model-button-label{max-width:none}
   .model-menu{left:0;right:0;width:auto;max-height:60vh}
   .model-item{min-height:44px;display:flex;align-items:center}
-  .tabs .tab{min-height:44px;flex:1}
+  .tabs .tab{min-height:44px;flex:1 1 auto;font-size:11px}
   .messages{padding:8px}
   #composer{font-size:16px;min-height:64px}
   .composer-actions .btn{min-height:44px;min-width:64px}
@@ -143,4 +182,5 @@ th{background:var(--panel2)}
   button,select,input,textarea{touch-action:manipulation}
   input,textarea{font-size:16px}
   .icon-btn,.btn{min-height:44px}
+  .tool-fav{min-width:36px;min-height:36px}
 }

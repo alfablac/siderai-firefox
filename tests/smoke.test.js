@@ -649,12 +649,12 @@ check("background prompt path guarded and loads settings", () => {
   assert.ok(!/(^|[^\w.$])global\./.test(bg), "background.js must not use the bare global object");
 });
 
-check("manifest background order and release version 1.0.21", () => {
+check("manifest background order and release version 1.0.23", () => {
   assert.ok(manifest, "manifest required");
   const scripts = (manifest.background && manifest.background.scripts) || [];
   const iP = scripts.indexOf("lib/prompts.js"), iY = scripts.indexOf("lib/youtube.js"), iB = scripts.indexOf("background.js");
   assert.ok(iP >= 0 && iY >= 0 && iB > iP && iB > iY, "lib/prompts.js + lib/youtube.js load before background.js");
-  assert.strictEqual(manifest.version, "1.0.22", "release version");
+  assert.strictEqual(manifest.version, "1.0.23", "release version");
 });
 
 /* ---------- 1.0.6 bug: transcript truncated at 22:52 of a 44:59 video -----
@@ -1483,7 +1483,7 @@ Promise.all([Promise.resolve(sseDone), Promise.resolve(imageDone), Promise.resol
    fallback, widened liveness, touch selection, helper payloads. */
 check("1.0.21: version, model-select wiring, detach transport, mobile surfaces", () => {
   assert.ok(manifest, "manifest required");
-  assert.strictEqual(manifest.version, "1.0.22", "release version");
+  assert.strictEqual(manifest.version, "1.0.23", "release version");
   assert.ok(manifest.browser_specific_settings.gecko_android, "gecko_android block present");
   // Shared picker loads before both helpers.
   const ytEntry = (manifest.content_scripts || []).find((cs) => (cs.js || []).includes("content/youtube.js"));
@@ -1577,9 +1577,9 @@ check("1.0.19: icons built as same-document SVG nodes (no DOMParser import)", ()
    metadata/description block, plus relocation when metadata renders late.
    Toolbar: the coarse-pointer block used to render every button's name as
    static 9px text; now icons-only everywhere, name via long-press. */
-check("1.0.22: panel placement ladder + long-press toolbar labels", () => {
+check("1.0.23: panel placement ladder + long-press toolbar labels", () => {
   assert.ok(manifest, "manifest required");
-  assert.strictEqual(manifest.version, "1.0.22", "release version 1.0.22");
+  assert.strictEqual(manifest.version, "1.0.23", "release version 1.0.23");
   const yt = fs.readFileSync(path.join(EXT, "content/youtube.js"), "utf8");
   // Ladder exists, tried sequentially in priority order.
   const ladder = yt.slice(yt.indexOf("const PANEL_PLACEMENTS"), yt.indexOf("function bestPanelPlacement"));
@@ -1617,4 +1617,115 @@ check("1.0.22: panel placement ladder + long-press toolbar labels", () => {
     "no 9px inline toolbar labels on coarse pointers");
   assert.ok(css.includes(".gs-toolbar-btn--labelled::after"), "labelled state reveals the tooltip");
   assert.ok(coarse.includes(".gs-yt-panel"), "coarse panel width hardening kept");
+});
+
+/* ---------- 1.0.23: Code / Hand / Research tabs + Tools redesign ----------
+   Code: describe -> model JSON {css,js,notes} -> apply via content
+   code-apply (background applyCodeToTab fallback) -> save per-host rules
+   that content scripts auto-apply on visit. Hand: model JSON step plan
+   executed one step at a time; sensitive clicks return needsConfirm and
+   passwords are never filled. Research: background researchSearch over
+   OpenAlex/Crossref/arXiv/Semantic Scholar (lib/research.js loaded before
+   background.js), cited Markdown report via GraphiteResearch.buildResearchPrompt,
+   persisted with the 20-report cap. Tools: search filter, category groups,
+   favorites persisted under graphiteSider.toolFavorites.v1. */
+check("1.0.23: Code/Hand/Research tabs, tools redesign, manifest registration", () => {
+  const html = fs.readFileSync(path.join(EXT, "sidebar/sidebar.html"), "utf8");
+  ["code", "hand", "research"].forEach((v) => {
+    assert.ok(html.includes('data-view="' + v + '"'), "tab for view-" + v);
+    assert.ok(html.includes('id="view-' + v + '"'), "section view-" + v);
+  });
+  ["toolsSearch", "codePrompt", "codeCss", "codeJs", "codeJsEnabled", "codeRuleList",
+   "handTask", "handSteps", "handLog", "researchQuery", "researchSources",
+   "researchDepth", "researchPerSource", "researchReport", "researchList"].forEach((id) => {
+    assert.ok(html.includes('id="' + id + '"'), "sidebar element #" + id);
+  });
+  assert.ok(html.indexOf("../lib/research.js") > -1 && html.indexOf("../lib/research.js") < html.indexOf('"sidebar.js"'),
+    "sidebar loads lib/research.js before sidebar.js");
+  const side = fs.readFileSync(path.join(EXT, "sidebar/sidebar.js"), "utf8");
+  ["codeGenerate", "codeApply", "codeRemove", "renderCodeRules", "handPlan", "runHandStep",
+   "handRunAll", "runResearch", "renderResearchList", "renderResearchSources"].forEach((fn) => {
+    assert.ok(side.includes("function " + fn), "sidebar implements " + fn);
+  });
+  assert.ok(side.includes("function sendTabCommand"), "sidebar sends tab commands");
+  assert.ok(side.includes("graphiteSider.toolFavorites.v1"), "tool favorites storage key");
+  assert.ok(side.includes("Favorites"), "tools favorites group");
+  assert.ok(side.includes("{ id: 'summarize-page'") && side.includes("cat: 'Read'"), "tools carry categories");
+  assert.ok(side.includes("researchSearch"), "sidebar calls background researchSearch");
+  assert.ok(side.includes("GraphiteResearch.buildResearchPrompt"), "report prompt built from sources");
+  assert.ok(!/innerHTML\s*=/.test(side), "sidebar never assigns innerHTML");
+
+  const bg = fs.readFileSync(path.join(EXT, "background.js"), "utf8");
+  ["researchSearch", "listResearchReports", "getResearchReport", "saveResearchReport",
+   "deleteResearchReport", "listCodeRules", "saveCodeRule", "deleteCodeRule",
+   "setCodeRuleEnabled", "applyCodeToTab", "removeCodeFromTab", "handStep", "fetchJson"].forEach((t) => {
+    assert.ok(bg.includes("case '" + t + "'"), "background handles " + t);
+  });
+  const bgScripts = (manifest.background && manifest.background.scripts) || [];
+  assert.ok(bgScripts.indexOf("lib/research.js") > -1 && bgScripts.indexOf("lib/research.js") < bgScripts.indexOf("background.js"),
+    "lib/research.js loads before background.js");
+  assert.ok(bgScripts.indexOf("lib/pdf.js") > -1, "lib/pdf.js still registered in background");
+
+  const storage = fs.readFileSync(path.join(EXT, "lib/storage.js"), "utf8");
+  assert.ok(storage.includes("graphiteSider.rules.v1"), "rules storage key");
+  assert.ok(storage.includes("graphiteSider.research.v1"), "research storage key");
+
+  const content = fs.readFileSync(path.join(EXT, "content/content.js"), "utf8");
+  ["code-apply", "code-remove", "code-status", "page-outline", "hand-click", "hand-fill", "hand-extract", "hand-scroll"].forEach((c) => {
+    assert.ok(content.includes("case '" + c + "'"), "content command " + c);
+  });
+  assert.ok(content.includes("needsConfirm"), "sensitive clicks ask via needsConfirm");
+  assert.ok(content.includes("password"), "password fill guard present");
+  assert.ok(content.includes("applySavedCodeRules"), "saved rules auto-apply on visit");
+
+  const research = fs.readFileSync(path.join(EXT, "lib/research.js"), "utf8");
+  ["openalex", "crossref", "arxiv", "semanticscholar"].forEach((s) => {
+    assert.ok(research.includes("'" + s + "'"), "research source " + s);
+  });
+  assert.ok(research.includes("abstract_inverted_index"), "OpenAlex abstracts reconstructed");
+  assert.ok(!research.includes("new DOMParser"), "arXiv parsing never constructs a DOMParser");
+});
+
+check("1.0.23: research lib parses, dedupes, and builds cited prompts", () => {
+  const sandbox = loadLibInSandbox("lib/research.js");
+  const R = sandbox.GraphiteResearch;
+  assert.ok(R && typeof R.buildResearchPrompt === "function", "GraphiteResearch exported");
+
+  const openAlex = R.parseOpenAlex({ results: [{
+    title: "Spaced repetition works",
+    publication_year: 2021,
+    authorships: [{ author: { display_name: "Ada Lovelace" } }],
+    primary_location: { landing_page_url: "https://example.org/paper", pdf_url: "", source: { display_name: "J. Memory" } },
+    open_access: { oa_url: "" },
+    doi: "https://doi.org/10.1000/ABC",
+    abstract_inverted_index: { Spaced: [0], repetition: [1], works: [2] },
+    cited_by_count: 7
+  }] });
+  assert.strictEqual(openAlex.length, 1, "one OpenAlex source");
+  assert.strictEqual(openAlex[0].abstract, "Spaced repetition works", "inverted index rebuilt");
+  assert.strictEqual(openAlex[0].doi, "10.1000/abc", "DOI normalized");
+
+  const crossref = R.parseCrossref({ message: { items: [{
+    title: ["Spaced Repetition Works"], author: [{ given: "Ada", family: "Lovelace" }],
+    published: { "date-parts": [[2021]] }, "container-title": ["J. Memory"],
+    URL: "https://doi.org/10.1000/ABC", DOI: "10.1000/ABC", abstract: ""
+  }] } });
+  assert.strictEqual(R.dedupeSources(openAlex.concat(crossref)).length, 1, "DOI/Title dedupe keeps one");
+
+  const arxiv = R.parseArxiv("<feed><entry><title>Preprint on memory</title><id>http://arxiv.org/abs/2401.00001v1</id>" +
+    "<published>2024-01-02T00:00:00Z</published><summary>Abstract here.</summary>" +
+    "<author><name>Grace Hopper</name></author>" +
+    '<link href="https://arxiv.org/abs/2401.00001v1" rel="alternate"/>' +
+    '<link href="https://arxiv.org/pdf/2401.00001v1" rel="related" title="pdf"/></entry></feed>');
+  assert.strictEqual(arxiv.length, 1, "arXiv entry parsed");
+  assert.strictEqual(arxiv[0].pdfUrl, "https://arxiv.org/pdf/2401.00001v1", "arXiv pdf link found");
+  assert.strictEqual(arxiv[0].year, 2024, "arXiv year from published");
+
+  const prompt = R.buildResearchPrompt("Does spaced repetition help?", openAlex, { depth: "standard" });
+  assert.ok(prompt.includes("[1] Spaced repetition works"), "numbered source list");
+  assert.ok(prompt.includes("## Executive summary"), "report structure heading");
+  assert.ok(prompt.includes("## Sources"), "sources heading required");
+  assert.ok(/\[n\]/.test(prompt), "inline citation instruction");
+  const empty = R.buildResearchPrompt("Q", [], {});
+  assert.ok(empty.includes("no sources are available"), "empty sources stated plainly");
 });

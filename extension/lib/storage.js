@@ -43,6 +43,8 @@
   var PENDING_KEY = 'graphiteSider.pendingAction';
   var HISTORY_KEY = 'graphiteSider.history.v1';
   var JOBS_KEY = 'graphiteSider.jobs.v1';
+  var RULES_KEY = 'graphiteSider.rules.v1';
+  var RESEARCH_KEY = 'graphiteSider.research.v1';
   var SYNC_KEY = 'graphiteSider.settings.sync.v1';
   var HISTORY_LIMIT = 100;
   // storage.sync allows 8192 bytes per item (key + value); stay well under.
@@ -735,11 +737,167 @@
     }).catch(function () { return {}; });
   }
 
+  /* --- Code rules ---------------------------------------------------------
+   * Per-host Code rules (custom prompt / CSS / JS injected on matching
+   * hosts). Array, capped at 100. Rule shape passthrough:
+   * { id, host, prompt, css, js, jsEnabled, enabled, createdAt, updatedAt }. */
+  var RULES_LIMIT = 100;
+
+  function readRules() {
+    return rawGet(RULES_KEY).then(function (items) {
+      var list = items[RULES_KEY];
+      return Array.isArray(list) ? list : [];
+    }).catch(function () { return []; });
+  }
+
+  function writeRules(list) {
+    var payload = {};
+    payload[RULES_KEY] = list.slice(0, RULES_LIMIT);
+    return rawSet(payload);
+  }
+
+  function listCodeRules() {
+    return readRules();
+  }
+
+  function saveCodeRule(rule) {
+    if (!rule || typeof rule !== 'object') return Promise.resolve(null);
+    return readRules().then(function (list) {
+      var now = Date.now();
+      var id = rule.id || uid('rule');
+      var existing = null;
+      list.forEach(function (r) { if (r && r.id === id) existing = r; });
+      var record = Object.assign({}, existing || {}, rule, {
+        id: id,
+        createdAt: (existing && existing.createdAt) || rule.createdAt || now,
+        updatedAt: now
+      });
+      var out;
+      if (existing) {
+        out = list.map(function (r) { return (r && r.id === id) ? record : r; });
+      } else {
+        out = [record].concat(list).slice(0, RULES_LIMIT);
+      }
+      return writeRules(out).then(function () { return record; });
+    }).catch(function () { return null; });
+  }
+
+  function deleteCodeRule(id) {
+    if (!id) return Promise.resolve(false);
+    return readRules().then(function (list) {
+      var out = list.filter(function (r) { return !(r && r.id === id); });
+      if (out.length === list.length) return false;
+      return writeRules(out).then(function () { return true; });
+    }).catch(function () { return false; });
+  }
+
+  function setCodeRuleEnabled(id, enabled) {
+    if (!id) return Promise.resolve(null);
+    return readRules().then(function (list) {
+      var record = null;
+      var out = list.map(function (r) {
+        if (r && r.id === id) {
+          record = Object.assign({}, r, { enabled: !!enabled, updatedAt: Date.now() });
+          return record;
+        }
+        return r;
+      });
+      if (!record) return null;
+      return writeRules(out).then(function () { return record; });
+    }).catch(function () { return null; });
+  }
+
+  /* --- Research reports ---------------------------------------------------
+   * Saved deep-research reports. Map keyed by id, capped at the newest
+   * 20 by updatedAt. Report shape passthrough plus trimming:
+   * { id, query, title, report, sources, createdAt, updatedAt }. */
+  var RESEARCH_LIMIT = 20;
+  var RESEARCH_REPORT_MAX = 60000;
+  var RESEARCH_SOURCES_MAX = 30;
+
+  function readResearch() {
+    return rawGet(RESEARCH_KEY).then(function (items) {
+      var map = items[RESEARCH_KEY];
+      return (map && typeof map === 'object' && !Array.isArray(map)) ? map : {};
+    }).catch(function () { return {}; });
+  }
+
+  function pruneResearchMap(map) {
+    var entries = Object.keys(map || {}).map(function (k) { return map[k]; })
+      .filter(function (r) { return r && r.id; });
+    entries.sort(function (a, b) { return (b.updatedAt || 0) - (a.updatedAt || 0); });
+    var out = {};
+    entries.slice(0, RESEARCH_LIMIT).forEach(function (r) { out[r.id] = r; });
+    return out;
+  }
+
+  function saveResearchReport(report) {
+    if (!report || typeof report !== 'object') return Promise.resolve(null);
+    return readResearch().then(function (map) {
+      var now = Date.now();
+      var id = report.id || uid('research');
+      var existing = map[id] || null;
+      var record = Object.assign({}, existing || {}, report, {
+        id: id,
+        createdAt: (existing && existing.createdAt) || report.createdAt || now,
+        updatedAt: now
+      });
+      if (typeof record.report === 'string' && record.report.length > RESEARCH_REPORT_MAX) {
+        record.report = record.report.slice(0, RESEARCH_REPORT_MAX);
+      }
+      if (Array.isArray(record.sources) && record.sources.length > RESEARCH_SOURCES_MAX) {
+        record.sources = record.sources.slice(0, RESEARCH_SOURCES_MAX);
+      }
+      map[id] = record;
+      var payload = {};
+      payload[RESEARCH_KEY] = pruneResearchMap(map);
+      return rawSet(payload).then(function () { return record; });
+    }).catch(function () { return null; });
+  }
+
+  function getResearchReport(id) {
+    if (!id) return Promise.resolve(null);
+    return readResearch().then(function (map) {
+      return map[id] || null;
+    }).catch(function () { return null; });
+  }
+
+  function listResearchReports() {
+    return readResearch().then(function (map) {
+      var entries = Object.keys(map).map(function (k) { return map[k]; })
+        .filter(function (r) { return r && r.id; });
+      entries.sort(function (a, b) { return (b.updatedAt || 0) - (a.updatedAt || 0); });
+      return entries.map(function (r) {
+        return {
+          id: r.id,
+          query: r.query || '',
+          title: r.title || '',
+          createdAt: r.createdAt || 0,
+          updatedAt: r.updatedAt || 0,
+          sourceCount: Array.isArray(r.sources) ? r.sources.length : 0
+        };
+      });
+    }).catch(function () { return []; });
+  }
+
+  function deleteResearchReport(id) {
+    if (!id) return Promise.resolve(false);
+    return readResearch().then(function (map) {
+      if (!map[id]) return false;
+      delete map[id];
+      var payload = {};
+      payload[RESEARCH_KEY] = map;
+      return rawSet(payload).then(function () { return true; });
+    }).catch(function () { return false; });
+  }
+
   global.GraphiteStorage = {
     STORAGE_KEY: STORAGE_KEY,
     PENDING_KEY: PENDING_KEY,
     HISTORY_KEY: HISTORY_KEY,
     JOBS_KEY: JOBS_KEY,
+    RULES_KEY: RULES_KEY,
+    RESEARCH_KEY: RESEARCH_KEY,
     SYNC_KEY: SYNC_KEY,
     HISTORY_LIMIT: HISTORY_LIMIT,
     DEFAULT_PROVIDERS: DEFAULT_PROVIDERS,
@@ -760,6 +918,14 @@
     saveChatJob: saveChatJob,
     getChatJob: getChatJob,
     pruneChatJobs: pruneChatJobs,
+    listCodeRules: listCodeRules,
+    saveCodeRule: saveCodeRule,
+    deleteCodeRule: deleteCodeRule,
+    setCodeRuleEnabled: setCodeRuleEnabled,
+    saveResearchReport: saveResearchReport,
+    getResearchReport: getResearchReport,
+    listResearchReports: listResearchReports,
+    deleteResearchReport: deleteResearchReport,
     clearCache: function () { cache = null; },
     _rawGet: rawGet,
     _rawSet: rawSet,

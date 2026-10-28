@@ -684,6 +684,48 @@ try {
   }).catch(function () {});
 } catch (e) { /* storage unavailable */ }
 
+/* --- Helpers for research / tab-action message cases -------------------------
+ * fetchJson is restricted to research API hosts over https and returns the
+ * raw body text; callers parse JSON/XML/HTML themselves. */
+var FETCH_JSON_ALLOWED_HOSTS = [
+  'api.openalex.org', 'api.crossref.org', 'export.arxiv.org',
+  'api.semanticscholar.org', 'html.duckduckgo.com', 'lite.duckduckgo.com'
+];
+function fetchJsonText(rawUrl) {
+  var parsed;
+  try { parsed = new URL(String(rawUrl || '')); } catch (e) {
+    return Promise.reject(new Error('fetchJson: host not allowed'));
+  }
+  if (parsed.protocol !== 'https:' || FETCH_JSON_ALLOWED_HOSTS.indexOf(parsed.hostname) === -1) {
+    return Promise.reject(new Error('fetchJson: host not allowed'));
+  }
+  var controller = (typeof AbortController !== 'undefined') ? new AbortController() : null;
+  var timer = null;
+  var fetchOpts = { headers: { Accept: 'application/json, text/html, application/atom+xml' } };
+  if (controller) {
+    fetchOpts.signal = controller.signal;
+    timer = setTimeout(function () { try { controller.abort(); } catch (e) {} }, 20000);
+  }
+  return fetch(String(rawUrl), fetchOpts).then(function (r) {
+    return r.text().then(function (text) {
+      if (timer) clearTimeout(timer);
+      return { status: r.status, text: text };
+    });
+  }).catch(function (e) {
+    if (timer) clearTimeout(timer);
+    throw e;
+  });
+}
+
+function resolveTabIdForMessage(tabId, label) {
+  if (tabId != null) return Promise.resolve(tabId);
+  return queryActiveTab().then(function (tabs) {
+    var id = tabs && tabs[0] && tabs[0].id;
+    if (id == null) throw new Error(label + ': no active tab');
+    return id;
+  });
+}
+
 /* --- One-shot message router -------------------------------------------------
  * Sidebar / content scripts send runtime messages; return value is sent back
  * as { ok:true, result } or { ok:false, error }. */
@@ -818,6 +860,160 @@ function handleMessage(msg) {
     }
     case 'getChatJob':
       return GraphiteStorage.getChatJob(msg.requestId);
+    case 'fetchJson':
+      return fetchJsonText(msg.url);
+    case 'researchSearch': {
+      if (typeof GraphiteResearch === 'undefined' || !GraphiteResearch ||
+          typeof GraphiteResearch.buildSourceUrl !== 'function' ||
+          typeof GraphiteResearch.dedupeSources !== 'function') {
+        return Promise.reject(new Error('researchSearch: GraphiteResearch (lib/research.js) is not loaded'));
+      }
+      if (typeof GraphiteStorage === 'undefined' || !GraphiteStorage ||
+          typeof GraphiteStorage.saveResearchReport !== 'function') {
+        return Promise.reject(new Error('researchSearch: GraphiteStorage research storage is not available'));
+      }
+      var rsQuery = String(msg.query || '').trim();
+      var rsSources = (msg.sources && msg.sources.length)
+        ? msg.sources.filter(function (s) {
+            return s === 'openalex' || s === 'crossref' || s === 'arxiv' || s === 'semanticscholar';
+          })
+        : ['openalex', 'crossref', 'arxiv', 'semanticscholar'];
+      var rsPerSource = (msg.perSource && msg.perSource > 0) ? Math.floor(Number(msg.perSource)) : 6;
+      var rsErrors = [];
+      var rsJobs = rsSources.map(function (sourceId) {
+        return Promise.resolve().then(function () {
+          var url = GraphiteResearch.buildSourceUrl(sourceId, rsQuery, rsPerSource);
+          return fetchJsonText(url).then(function (res) { return res.text; });
+        }).then(function (text) {
+          if (sourceId === 'arxiv') {
+            return typeof GraphiteResearch.parseArxiv === 'function' ? GraphiteResearch.parseArxiv(text) : [];
+          }
+          var data = JSON.parse(text);
+          if (sourceId === 'openalex') {
+            return typeof GraphiteResearch.parseOpenAlex === 'function' ? GraphiteResearch.parseOpenAlex(data) : [];
+          }
+          if (sourceId === 'crossref') {
+            return typeof GraphiteResearch.parseCrossref === 'function' ? GraphiteResearch.parseCrossref(data) : [];
+          }
+          return typeof GraphiteResearch.parseSemanticScholar === 'function' ? GraphiteResearch.parseSemanticScholar(data) : [];
+        }).catch(function (e) {
+          rsErrors.push({ source: sourceId, error: errorMessage(e) });
+          return [];
+        });
+      });
+      return Promise.all(rsJobs).then(function (lists) {
+        var combined = [];
+        lists.forEach(function (list) {
+          (Array.isArray(list) ? list : []).forEach(function (item) { combined.push(item); });
+        });
+        var deduped = GraphiteResearch.dedupeSources(combined);
+        var out = { query: rsQuery, sources: deduped, errors: rsErrors };
+        if (msg.save === false) return out;
+        return Promise.resolve(GraphiteStorage.saveResearchReport({
+          query: rsQuery, title: rsQuery, sources: deduped, report: ''
+        })).then(function (saved) {
+          if (saved && saved.id != null) out.id = saved.id;
+          return out;
+        });
+      });
+    }
+    case 'listResearchReports':
+      return GraphiteStorage.listResearchReports();
+    case 'getResearchReport':
+      return GraphiteStorage.getResearchReport(msg.id);
+    case 'saveResearchReport':
+      return GraphiteStorage.saveResearchReport(msg.report || msg);
+    case 'deleteResearchReport':
+      return GraphiteStorage.deleteResearchReport(msg.id);
+    case 'listCodeRules':
+      return GraphiteStorage.listCodeRules();
+    case 'saveCodeRule':
+      return GraphiteStorage.saveCodeRule(msg.rule || msg);
+    case 'deleteCodeRule':
+      return GraphiteStorage.deleteCodeRule(msg.id);
+    case 'setCodeRuleEnabled':
+      return GraphiteStorage.setCodeRuleEnabled(msg.id, msg.enabled);
+    case 'applyCodeToTab': {
+      var applyCss = JSON.stringify(String((msg && msg.css) || ''));
+      var applyJs = JSON.stringify(String((msg && msg.js) || ''));
+      var applyJsEnabled = (msg && msg.jsEnabled === true) ? 'true' : 'false';
+      var applyCode = '(function(){var css=' + applyCss + ',jsSrc=' + applyJs + ',jsEnabled=' + applyJsEnabled + ',result={ok:true,jsError:""};' +
+        'var old=document.getElementById("graphite-sider-code-style");if(old&&old.parentNode)old.parentNode.removeChild(old);' +
+        'if(css){var st=document.createElement("style");st.id="graphite-sider-code-style";st.type="text/css";st.textContent=css;(document.head||document.documentElement).appendChild(st);}' +
+        'if(jsSrc&&jsEnabled){try{new Function(jsSrc)();}catch(e){result.jsError=String(e&&e.message?e.message:e);}}' +
+        'return result;})();';
+      var applyTabIdP = resolveTabIdForMessage(msg && msg.tabId, 'applyCodeToTab');
+      return applyTabIdP.then(function (tid) {
+        return executeInTab(tid, applyCode).then(function (res) {
+          var r = (res && res[0]) || {};
+          return { ok: true, tabId: tid, jsError: r.jsError || '' };
+        });
+      });
+    }
+    case 'removeCodeFromTab': {
+      var removeCode = '(function(){var el=document.getElementById("graphite-sider-code-style");' +
+        'if(el&&el.parentNode)el.parentNode.removeChild(el);return {ok:true};})();';
+      var removeTabIdP = resolveTabIdForMessage(msg && msg.tabId, 'removeCodeFromTab');
+      return removeTabIdP.then(function (tid) {
+        return executeInTab(tid, removeCode).then(function () { return { ok: true, tabId: tid }; });
+      });
+    }
+    case 'handStep': {
+      var hsAction = String((msg && msg.action) || '');
+      var hsTabIdP = resolveTabIdForMessage(msg && msg.tabId, 'handStep');
+      if (hsAction === 'navigate') {
+        var hsUrl = String((msg && msg.url) || '');
+        if (!/^https?:\/\//i.test(hsUrl)) return Promise.reject(new Error('handStep: navigate requires an http(s) URL'));
+        return hsTabIdP.then(function (tid) {
+          if (!ext.tabs || typeof ext.tabs.update !== 'function') throw new Error('handStep: tabs.update is unavailable');
+          return ext.tabs.update(tid, { url: hsUrl }).then(function () { return { ok: true, tabId: tid, url: hsUrl }; });
+        });
+      }
+      if (hsAction === 'wait') {
+        var hsMs = Math.min(Math.max(Number((msg && msg.ms) || (msg && msg.amount) || 800) || 800, 0), 5000);
+        return hsTabIdP.then(function (tid) {
+          return new Promise(function (resolve) { setTimeout(function () { resolve({ ok: true, tabId: tid }); }, hsMs); });
+        });
+      }
+      if (hsAction !== 'click' && hsAction !== 'fill' && hsAction !== 'extract' && hsAction !== 'scroll') {
+        return Promise.reject(new Error('handStep: unknown action: ' + hsAction));
+      }
+      var hsCode;
+      if (hsAction === 'click') {
+        hsCode = '(function(){var sel=' + JSON.stringify(String((msg && msg.selector) || '')) + ',want=' + JSON.stringify(String((msg && msg.text) || '')) + ',el=null;' +
+          'if(sel){try{el=document.querySelector(sel);}catch(e){el=null;}}' +
+          'if(!el&&want){var nodes=Array.prototype.slice.call(document.querySelectorAll("button,a,[role=button],input[type=button],input[type=submit]"));' +
+          'el=nodes.filter(function(n){var t=((n.textContent||"")+" "+(n.value||"")).trim().toLowerCase();return t.indexOf(want.toLowerCase())!==-1;})[0]||null;}' +
+          'if(!el)return {ok:false,error:"element not found"};' +
+          'try{el.scrollIntoView({block:"center",inline:"center"});}catch(e){}' +
+          'var prev=el.style.outline;el.style.outline="2px solid #e8b34b";' +
+          'var info={tag:el.tagName||"",text:String(el.textContent||el.value||"").trim().slice(0,200),ok:true};' +
+          'try{el.click();}finally{setTimeout(function(){el.style.outline=prev;},600);}' +
+          'return info;})();';
+      } else if (hsAction === 'fill') {
+        hsCode = '(function(){var sel=' + JSON.stringify(String((msg && msg.selector) || '')) + ',want=' + JSON.stringify(String((msg && msg.text) || '')) + ',val=' + JSON.stringify(String((msg && msg.value != null ? msg.value : (msg.text == null ? '' : msg.text))) || '') + ',el=null;' +
+          'if(sel){try{el=document.querySelector(sel);}catch(e){el=null;}}' +
+          'if(!el&&want){var fields=Array.prototype.slice.call(document.querySelectorAll("input,textarea,select,[contenteditable=true]"));' +
+          'el=fields.filter(function(n){var ph=(n.getAttribute("placeholder")||"");var al=(n.getAttribute("aria-label")||"");var lb="";if(n.id){var l=document.querySelector("label[for=\\""+n.id+"\\"]");if(l)lb=l.textContent||"";}' +
+          'var hay=(ph+" "+al+" "+lb+" "+(n.name||"")).toLowerCase();return hay.indexOf(want.toLowerCase())!==-1;})[0]||null;}' +
+          'if(!el)return {ok:false,error:"field not found"};' +
+          'if(String(el.type||"").toLowerCase()==="password")throw new Error("handStep: refusing to fill a password field");' +
+          'try{el.focus();}catch(e){}' +
+          'if(el.isContentEditable){el.textContent=val;}' +
+          'else{var proto=el.tagName==="TEXTAREA"?window.HTMLTextAreaElement.prototype:window.HTMLInputElement.prototype;' +
+          'var desc=Object.getOwnPropertyDescriptor(proto,"value");' +
+          'if(desc&&desc.set)desc.set.call(el,val);else el.value=val;}' +
+          'el.dispatchEvent(new Event("input",{bubbles:true}));el.dispatchEvent(new Event("change",{bubbles:true}));' +
+          'return {ok:true,tag:el.tagName||""};})();';
+      } else if (hsAction === 'extract') {
+        hsCode = '(function(){return {text:document.body?String(document.body.innerText||"").slice(0,20000):"",title:document.title,url:location.href};})();';
+      } else {
+        hsCode = '(function(){window.scrollBy(0,' + JSON.stringify(Number((msg && (msg.amount != null ? msg.amount : msg.value)) || 600) || 600) + ');return {ok:true};})();';
+      }
+      return hsTabIdP.then(function (tid) {
+        return executeInTab(tid, hsCode).then(function (res) { return (res && res[0]) || { ok: false, error: 'empty result' }; });
+      });
+    }
     case 'features':
       return Promise.resolve(FEATURES);
     case 'ping':

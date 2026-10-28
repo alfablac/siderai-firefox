@@ -42,6 +42,7 @@
   // Data captured for the open result card so "Try another tone" can re-run.
   let cardContext = { text: '', rect: null, kind: '' };
   let translateState = { active: false, entries: [], running: false };
+  let codeStyleState = { css: '', observer: null };
 
   function targetLang() {
     return settings.translateLanguage || settings.targetLanguage || settings.language || 'English';
@@ -1787,6 +1788,155 @@
     }
   }
 
+  // ------------------------------------------------- code / hand helpers
+
+  const CODE_STYLE_ID = 'graphite-sider-code-style';
+
+  function stopCodeWatcher() {
+    if (codeStyleState.observer) {
+      try { codeStyleState.observer.disconnect(); } catch (e) { /* ignore */ }
+      codeStyleState.observer = null;
+    }
+  }
+
+  function startCodeWatcher() {
+    stopCodeWatcher();
+    if (!codeStyleState.css || typeof MutationObserver === 'undefined') return;
+    const observer = new MutationObserver(() => {
+      if (!codeStyleState.css) return;
+      if (document.getElementById(CODE_STYLE_ID)) return;
+      const style = document.createElement('style');
+      style.id = CODE_STYLE_ID;
+      style.textContent = codeStyleState.css;
+      (document.head || document.documentElement).appendChild(style);
+    });
+    try { observer.observe(document.documentElement, { childList: true, subtree: true }); } catch (e) { return; }
+    codeStyleState.observer = observer;
+  }
+
+  let lastRuleHref = '';
+  let codeRuleWatchStarted = false;
+
+  const normalizeRuleHost = (host) => String(host || '').trim()
+    .replace(/^https?:\/\//i, '')
+    .split('/')[0];
+
+  const ruleHostMatches = (rule, hostname) => {
+    const host = normalizeRuleHost(rule && rule.host);
+    if (!host || !hostname) return false;
+    return hostname === host || hostname.endsWith('.' + host);
+  };
+
+  async function applySavedCodeRules() {
+    try {
+      const raw = await runtime.sendMessage({ type: 'listCodeRules' });
+      if (!raw) return;
+      const rules = (raw && typeof raw === 'object' && 'ok' in raw && ('result' in raw || 'error' in raw))
+        ? (raw.ok ? raw.result : [])
+        : raw;
+      if (!Array.isArray(rules)) return;
+      const hostname = location.hostname;
+      const rule = rules.find((r) => r && r.enabled !== false && ruleHostMatches(r, hostname));
+      if (!rule) return;
+      lastRuleHref = location.href;
+      if (rule.css) {
+        const existing = document.getElementById(CODE_STYLE_ID);
+        if (existing) existing.remove();
+        codeStyleState.css = typeof rule.css === 'string' ? rule.css : '';
+        if (codeStyleState.css) {
+          const style = document.createElement('style');
+          style.id = CODE_STYLE_ID;
+          style.textContent = codeStyleState.css;
+          (document.head || document.documentElement).appendChild(style);
+        }
+        startCodeWatcher();
+      }
+      if (rule.js && rule.jsEnabled) {
+        try { new Function(String(rule.js))(); } catch (e) { try { console.debug('graphite-sider saved rule js', e); } catch (err) { /* ignore */ } }
+      }
+    } catch (e) { try { console.debug('graphite-sider applySavedCodeRules', e); } catch (err) { /* ignore */ } }
+  }
+
+  function startCodeRuleSpaWatch() {
+    if (codeRuleWatchStarted) return;
+    codeRuleWatchStarted = true;
+    lastRuleHref = location.href;
+    try { window.addEventListener('popstate', () => { applySavedCodeRules().catch(() => {}); }); } catch (e) { /* ignore */ }
+    try {
+      setInterval(() => {
+        if (location.href === lastRuleHref) return;
+        const prevHref = lastRuleHref;
+        lastRuleHref = location.href;
+        let hostnameChanged = false;
+        try { hostnameChanged = new URL(location.href).hostname !== new URL(prevHref).hostname; } catch (e) { hostnameChanged = true; }
+        if (hostnameChanged || (codeStyleState.css && !document.getElementById(CODE_STYLE_ID))) {
+          applySavedCodeRules().catch(() => {});
+        }
+      }, 2000);
+    } catch (e) { /* ignore */ }
+  }
+
+  function isVisible(el) {
+    if (!el || el.nodeType !== 1) return false;
+    try {
+      const style = window.getComputedStyle(el);
+      if (style.display === 'none' || style.visibility === 'hidden' || Number(style.opacity) === 0) return false;
+      const rect = el.getBoundingClientRect();
+      return rect.width > 0 && rect.height > 0;
+    } catch (e) { return false; }
+  }
+
+  function elText(el) {
+    if (!el) return '';
+    const raw = el.isContentEditable
+      ? (el.innerText || el.textContent || '')
+      : ('value' in el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.tagName === 'SELECT')
+        ? (el.value || el.getAttribute('value') || '')
+        : (el.innerText || el.textContent || el.getAttribute('value') || ''));
+    return String(raw || '').replace(/\s+/g, ' ').trim();
+  }
+
+  function fieldLabel(el) {
+    if (!el) return '';
+    let label = '';
+    try {
+      const id = el.getAttribute('id');
+      if (id) {
+        const escaped = (typeof CSS !== 'undefined' && CSS.escape) ? CSS.escape(id) : id.replace(/["\\]/g, '\\$&');
+        const forLabel = document.querySelector('label[for="' + escaped + '"]');
+        if (forLabel) label = elText(forLabel);
+      }
+      if (!label && el.closest) {
+        const wrap = el.closest('label');
+        if (wrap) label = elText(wrap);
+      }
+      if (!label) label = el.getAttribute('aria-label') || '';
+      if (!label) {
+        const labelledBy = el.getAttribute('aria-labelledby');
+        if (labelledBy) {
+          label = labelledBy.split(/\s+/).map((part) => {
+            const node = document.getElementById(part);
+            return node ? elText(node) : '';
+          }).filter(Boolean).join(' ');
+        }
+      }
+    } catch (e) { /* ignore */ }
+    return truncate(label || el.getAttribute('placeholder') || el.getAttribute('name') || '', 120);
+  }
+
+  function findFieldByLabel(label) {
+    const needle = String(label || '').trim().toLowerCase();
+    if (!needle) return null;
+    const fields = Array.from(document.querySelectorAll('input, textarea, select, [contenteditable="true"], [contenteditable=""]'));
+    const match = (value) => String(value || '').toLowerCase().includes(needle);
+    return fields.find((el) => match(fieldLabel(el))) ||
+      fields.find((el) => match(el.getAttribute('placeholder'))) ||
+      fields.find((el) => match(el.getAttribute('aria-label'))) ||
+      fields.find((el) => match(el.getAttribute('name'))) ||
+      fields.find((el) => match(el.getAttribute('id'))) ||
+      null;
+  }
+
   // ------------------------------------------------------------ commands
 
   function currentSelectionOrAsk(anchorRect) {
@@ -1852,6 +2002,139 @@
         if (info) showToolbar(info.rect, info.text);
         return { ok: true };
       }
+      case 'code-apply': {
+        const existing = document.getElementById(CODE_STYLE_ID);
+        if (existing) existing.remove();
+        codeStyleState.css = typeof payload.css === 'string' ? payload.css : '';
+        if (codeStyleState.css) {
+          const style = document.createElement('style');
+          style.id = CODE_STYLE_ID;
+          style.textContent = codeStyleState.css;
+          (document.head || document.documentElement).appendChild(style);
+        }
+        startCodeWatcher();
+        let jsError = null;
+        if (payload.js && payload.jsEnabled) {
+          try { new Function(String(payload.js))(); } catch (e) { jsError = String(e && e.message || e); }
+        }
+        return { ok: true, jsError };
+      }
+      case 'code-remove': {
+        const node = document.getElementById(CODE_STYLE_ID);
+        if (node) node.remove();
+        stopCodeWatcher();
+        codeStyleState.css = '';
+        return { ok: true };
+      }
+      case 'code-status':
+        return {
+          applied: !!document.getElementById(CODE_STYLE_ID),
+          host: location.hostname,
+          url: location.href,
+          title: document.title
+        };
+      case 'page-outline': {
+        const headings = Array.from(document.querySelectorAll('h1, h2, h3, h4, h5, h6'))
+          .filter(isVisible)
+          .slice(0, 40)
+          .map((el) => ({ level: Number(el.tagName.slice(1)) || 1, text: truncate(elText(el), 120) }))
+          .filter((item) => item.text);
+        const landmarkNodes = Array.from(document.querySelectorAll(
+          'header, nav, main, footer, aside, section, article, form, [role="banner"], [role="navigation"], [role="main"], [role="contentinfo"], [role="search"], [role="complementary"]'
+        ));
+        const landmarks = [];
+        const seenLandmarks = new Set();
+        landmarkNodes.forEach((el) => {
+          if (landmarks.length >= 30) return;
+          const tag = el.tagName.toLowerCase();
+          const role = el.getAttribute('role') || '';
+          const summary = role ? tag + '[role=' + role + ']' : tag;
+          if (seenLandmarks.has(summary)) return;
+          seenLandmarks.add(summary);
+          const name = el.getAttribute('aria-label') || el.getAttribute('id') || '';
+          landmarks.push(truncate(name ? summary + ' ' + name : summary, 120));
+        });
+        const links = Array.from(document.querySelectorAll('a[href]'))
+          .filter(isVisible)
+          .map((el) => ({ text: truncate(elText(el), 80), href: truncate(el.href || el.getAttribute('href') || '', 300) }))
+          .filter((item) => item.text.length >= 3 && item.text.length <= 80)
+          .slice(0, 25);
+        const buttons = Array.from(document.querySelectorAll('button, [role="button"], input[type="button"], input[type="submit"]'))
+          .filter(isVisible)
+          .map((el) => ({ text: truncate(elText(el) || el.getAttribute('aria-label') || '', 80) }))
+          .filter((item) => item.text)
+          .slice(0, 25);
+        const fields = Array.from(document.querySelectorAll('input, textarea, select, [contenteditable="true"], [contenteditable=""]'))
+          .filter(isVisible)
+          .slice(0, 25)
+          .map((el) => {
+            const tag = el.tagName.toLowerCase();
+            const type = el.isContentEditable ? 'contenteditable' : (el.getAttribute('type') || (tag === 'input' ? 'text' : '')).toLowerCase();
+            const item = { tag, type };
+            const label = truncate(fieldLabel(el), 120);
+            const placeholder = truncate(el.getAttribute('placeholder') || '', 120);
+            if (label) item.label = label;
+            if (placeholder) item.placeholder = placeholder;
+            else if (label) item.placeholder = label;
+            return item;
+          });
+        return { title: document.title, url: location.href, headings, landmarks, links, buttons, fields };
+      }
+      case 'hand-click': {
+        let el = null;
+        if (payload.selector) {
+          try { el = document.querySelector(String(payload.selector)); } catch (e) { el = null; }
+        }
+        if (!el && payload.text) {
+          const needle = String(payload.text).toLowerCase();
+          const candidates = Array.from(document.querySelectorAll(
+            'a, button, [role="button"], input[type="submit"], input[type="button"]'
+          ));
+          el = candidates.find((node) => isVisible(node) && elText(node).toLowerCase().includes(needle)) || null;
+        }
+        if (!el) return { ok: false, error: 'Element not found' };
+        const tag = el.tagName.toLowerCase();
+        const text = truncate(elText(el) || el.getAttribute('aria-label') || '', 120);
+        if (/buy|pay|checkout|purchase|delete|remove|send|submit|post|confirm/i.test(text)) {
+          return { ok: false, needsConfirm: true, tag, text };
+        }
+        try { el.scrollIntoView({ block: 'center', inline: 'center', behavior: 'auto' }); } catch (e) { /* ignore */ }
+        const prevOutline = el.style ? el.style.outline : '';
+        const prevOutlineOffset = el.style ? el.style.outlineOffset : '';
+        if (el.style) { el.style.outline = '2px solid #5ec8c0'; el.style.outlineOffset = '2px'; }
+        setTimeout(() => {
+          if (el.style) { el.style.outline = prevOutline; el.style.outlineOffset = prevOutlineOffset; }
+        }, 600);
+        ['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click'].forEach((type) => {
+          try {
+            const Ctor = type.startsWith('pointer') && typeof PointerEvent !== 'undefined'
+              ? PointerEvent
+              : (typeof MouseEvent !== 'undefined' ? MouseEvent : Event);
+            el.dispatchEvent(new Ctor(type, { bubbles: true, cancelable: true, composed: true, view: window }));
+          } catch (e) { /* ignore */ }
+        });
+        try { el.click(); } catch (e) { /* ignore */ }
+        return { ok: true, tag, text };
+      }
+      case 'hand-fill': {
+        let el = null;
+        if (payload.selector) {
+          try { el = document.querySelector(String(payload.selector)); } catch (e) { el = null; }
+        }
+        if (!el && (payload.label || payload.selector)) {
+          el = findFieldByLabel(payload.label || payload.selector);
+        }
+        if (!el) return { ok: false, error: 'Field not found' };
+        const type = (el.getAttribute('type') || (el.tagName === 'INPUT' ? 'text' : '')).toLowerCase();
+        if (type === 'password') return { ok: false, error: 'Refusing to fill a password field' };
+        applyToField(el, payload.value != null ? String(payload.value) : '', 'replace');
+        return { ok: true, tag: el.tagName.toLowerCase(), type: el.isContentEditable ? 'contenteditable' : type };
+      }
+      case 'hand-extract':
+        return { text: extractPageText(payload.maxLength || 20000), title: document.title, url: location.href };
+      case 'hand-scroll':
+        window.scrollBy(0, payload.amount || 600);
+        return { ok: true, y: window.scrollY };
       default:
         return { ok: false, error: 'Unknown command: ' + command };
     }
@@ -1981,5 +2264,7 @@
     await loadSettings();
     await loadOverlayCss();
     ensureRoot();
+    await applySavedCodeRules();
+    startCodeRuleSpaWatch();
   })();
 })();

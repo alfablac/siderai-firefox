@@ -34,6 +34,9 @@
 <nav class="tabs" role="tablist">
   <button class="tab active" data-view="chat" role="tab">Chat</button>
   <button class="tab" data-view="tools" role="tab">Tools</button>
+  <button class="tab" data-view="code" role="tab">Code</button>
+  <button class="tab" data-view="hand" role="tab">Hand</button>
+  <button class="tab" data-view="research" role="tab">Research</button>
   <button class="tab" data-view="prompts" role="tab">Prompts</button>
   <button class="tab" data-view="history" role="tab">History</button>
 </nav>
@@ -82,8 +85,88 @@
 
   <!-- TOOLS -->
   <section id="view-tools" class="view">
+    <input type="text" id="toolsSearch" placeholder="Search tools..." aria-label="Search tools" autocomplete="off">
     <div class="tool-grid" id="toolGrid"></div>
     <div id="toolPanel" class="tool-panel hidden"></div>
+  </section>
+
+  <!-- CODE -->
+  <section id="view-code" class="view">
+    <div class="row-between"><strong>Code — restyle this site</strong><span id="codeHost" class="chip">No active tab</span></div>
+    <p class="muted small">Describe a change in plain words. The model generates CSS/JS for the current page: preview it, then save it as a rule that auto-applies whenever you visit this site.</p>
+    <label class="field-label" for="codePrompt">What should change?</label>
+    <textarea id="codePrompt" rows="3" placeholder="e.g. Make this site dark, hide the sidebar, enlarge the article text"></textarea>
+    <div class="row">
+      <button id="codeGenerateBtn" class="btn primary small" type="button">Generate</button>
+      <button id="codeOutlineBtn" class="btn small" type="button">Inspect page</button>
+    </div>
+    <label class="field-label" for="codeCss">CSS</label>
+    <textarea id="codeCss" rows="6" placeholder="Generated CSS appears here — edit freely"></textarea>
+    <label class="field-label" for="codeJs">JavaScript (optional)</label>
+    <textarea id="codeJs" rows="4" placeholder="Generated JS appears here — review it before running"></textarea>
+    <label class="toggle"><input type="checkbox" id="codeJsEnabled"> Run JavaScript when applying</label>
+    <div class="row">
+      <button id="codeApplyBtn" class="btn primary small" type="button">Apply preview</button>
+      <button id="codeRemoveBtn" class="btn small" type="button">Remove</button>
+      <button id="codeSaveBtn" class="btn small" type="button">Save rule for this site</button>
+    </div>
+    <p id="codeStatus" class="muted small" role="status" aria-live="polite"></p>
+    <div class="row-between"><strong>Saved rules</strong><span class="muted small">Auto-apply on visit</span></div>
+    <div id="codeRuleList" class="list"></div>
+  </section>
+
+  <!-- HAND -->
+  <section id="view-hand" class="view">
+    <div class="row-between"><strong>Hand — operate the page</strong><span class="muted small">Supervised</span></div>
+    <p class="muted small">Describe a task. The model plans visible steps; run them one at a time or all together and watch the log. Sensitive clicks (buy, send, delete&hellip;) ask first, and password fields are never filled.</p>
+    <label class="field-label" for="handTask">Task</label>
+    <textarea id="handTask" rows="3" placeholder="e.g. Fill the search box with 'firefox', click Search, then extract the results"></textarea>
+    <div class="row">
+      <button id="handPlanBtn" class="btn primary small" type="button">Plan steps</button>
+      <button id="handOutlineBtn" class="btn small" type="button">Inspect page</button>
+    </div>
+    <div id="handSteps"></div>
+    <div class="row">
+      <button id="handRunAllBtn" class="btn primary small" type="button">Run all</button>
+      <button id="handStopBtn" class="btn small danger-outline" type="button">Stop</button>
+    </div>
+    <div id="handLog" class="log-box" aria-live="polite"></div>
+  </section>
+
+  <!-- RESEARCH -->
+  <section id="view-research" class="view">
+    <div class="row-between"><strong>Deep Research</strong><span class="muted small">Academic sources</span></div>
+    <p class="muted small">Searches OpenAlex, Crossref, arXiv and Semantic Scholar (no API key needed), then writes a cited Markdown report. Citations like [1] match the numbered source list.</p>
+    <label class="field-label" for="researchQuery">Research question</label>
+    <textarea id="researchQuery" rows="3" placeholder="e.g. What is known about spaced repetition for long-term retention?"></textarea>
+    <div id="researchSources" class="check-row">
+      <label><input type="checkbox" value="openalex" checked> OpenAlex</label>
+      <label><input type="checkbox" value="crossref" checked> Crossref</label>
+      <label><input type="checkbox" value="arxiv" checked> arXiv</label>
+      <label><input type="checkbox" value="semanticscholar" checked> Semantic Scholar</label>
+    </div>
+    <div class="row">
+      <select id="researchDepth" title="Report depth" aria-label="Report depth">
+        <option value="quick">Quick</option>
+        <option value="standard" selected>Standard</option>
+        <option value="deep">Deep</option>
+      </select>
+      <select id="researchPerSource" title="Results per source" aria-label="Results per source">
+        <option value="4">4 / source</option>
+        <option value="6" selected>6 / source</option>
+        <option value="10">10 / source</option>
+      </select>
+      <button id="researchRunBtn" class="btn primary small" type="button">Research</button>
+    </div>
+    <p id="researchStatus" class="muted small" role="status" aria-live="polite"></p>
+    <div id="researchSourcesList"></div>
+    <div id="researchReport"></div>
+    <div class="row">
+      <button id="researchCopyBtn" class="btn small" type="button" disabled>Copy report</button>
+      <button id="researchDownloadBtn" class="btn small" type="button" disabled>Download .md</button>
+    </div>
+    <div class="row-between"><strong>Saved reports</strong></div>
+    <div id="researchList" class="list"></div>
   </section>
 
   <!-- PROMPTS -->
@@ -123,6 +206,7 @@
 <script src="../lib/prompts.js"></script>
 <script src="../lib/pdf.js"></script>
 <script src="../lib/youtube.js"></script>
+<script src="../lib/research.js"></script>
 <script src="markdown.js"></script>
 <script src="sidebar.js"></script>
 </body>
