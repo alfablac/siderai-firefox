@@ -127,6 +127,18 @@ th{background:var(--panel2)}
 .hand-step.done{border-color:var(--accent)}
 .hand-step.failed{border-color:var(--danger)}
 .hand-step .detail{color:var(--muted);font-size:11px}
+.hand-step-main{display:flex;flex-direction:column;gap:2px;min-width:0}
+.hand-step-result{color:var(--text);font-size:11px;white-space:pre-wrap;word-break:break-word}
+.hand-step-error{color:var(--danger);font-size:11px;white-space:pre-wrap;word-break:break-word}
+.hand-summary{background:var(--panel);border:1px solid var(--border);border-radius:10px;padding:9px 10px;margin-top:8px}
+.hand-summary-step{border-top:1px solid var(--border);padding:6px 0}
+.hand-summary-step:first-child{border-top:0}
+.hand-summary-step .hand-summary-step-head{font-size:12px}
+.hand-summary-step .hand-summary-step-result{color:var(--muted);font-size:11px;white-space:pre-wrap;word-break:break-word;margin-top:2px}
+.hand-summary-step .hand-summary-step-error{color:var(--danger);font-size:11px;white-space:pre-wrap;word-break:break-word;margin-top:2px}
+.hand-run-row{background:var(--panel);border:1px solid var(--border);border-radius:8px;padding:8px}
+.hand-run-row strong{display:block;font-size:12px}
+.hand-run-row .desc{color:var(--muted);font-size:11px}
 .check-row{display:flex;gap:10px;flex-wrap:wrap;margin:6px 0}
 .check-row label{display:flex;gap:4px;align-items:center;font-size:12px}
 .research-source{background:var(--panel);border:1px solid var(--border);border-radius:8px;padding:8px}

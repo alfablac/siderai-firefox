@@ -19,32 +19,164 @@
       .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
   }
 
-  function inlineMd(text) {
-    return String(text)
-      .replace(/`([^`]+)`/g, '<code>$1</code>')
-      .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
-      .replace(/(^|[^*])\*([^*\n]+)\*/g, '$1<em>$2</em>')
-      .replace(/\[([^\]]+)\]\((https?:[^)\s]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>');
+  // Providers sometimes ship text that is already HTML-escaped
+  // ("Fish &amp; Chips", "&lt;tag&gt;"). Decode ONE pass before
+  // escapeHtml re-escapes, so entities display as intended instead of
+  // double-escaped ("&amp;amp;") while markup stays inert text.
+  function decodeHtmlEntities(text) {
+    return String(text == null ? '' : text).replace(
+      /&(#x[0-9a-fA-F]+|#\d+|amp|lt|gt|quot|apos|nbsp);/gi,
+      (match, entity) => {
+        if (entity.charAt(0) === '#') {
+          const hex = entity.charAt(1) === 'x' || entity.charAt(1) === 'X';
+          const code = parseInt(entity.slice(hex ? 2 : 1), hex ? 16 : 10);
+          if (!isFinite(code) || code <= 0 || code > 0x10FFFF) return match;
+          try { return String.fromCodePoint(code); } catch (e) { return match; }
+        }
+        switch (entity.toLowerCase()) {
+          case 'amp': return '&';
+          case 'lt': return '<';
+          case 'gt': return '>';
+          case 'quot': return '"';
+          case 'apos': return "'";
+          case 'nbsp': return ' ';
+          default: return match;
+        }
+      });
   }
 
+  // SAFETY: inlineMd operates on ALREADY-escaped text, so link URLs and
+  // code contents are pre-escaped (&quot; cannot break out of href, &lt;
+  // cannot open a tag). Code spans and links are stashed before emphasis
+  // runs so markers/underscores inside them are never reinterpreted.
+  function inlineMd(text) {
+    const stash = [];
+    const keep = (html) => { stash.push(html); return '\u0000' + (stash.length - 1) + '\u0000'; };
+    const emphasis = (s) => String(s)
+      .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
+      .replace(/__([^_]+)__/g, '<strong>$1</strong>')
+      .replace(/~~([^~]+)~~/g, '<del>$1</del>')
+      .replace(/(^|[^*\w])\*([^*\n]+)\*/g, '$1<em>$2</em>')
+      .replace(/(^|[^_\w])_([^_\n]+)_(?![\w])/g, '$1<em>$2</em>');
+    let out = String(text);
+    out = out.replace(/`([^`\n]+)`/g, (m, code) => keep('<code>' + code + '</code>'));
+    out = out.replace(/\[([^\]\n]+)\]\((https?:[^)\s]+)\)/g,
+      (m, label, url) => keep('<a href="' + url + '" target="_blank" rel="noopener">' + emphasis(label) + '</a>'));
+    out = emphasis(out);
+    let prev = null;
+    while (prev !== out && /\u0000\d+\u0000/.test(out)) {
+      prev = out;
+      out = out.replace(/\u0000(\d+)\u0000/g,
+        (m, i) => (stash[Number(i)] !== undefined ? stash[Number(i)] : m));
+    }
+    return out;
+  }
+
+  // Line-based lite Markdown for model answers. Structure is detected on
+  // the decoded source line by line (so a heading/list/quote works inside
+  // a multi-line block and mixed intro+list text splits into groups), and
+  // every text fragment is escaped BEFORE inlineMd — only the tags
+  // generated here survive, via setGeneratedHtml below.
   function markdownLite(text) {
-    return escapeHtml(text).split(/\n{2,}/).map((block) => {
-      const lines = block.split('\n');
-      const trimmed = block.trim();
-      if (!trimmed) return '';
-      const heading = trimmed.match(/^(#{1,4})\s+(.*)$/);
-      if (heading && lines.length === 1) {
+    const source = decodeHtmlEntities(text == null ? '' : String(text))
+      .replace(/\r\n?/g, '\n');
+    const lines = source.split('\n');
+    const out = [];
+    let para = [];
+    let list = null;
+    let quote = [];
+    let fence = null;
+    const renderInline = (raw) => inlineMd(escapeHtml(raw));
+    // GFM pipe tables: a header row, a --- separator row, then body rows.
+    // Collected raw (unescaped) and escaped per cell at render, like fences.
+    let table = null;
+    const splitRow = (line) => {
+      let s = line.trim();
+      if (s.charAt(0) === '|') s = s.slice(1);
+      if (s.charAt(s.length - 1) === '|') s = s.slice(0, -1);
+      return s.split('|').map((c) => c.trim());
+    };
+    const isSepRow = (line) => /^\s*\|?[\s:|-]+\|[\s:|-]*$/.test(line) &&
+      splitRow(line).every((c) => /^:?-{1,}:?$/.test(c));
+    function flushTable() {
+      if (!table) return;
+      const head = table.head.map((c) => '<th>' + renderInline(c) + '</th>').join('');
+      const rows = table.rows.map((r) =>
+        '<tr>' + r.map((c) => '<td>' + renderInline(c) + '</td>').join('') + '</tr>').join('');
+      out.push('<table><thead><tr>' + head + '</tr></thead><tbody>' + rows + '</tbody></table>');
+      table = null;
+    }
+    function flushPara() {
+      if (!para.length) return;
+      out.push('<p>' + para.map((l) => renderInline(l.trim())).join('<br>') + '</p>');
+      para = [];
+    }
+    function flushList() {
+      if (!list) return;
+      const tag = list.ordered ? 'ol' : 'ul';
+      out.push('<' + tag + '>' + list.items.map((item) =>
+        '<li>' + renderInline(item) + '</li>').join('') + '</' + tag + '>');
+      list = null;
+    }
+    function flushQuote() {
+      if (!quote.length) return;
+      out.push('<blockquote>' + quote.map((l) => renderInline(l)).join('<br>') + '</blockquote>');
+      quote = [];
+    }
+    function flushBlocks() { flushPara(); flushList(); flushQuote(); flushTable(); }
+    function flushFence() {
+      if (fence === null) return;
+      out.push('<pre><code>' + escapeHtml(fence.join('\n')) + '</code></pre>');
+      fence = null;
+    }
+    for (const line of lines) {
+      if (fence !== null) {
+        if (/^\s*```/.test(line)) flushFence();
+        else fence.push(line);
+        continue;
+      }
+      if (/^\s*```/.test(line)) { flushBlocks(); fence = []; continue; }
+      if (!line.trim()) { flushBlocks(); continue; }
+      const heading = line.match(/^\s*(#{1,6})\s+(.+?)\s*#*\s*$/);
+      if (heading) {
+        flushBlocks();
         const level = Math.min(heading[1].length + 2, 6);
-        return '<h' + level + '>' + inlineMd(heading[2]) + '</h' + level + '>';
+        out.push('<h' + level + '>' + renderInline(heading[2]) + '</h' + level + '>');
+        continue;
       }
-      const isList = lines.length > 1 && lines.every((l) => /^\s*([-*]|\d+\.)\s+/.test(l));
-      if (isList) {
-        const ordered = /^\s*\d+\./.test(lines[0]);
-        const items = lines.map((l) => '<li>' + inlineMd(l.replace(/^\s*([-*]|\d+\.)\s+/, '')) + '</li>').join('');
-        return (ordered ? '<ol>' : '<ul>') + items + (ordered ? '</ol>' : '</ul>');
+      if (/^\s*(-{3,}|\*{3,}|_{3,})\s*$/.test(line)) {
+        flushBlocks();
+        out.push('<hr>');
+        continue;
       }
-      return '<p>' + lines.map(inlineMd).join('<br>') + '</p>';
-    }).join('');
+      const quoted = line.match(/^\s*>\s?(.*)$/);
+      if (quoted) { flushPara(); flushList(); flushTable(); quote.push(quoted[1]); continue; }
+      // GFM pipe table: separator row under a pending header row starts it.
+      if (table && /^\s*\|/.test(line)) { table.rows.push(splitRow(line)); continue; }
+      if (!table && para.length === 1 && /^\s*\|/.test(para[0]) && isSepRow(line)) {
+        table = { head: splitRow(para[0]), rows: [] };
+        para = [];
+        continue;
+      }
+      const item = line.match(/^\s*([-*+•]|\d+[.)])\s+(.+)$/);
+      if (item) {
+        flushPara(); flushQuote(); flushTable();
+        const ordered = /^\d/.test(item[1]);
+        if (list && list.ordered !== ordered) flushList();
+        if (!list) list = { ordered, items: [] };
+        list.items.push(item[2]);
+        continue;
+      }
+      if (list && /^\s{2,}\S/.test(line)) {
+        list.items[list.items.length - 1] += ' ' + line.trim();
+        continue;
+      }
+      flushList(); flushQuote(); flushTable();
+      para.push(line);
+    }
+    flushFence();
+    flushBlocks();
+    return out.join('');
   }
 
   function setGeneratedHtml(el, html) {

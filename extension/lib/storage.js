@@ -45,6 +45,7 @@
   var JOBS_KEY = 'graphiteSider.jobs.v1';
   var RULES_KEY = 'graphiteSider.rules.v1';
   var RESEARCH_KEY = 'graphiteSider.research.v1';
+  var HAND_KEY = 'graphiteSider.handRuns.v1';
   var SYNC_KEY = 'graphiteSider.settings.sync.v1';
   var HISTORY_LIMIT = 100;
   // storage.sync allows 8192 bytes per item (key + value); stay well under.
@@ -891,6 +892,115 @@
     }).catch(function () { return false; });
   }
 
+  /* --- Hand runs -----------------------------------------------------------
+   * Saved Hand (supervised browser operation) run records. Map keyed by id,
+   * capped at the newest 20 by finishedAt/startedAt. Record shape:
+   * { id, task, startedAt, finishedAt, pageUrl, pageTitle, outcome,
+   *   steps: [{ n, action, label, state, statusText, resultText, error }] }. */
+  var HAND_LIMIT = 20;
+  var HAND_RESULT_MAX = 4000;
+  var HAND_ERROR_MAX = 1000;
+  var HAND_LABEL_MAX = 500;
+
+  function readHandRuns() {
+    return rawGet(HAND_KEY).then(function (items) {
+      var map = items[HAND_KEY];
+      return (map && typeof map === 'object' && !Array.isArray(map)) ? map : {};
+    }).catch(function () { return {}; });
+  }
+
+  function pruneHandMap(map) {
+    var entries = Object.keys(map || {}).map(function (k) { return map[k]; })
+      .filter(function (r) { return r && r.id; });
+    entries.sort(function (a, b) {
+      return ((b.finishedAt || b.startedAt || 0) - (a.finishedAt || a.startedAt || 0));
+    });
+    var out = {};
+    entries.slice(0, HAND_LIMIT).forEach(function (r) { out[r.id] = r; });
+    return out;
+  }
+
+  function trimHandStep(step) {
+    var s = (step && typeof step === 'object') ? step : {};
+    return {
+      n: Number(s.n) || 0,
+      action: String(s.action || ''),
+      label: String(s.label || '').slice(0, HAND_LABEL_MAX),
+      state: String(s.state || ''),
+      statusText: String(s.statusText || '').slice(0, HAND_LABEL_MAX),
+      resultText: String(s.resultText || '').slice(0, HAND_RESULT_MAX),
+      error: String(s.error || '').slice(0, HAND_ERROR_MAX)
+    };
+  }
+
+  function saveHandRun(run) {
+    if (!run || typeof run !== 'object') return Promise.resolve(null);
+    return readHandRuns().then(function (map) {
+      var now = Date.now();
+      var id = run.id || uid('hand');
+      var existing = map[id] || null;
+      var record = Object.assign({}, existing || {}, run, {
+        id: id,
+        task: String(run.task != null ? run.task : ((existing && existing.task) || '')),
+        startedAt: Number(run.startedAt) || (existing && existing.startedAt) || now,
+        finishedAt: Number(run.finishedAt) || now,
+        pageUrl: String(run.pageUrl || ''),
+        pageTitle: String(run.pageTitle || ''),
+        outcome: String(run.outcome || 'done'),
+        steps: (Array.isArray(run.steps) ? run.steps : []).map(trimHandStep),
+        createdAt: (existing && existing.createdAt) || run.createdAt || now,
+        updatedAt: now
+      });
+      map[id] = record;
+      var payload = {};
+      payload[HAND_KEY] = pruneHandMap(map);
+      return rawSet(payload).then(function () { return record; });
+    }).catch(function () { return null; });
+  }
+
+  function getHandRun(id) {
+    if (!id) return Promise.resolve(null);
+    return readHandRuns().then(function (map) {
+      return map[id] || null;
+    }).catch(function () { return null; });
+  }
+
+  function listHandRuns() {
+    return readHandRuns().then(function (map) {
+      var entries = Object.keys(map).map(function (k) { return map[k]; })
+        .filter(function (r) { return r && r.id; });
+      entries.sort(function (a, b) {
+        return ((b.finishedAt || b.startedAt || 0) - (a.finishedAt || a.startedAt || 0));
+      });
+      return entries.map(function (r) {
+        var steps = Array.isArray(r.steps) ? r.steps : [];
+        return {
+          id: r.id,
+          task: r.task || '',
+          outcome: r.outcome || '',
+          startedAt: r.startedAt || 0,
+          finishedAt: r.finishedAt || 0,
+          pageUrl: r.pageUrl || '',
+          pageTitle: r.pageTitle || '',
+          stepCount: steps.length,
+          okCount: steps.filter(function (s) { return s && s.state === 'done'; }).length,
+          failedCount: steps.filter(function (s) { return s && (s.state === 'failed' || !!s.error); }).length
+        };
+      });
+    }).catch(function () { return []; });
+  }
+
+  function deleteHandRun(id) {
+    if (!id) return Promise.resolve(false);
+    return readHandRuns().then(function (map) {
+      if (!map[id]) return false;
+      delete map[id];
+      var payload = {};
+      payload[HAND_KEY] = map;
+      return rawSet(payload).then(function () { return true; });
+    }).catch(function () { return false; });
+  }
+
   global.GraphiteStorage = {
     STORAGE_KEY: STORAGE_KEY,
     PENDING_KEY: PENDING_KEY,
@@ -898,6 +1008,7 @@
     JOBS_KEY: JOBS_KEY,
     RULES_KEY: RULES_KEY,
     RESEARCH_KEY: RESEARCH_KEY,
+    HAND_KEY: HAND_KEY,
     SYNC_KEY: SYNC_KEY,
     HISTORY_LIMIT: HISTORY_LIMIT,
     DEFAULT_PROVIDERS: DEFAULT_PROVIDERS,
@@ -926,6 +1037,10 @@
     getResearchReport: getResearchReport,
     listResearchReports: listResearchReports,
     deleteResearchReport: deleteResearchReport,
+    saveHandRun: saveHandRun,
+    listHandRuns: listHandRuns,
+    getHandRun: getHandRun,
+    deleteHandRun: deleteHandRun,
     clearCache: function () { cache = null; },
     _rawGet: rawGet,
     _rawSet: rawSet,

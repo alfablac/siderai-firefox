@@ -759,6 +759,7 @@
 
 .gs-search-body p { margin: 0 0 8px; }
 .gs-search-body ul, .gs-search-body ol { margin: 0 0 8px; padding-left: 18px; }
+.gs-search-body li { margin: 0 0 3px; }
 .gs-search-body a { color: #5ec8c0; }
 .gs-search-body code {
   font-family: ui-monospace, Menlo, Consolas, monospace;
@@ -767,6 +768,57 @@
   border-radius: 4px;
   padding: 1px 4px;
 }
+/* Rendered Markdown constructs (markdownLite in search.js): headings,
+   quotes, code blocks, rules and tables inside the answer. */
+.gs-search-body h3, .gs-search-body h4, .gs-search-body h5, .gs-search-body h6 {
+  margin: 12px 0 6px;
+  line-height: 1.35;
+  color: #e6e8eb;
+}
+.gs-search-body h3 { font-size: 15px; }
+.gs-search-body h4 { font-size: 14px; }
+.gs-search-body h5, .gs-search-body h6 { font-size: 13px; }
+.gs-search-body blockquote {
+  margin: 0 0 8px;
+  padding: 6px 10px;
+  border-left: 3px solid #5ec8c0;
+  background: #262932;
+  color: #c9ced6;
+}
+.gs-search-body pre {
+  margin: 0 0 8px;
+  padding: 10px 12px;
+  background: #17191d;
+  border: 1px solid #3a3f4a;
+  border-radius: 8px;
+  overflow-x: auto;
+}
+.gs-search-body pre code {
+  background: transparent;
+  border: none;
+  padding: 0;
+  font-size: 12px;
+  line-height: 1.5;
+}
+.gs-search-body hr {
+  border: none;
+  border-top: 1px solid #3a3f4a;
+  margin: 10px 0;
+}
+.gs-search-body table {
+  border-collapse: collapse;
+  margin: 0 0 10px;
+  max-width: 100%;
+  display: block;
+  overflow-x: auto;
+}
+.gs-search-body th, .gs-search-body td {
+  border: 1px solid #3a3f4a;
+  padding: 5px 8px;
+  text-align: left;
+  vertical-align: top;
+}
+.gs-search-body th { background: #262932; }
 
 .gs-search-foot {
   display: flex;

@@ -424,6 +424,113 @@ check("desktop: panel still lands right after ytd-watch-metadata", () => {
     "panel is the immediate next sibling of ytd-watch-metadata");
 });
 
+/* ------------------------------ search.js markdownLite (Graphite AI Answer)
+   search.js is also a content-script IIFE: slice the pure text helpers
+   (escapeHtml .. setGeneratedHtml, exclusive) and run markdownLite in a
+   vm. Regression target: answers showed raw **, #, -, backticks because
+   the old renderer required single-line heading blocks and blocks where
+   EVERY line was a list item. */
+
+function loadSearchMarkdown() {
+  const src = fs.readFileSync(path.join(EXT, "content/search.js"), "utf8");
+  const start = src.indexOf("function escapeHtml");
+  const end = src.indexOf("function setGeneratedHtml");
+  assert.ok(start >= 0 && end > start, "markdown region markers present in search.js");
+  const sandbox = {};
+  vm.createContext(sandbox);
+  vm.runInContext(src.slice(start, end), sandbox, { filename: "search.js(markdown-region)" });
+  assert.strictEqual(typeof sandbox.markdownLite, "function", "markdownLite extracted");
+  assert.strictEqual(typeof sandbox.inlineMd, "function", "inlineMd extracted");
+  return sandbox.markdownLite;
+}
+
+check("search markdown: heading renders as a heading element", () => {
+  const md = loadSearchMarkdown();
+  assert.strictEqual(md("## Summary"), "<h4>Summary</h4>");
+  // Heading inside a multi-line block (the old single-line-only failure).
+  assert.ok(md("Intro line\n## Summary\nBody text").includes("<h4>Summary</h4>"),
+    "heading must render mid-block: " + md("Intro line\n## Summary\nBody text"));
+  assert.ok(!md("## Summary").includes("#"), "no raw # markers remain");
+});
+
+check("search markdown: paragraph with bold and an inline link", () => {
+  const md = loadSearchMarkdown();
+  const html = md("This is **bold** and [a link](https://x.example/path) here.");
+  assert.ok(html.includes("<strong>bold</strong>"), "bold rendered: " + html);
+  assert.ok(html.includes('<a href="https://x.example/path"'), "link rendered: " + html);
+  assert.ok(html.includes(">a link</a>"), "link label: " + html);
+  assert.ok(!html.includes("**") && !html.includes("]("), "no raw markdown remains: " + html);
+});
+
+check("search markdown: mixed intro paragraph + bullet list splits per group", () => {
+  const md = loadSearchMarkdown();
+  const html = md("Here are the key points:\n- First **point**\n- Second point\n\nConcluding line.");
+  assert.ok(html.includes("<p>Here are the key points:</p>"), "intro is its own paragraph: " + html);
+  assert.ok(html.includes("<ul><li>First <strong>point</strong></li><li>Second point</li></ul>"),
+    "consecutive bullets form one list: " + html);
+  assert.ok(html.includes("<p>Concluding line.</p>"), "trailing text is a paragraph: " + html);
+  assert.ok(!/(^|>)- /.test(html), "no raw bullet markers remain: " + html);
+});
+
+check("search markdown: numbered list renders as <ol>", () => {
+  const md = loadSearchMarkdown();
+  const html = md("Steps:\n1. Do A\n2. Do B");
+  assert.ok(html.includes("<ol><li>Do A</li><li>Do B</li></ol>"), "ordered list: " + html);
+  assert.ok(!html.includes("1. Do A"), "no raw numbering remains: " + html);
+  // A single list line is still a list (old code required >1 line).
+  assert.ok(md("- Only one").includes("<ul><li>Only one</li></ul>"), "single bullet: " + md("- Only one"));
+});
+
+check("search markdown: inline code span is escaped and not re-interpreted", () => {
+  const md = loadSearchMarkdown();
+  const html = md("Run `npm install <pkg>` and keep `**literal**` literal");
+  assert.ok(html.includes("<code>npm install &lt;pkg&gt;</code>"), "code span escaped: " + html);
+  assert.ok(html.includes("<code>**literal**</code>"), "markers inside code stay literal: " + html);
+  assert.ok(!html.includes("<pkg>"), "no tag injected from code span: " + html);
+});
+
+check("search markdown: fenced code block renders as <pre><code>, content escaped", () => {
+  const md = loadSearchMarkdown();
+  const html = md("Before:\n\n```js\nconst a = \"<b>\";\n**not bold**\n```\n\nAfter");
+  assert.ok(html.includes("<pre><code>"), "pre/code block: " + html);
+  assert.ok(html.includes("&lt;b&gt;"), "fence content escaped: " + html);
+  assert.ok(!html.includes("<b>"), "no markup from fence content: " + html);
+  assert.ok(!html.includes("<strong>not bold</strong>"), "no emphasis inside fence: " + html);
+  assert.ok(!html.includes("```"), "no raw fences remain: " + html);
+  assert.ok(html.includes("<p>After</p>"), "text after the fence is a paragraph: " + html);
+});
+
+check("search markdown: <script> in the source stays escaped and inert", () => {
+  const md = loadSearchMarkdown();
+  const html = md("<script>alert(1)</script> and <img src=x onerror=alert(1)> with **safe** text");
+  assert.ok(!html.includes("<script"), "no live script tag: " + html);
+  assert.ok(!html.includes("<img"), "no live img tag: " + html);
+  assert.ok(html.includes("&lt;script&gt;alert(1)&lt;/script&gt;"), "script shown as inert text: " + html);
+  assert.ok(html.includes("<strong>safe</strong>"), "surrounding markdown still renders: " + html);
+  // Unsafe link targets never become anchors.
+  const bad = md("[click](javascript:alert(1))");
+  assert.ok(!bad.includes("<a "), "javascript: URL not linked: " + bad);
+});
+
+check("search markdown: blockquote and horizontal rule render", () => {
+  const md = loadSearchMarkdown();
+  const html = md("> quoted **line**\n> second line\n\n---\n\nAfter the rule");
+  assert.ok(html.includes("<blockquote>quoted <strong>line</strong><br>second line</blockquote>"),
+    "blockquote: " + html);
+  assert.ok(html.includes("<hr>"), "horizontal rule: " + html);
+  assert.ok(!html.includes("&gt; quoted") && !html.includes("\n---"), "no raw markers remain: " + html);
+});
+
+check("search markdown: GFM pipe table renders as a table", () => {
+  const md = loadSearchMarkdown();
+  const html = md("Results:\n\n| Name | Value |\n| --- | --- |\n| Alpha | **1** |\n| Beta | 2 |\n\nDone.");
+  assert.ok(html.includes("<table><thead><tr><th>Name</th><th>Value</th></tr></thead>"), "table head: " + html);
+  assert.ok(html.includes("<td><strong>1</strong></td>"), "cell inline markdown renders: " + html);
+  assert.ok(html.includes("<td>Beta</td><td>2</td>"), "body rows: " + html);
+  assert.ok(!html.includes("| --- |"), "no raw pipe rows remain: " + html);
+  assert.ok(html.includes("<p>Done.</p>"), "text after the table is a paragraph: " + html);
+});
+
 /* ---------------------------------------------------------------- summary */
 
 console.log(failures === 0 ? "\nall dom-sandbox tests passed" : "\n" + failures + " failure(s)");

@@ -925,6 +925,14 @@ function handleMessage(msg) {
       return GraphiteStorage.saveResearchReport(msg.report || msg);
     case 'deleteResearchReport':
       return GraphiteStorage.deleteResearchReport(msg.id);
+    case 'saveHandRun':
+      return GraphiteStorage.saveHandRun(msg.run || msg);
+    case 'listHandRuns':
+      return GraphiteStorage.listHandRuns();
+    case 'getHandRun':
+      return GraphiteStorage.getHandRun(msg.id);
+    case 'deleteHandRun':
+      return GraphiteStorage.deleteHandRun(msg.id);
     case 'listCodeRules':
       return GraphiteStorage.listCodeRules();
     case 'saveCodeRule':

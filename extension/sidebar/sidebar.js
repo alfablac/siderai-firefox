@@ -15,6 +15,7 @@
     currentTab: null, stopRequested: false, ytTranscript: '',
     toolFavorites: [], selectedToolId: '',
     handSteps: [], handStop: false,
+    handLogEntries: [], handRun: null, handRunSaved: false, handSummaryRecord: null,
     researchRaw: '', researchSources: [], researchId: null
   };
   var TOOL_FAVORITES_KEY = 'graphiteSider.toolFavorites.v1';
@@ -294,6 +295,7 @@
     if (name === 'prompts') renderPrompts();
     if (name === 'code') { refreshCodeHost(); renderCodeRules(); }
     if (name === 'research') renderResearchList();
+    if (name === 'hand') renderHandRunsList();
   }
 
   /* Send a graphite-command to the content script in the active (or
@@ -1567,13 +1569,289 @@
   }
 
   /* ---------------- hand (supervised browser operation) ---------------- */
-  function handLog(line) {
-    var box = $('handLog'); if (!box) return;
+  var HAND_EXTRACT_MAX = 20000;
+  var HAND_RESULT_MAX = 4000;
+  function handLog(line, level) {
     var text = String(line == null ? '' : line);
+    var lvl = (level === 'ok' || level === 'error' || level === 'extract') ? level : 'info';
+    if (!Array.isArray(state.handLogEntries)) state.handLogEntries = [];
+    state.handLogEntries.push({ ts: Date.now(), level: lvl, text: text });
+    if (state.handLogEntries.length > 500) state.handLogEntries = state.handLogEntries.slice(-500);
+    var box = $('handLog'); if (!box) return;
     box.textContent = box.textContent ? box.textContent + '\n' + text : text;
     box.scrollTop = box.scrollHeight;
   }
+  function handRunIsActive() {
+    return !!(state.handRun && !state.handRunSaved);
+  }
+  function ensureHandRun() {
+    if (handRunIsActive()) return state.handRun;
+    var taskEl = $('handTask');
+    state.handRun = {
+      id: uid(),
+      task: taskEl ? taskEl.value.trim() : '',
+      startedAt: Date.now(),
+      finishedAt: 0,
+      pageUrl: (state.currentTab && state.currentTab.url) || '',
+      pageTitle: (state.currentTab && state.currentTab.title) || '',
+      outcome: '',
+      steps: []
+    };
+    state.handRunSaved = false;
+    return state.handRun;
+  }
+  function resetHandRun() {
+    state.handRun = null;
+    state.handRunSaved = false;
+  }
+  function handExcerpt(text, n) {
+    var s = String(text == null ? '' : text).replace(/\s+/g, ' ').trim();
+    var cap = n || 240;
+    return s.length > cap ? s.slice(0, cap) + '…' : s;
+  }
+  function handStepResultText(step, r, action) {
+    if (!step) return '';
+    if (action === 'extract') {
+      if (step.resultText) return String(step.resultText);
+      return r && r.text ? String(r.text) : '';
+    }
+    if (action === 'fill') return 'Filled with "' + String(step.value != null ? step.value : '') + '"';
+    if (action === 'click') {
+      var target = (r && (r.text || r.tag)) || step.text || step.selector || 'element';
+      return 'Clicked ' + String(target);
+    }
+    if (action === 'navigate') return 'Navigated to ' + String((r && r.url) || step.url || '');
+    if (action === 'wait') return 'Waited ' + (step.ms || step.amount || 800) + 'ms';
+    if (action === 'scroll') return 'Scrolled by ' + (step.amount || 600) + 'px' + (r && r.y != null ? ' (y=' + r.y + ')' : '');
+    if (r && r.text) return String(r.text);
+    return step.resultText ? String(step.resultText) : '';
+  }
+  function buildHandRunRecord(outcome) {
+    var run = ensureHandRun();
+    var taskEl = $('handTask');
+    var task = taskEl ? taskEl.value.trim() : (run.task || '');
+    var steps = (state.handSteps || []).map(function (step, i) {
+      return {
+        n: i + 1,
+        action: String(step.action || ''),
+        label: handStepLabel(step),
+        state: String(step.state || ''),
+        statusText: String(step.statusText || ''),
+        resultText: String(step.resultText || '').slice(0, HAND_RESULT_MAX),
+        error: String(step.error || '')
+      };
+    });
+    // Include any steps already captured on the run (e.g. restored runs).
+    if (!steps.length && Array.isArray(run.steps) && run.steps.length) steps = run.steps;
+    var tab = state.currentTab || {};
+    return {
+      id: run.id || uid(),
+      task: task || run.task || '',
+      startedAt: run.startedAt || Date.now(),
+      finishedAt: Date.now(),
+      pageUrl: tab.url || run.pageUrl || '',
+      pageTitle: tab.title || run.pageTitle || '',
+      outcome: outcome || run.outcome || 'done',
+      steps: steps
+    };
+  }
+  function handOutcomeFor(chainOutcome) {
+    var steps = state.handSteps || [];
+    var anyFailed = steps.some(function (s) { return s.state === 'failed' || !!s.error; });
+    var anyDone = steps.some(function (s) { return s.state === 'done'; });
+    var allDone = steps.length > 0 && steps.every(function (s) { return s.state === 'done'; });
+    if (chainOutcome === 'stopped') return 'stopped';
+    if (chainOutcome === 'confirm') return 'paused';
+    if (chainOutcome === 'failed') return anyDone ? 'partial' : 'failed';
+    if (allDone) return 'done';
+    if (anyFailed) return anyDone ? 'partial' : 'failed';
+    if (anyDone) return 'partial';
+    return 'done';
+  }
+  function handSummaryMarkdown(record) {
+    if (!record) return '';
+    var lines = [];
+    lines.push('# Hand run summary');
+    lines.push('');
+    if (record.task) lines.push('**Task:** ' + record.task);
+    lines.push('**Outcome:** ' + (record.outcome || ''));
+    if (record.pageTitle || record.pageUrl) lines.push('**Page:** ' + [record.pageTitle, record.pageUrl].filter(Boolean).join(' — '));
+    if (record.pageUrl) lines.push('**URL:** ' + record.pageUrl);
+    if (record.startedAt) lines.push('**Started:** ' + new Date(record.startedAt).toLocaleString());
+    if (record.finishedAt) lines.push('**Finished:** ' + new Date(record.finishedAt).toLocaleString());
+    if (record.startedAt && record.finishedAt) lines.push('**Duration:** ' + formatMs(Math.max(0, record.finishedAt - record.startedAt)));
+    lines.push('');
+    lines.push('## Steps');
+    lines.push('');
+    var steps = Array.isArray(record.steps) ? record.steps : [];
+    if (!steps.length) lines.push('_No steps recorded._');
+    steps.forEach(function (s, i) {
+      var n = s.n || (i + 1);
+      var head = n + '. **' + (s.action || 'step') + '** — ' + (s.label || '') + (s.state ? ' [' + s.state + ']' : '');
+      lines.push(head);
+      if (s.resultText) lines.push('   - Result: ' + String(s.resultText).slice(0, HAND_RESULT_MAX));
+      if (s.error) lines.push('   - Error: ' + s.error);
+      else if (s.statusText && s.statusText !== s.state) lines.push('   - Status: ' + s.statusText);
+    });
+    return lines.join('\n');
+  }
+  function renderHandSummary(record) {
+    state.handSummaryRecord = record || null;
+    var panel = $('handSummary'); if (!panel) return;
+    if (!record) { panel.classList.add('hidden'); return; }
+    panel.classList.remove('hidden');
+    var outcomeEl = $('handSummaryOutcome');
+    if (outcomeEl) outcomeEl.textContent = record.outcome || '';
+    var metaEl = $('handSummaryMeta');
+    if (metaEl) {
+      var steps = Array.isArray(record.steps) ? record.steps : [];
+      var okCount = steps.filter(function (s) { return s.state === 'done'; }).length;
+      var failCount = steps.filter(function (s) { return s.state === 'failed' || !!s.error; }).length;
+      var dur = (record.startedAt && record.finishedAt) ? formatMs(Math.max(0, record.finishedAt - record.startedAt)) : '';
+      var parts = [];
+      if (record.task) parts.push(record.task);
+      parts.push(steps.length + ' steps · ' + okCount + ' ok · ' + failCount + ' failed');
+      if (dur) parts.push(dur);
+      if (record.pageUrl) parts.push(record.pageUrl);
+      if (record.finishedAt) parts.push(new Date(record.finishedAt).toLocaleString());
+      metaEl.textContent = parts.join(' · ');
+    }
+    var box = $('handSummarySteps'); if (!box) return;
+    box.textContent = '';
+    var steps = Array.isArray(record.steps) ? record.steps : [];
+    if (!steps.length) { box.appendChild(emptyNoteEl('No steps recorded.')); return; }
+    steps.forEach(function (s, i) {
+      var row = document.createElement('div'); row.className = 'hand-summary-step';
+      var head = document.createElement('div'); head.className = 'hand-summary-step-head';
+      head.textContent = (s.n || (i + 1)) + '. ' + (s.action || 'step') + ' — ' + (s.label || '') + (s.state ? ' [' + s.state + ']' : '');
+      row.appendChild(head);
+      if (s.resultText) {
+        var res = document.createElement('div'); res.className = 'hand-summary-step-result';
+        res.textContent = handExcerpt(s.resultText, 500);
+        row.appendChild(res);
+      }
+      if (s.error) {
+        var err = document.createElement('div'); err.className = 'hand-summary-step-error';
+        err.textContent = 'Error: ' + s.error;
+        row.appendChild(err);
+      }
+      box.appendChild(row);
+    });
+  }
+  function finishHandRun(outcome) {
+    if (state.handRunSaved && state.handSummaryRecord) {
+      renderHandSummary(state.handSummaryRecord);
+      return Promise.resolve(state.handSummaryRecord);
+    }
+    if (!state.handSteps.length && !(state.handRun && state.handRun.steps && state.handRun.steps.length)) {
+      handLog('Nothing to summarize yet — plan and run at least one step.', 'info');
+      return Promise.resolve(null);
+    }
+    var record = buildHandRunRecord(outcome || handOutcomeFor());
+    // Capture page info asynchronously if we don't have it yet, but don't block saving on it.
+    var save = function (rec) {
+      return sendMessage({ type: 'saveHandRun', run: rec }).then(function (saved) {
+        var finalRec = saved || rec;
+        state.handRunSaved = true;
+        if (state.handRun) state.handRun.id = finalRec.id;
+        renderHandSummary(finalRec);
+        handLog('Run summary saved (' + (finalRec.outcome || '') + ', ' + ((finalRec.steps || []).length) + ' steps).', 'ok');
+        renderHandRunsList();
+        return finalRec;
+      }).catch(function (e) {
+        // Still show the deterministic summary even if persistence fails.
+        renderHandSummary(rec);
+        handLog('Summary ready, but saving failed: ' + e.message, 'error');
+        return rec;
+      });
+    };
+    if (!record.pageUrl) {
+      return getActiveTab().then(function (tab) {
+        if (tab) { record.pageUrl = tab.url || record.pageUrl; record.pageTitle = tab.title || record.pageTitle; state.currentTab = tab; }
+        return save(record);
+      }).catch(function () { return save(record); });
+    }
+    return save(record);
+  }
+  function openHandRun(id) {
+    return sendMessage({ type: 'getHandRun', id: id }).then(function (rec) {
+      if (!rec) { handLog('That run no longer exists.', 'error'); renderHandRunsList(); return null; }
+      state.handSummaryRecord = rec;
+      if (rec.task && $('handTask')) $('handTask').value = rec.task;
+      // Restore steps so the step list reflects the saved run.
+      state.handSteps = (Array.isArray(rec.steps) ? rec.steps : []).map(function (s) {
+        return {
+          action: s.action || 'wait', url: '', selector: '', text: '', label: '', value: '',
+          amount: undefined, ms: undefined, reason: '',
+          state: s.state || '', statusText: s.statusText || '',
+          resultText: s.resultText || '', error: s.error || '', confirmed: false,
+          _savedLabel: s.label || ''
+        };
+      });
+      state.handRun = { id: rec.id, task: rec.task || '', startedAt: rec.startedAt || Date.now(), finishedAt: rec.finishedAt || 0, pageUrl: rec.pageUrl || '', pageTitle: rec.pageTitle || '', outcome: rec.outcome || '', steps: rec.steps || [] };
+      state.handRunSaved = true;
+      renderHandSteps();
+      renderHandSummary(rec);
+      handLog('Opened saved run from ' + new Date(rec.finishedAt || rec.startedAt || Date.now()).toLocaleString() + '.', 'info');
+      return rec;
+    }).catch(function (e) { handLog('Open failed: ' + e.message, 'error'); return null; });
+  }
+  function renderHandRunsList() {
+    var list = $('handRunsList'); if (!list) return Promise.resolve();
+    return sendMessage({ type: 'listHandRuns' }).then(function (items) {
+      list.textContent = '';
+      items = Array.isArray(items) ? items : [];
+      if (!items.length) { list.appendChild(emptyNoteEl('No saved runs yet. Finish a run to save its summary.')); return; }
+      items.forEach(function (item) {
+        var row = document.createElement('div'); row.className = 'hand-run-row list-item';
+        var titleEl = document.createElement('strong'); titleEl.textContent = item.task || item.pageTitle || 'Hand run';
+        row.appendChild(titleEl);
+        var desc = document.createElement('div'); desc.className = 'desc';
+        var when = new Date(item.finishedAt || item.startedAt || Date.now()).toLocaleString();
+        desc.textContent = (item.outcome || '') + ' · ' + (item.stepCount || 0) + ' steps · ' + (item.okCount || 0) + ' ok · ' + (item.failedCount || 0) + ' failed · ' + when;
+        row.appendChild(desc);
+        if (item.pageUrl) { var urlEl = document.createElement('div'); urlEl.className = 'desc'; urlEl.textContent = item.pageUrl; row.appendChild(urlEl); }
+        var actions = document.createElement('div'); actions.className = 'row';
+        var openBtn = document.createElement('button'); openBtn.type = 'button'; openBtn.className = 'btn small'; openBtn.textContent = 'Open';
+        openBtn.addEventListener('click', function () { openHandRun(item.id); });
+        var deleteBtn = document.createElement('button'); deleteBtn.type = 'button'; deleteBtn.className = 'btn small danger-outline'; deleteBtn.textContent = 'Delete';
+        deleteBtn.addEventListener('click', function () {
+          sendMessage({ type: 'deleteHandRun', id: item.id }).then(function () {
+            if (state.handSummaryRecord && state.handSummaryRecord.id === item.id) renderHandSummary(null);
+            if (state.handRun && state.handRun.id === item.id) resetHandRun();
+            handLog('Saved run deleted.', 'info');
+            renderHandRunsList();
+          }).catch(function (e) { handLog('Delete failed: ' + e.message, 'error'); });
+        });
+        actions.appendChild(openBtn); actions.appendChild(deleteBtn);
+        row.appendChild(actions);
+        list.appendChild(row);
+      });
+    }).catch(function (e) {
+      list.textContent = '';
+      list.appendChild(emptyNoteEl('Could not load saved runs: ' + e.message));
+    });
+  }
+  function copyHandSummary() {
+    var record = state.handSummaryRecord;
+    if (!record) { handLog('No summary to copy yet.', 'info'); return; }
+    var md = handSummaryMarkdown(record);
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(md).then(function () { status('Summary copied'); handLog('Summary copied to clipboard.', 'ok'); }).catch(function () { status('Copy failed'); });
+    }
+  }
+  function downloadHandSummary() {
+    var record = state.handSummaryRecord;
+    if (!record) { handLog('No summary to download yet.', 'info'); return; }
+    var md = handSummaryMarkdown(record);
+    var base = ((record.task || 'hand-run').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 50) || 'hand-run');
+    var blob = new Blob([md], { type: 'text/markdown' });
+    var a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = base + '.md'; a.click();
+    setTimeout(function () { URL.revokeObjectURL(a.href); }, 2000);
+    status('Summary downloaded');
+  }
   function handStepLabel(step) {
+    if (step && step._savedLabel) return String(step._savedLabel);
     var action = String((step && step.action) || 'step');
     if (action === 'navigate') return 'Navigate to ' + (step.url || '');
     if (action === 'wait') return 'Wait ' + (step.ms || step.amount || 800) + 'ms';
@@ -1589,11 +1867,24 @@
     state.handSteps.forEach(function (step, i) {
       var row = document.createElement('div'); row.className = 'hand-step ' + (step.state || '');
       var idx = document.createElement('span'); idx.className = 'idx'; idx.textContent = String(i + 1);
-      var main = document.createElement('span'); main.className = 'detail'; main.style.flex = '1';
+      var main = document.createElement('span'); main.className = 'detail hand-step-main'; main.style.flex = '1';
+      var labelLine = document.createElement('span');
       var label = document.createElement('span'); label.textContent = handStepLabel(step);
-      main.appendChild(label);
-      if (step.reason) { var why = document.createElement('span'); why.textContent = ' — ' + step.reason; main.appendChild(why); }
-      if (step.statusText) { var st = document.createElement('span'); st.textContent = ' [' + step.statusText + ']'; main.appendChild(st); }
+      labelLine.appendChild(label);
+      if (step.reason) { var why = document.createElement('span'); why.textContent = ' — ' + step.reason; labelLine.appendChild(why); }
+      if (step.statusText) { var st = document.createElement('span'); st.textContent = ' [' + step.statusText + ']'; labelLine.appendChild(st); }
+      main.appendChild(labelLine);
+      var resultSource = step.error ? '' : (step.resultText || '');
+      if (resultSource) {
+        var res = document.createElement('span'); res.className = 'hand-step-result';
+        res.textContent = handExcerpt(resultSource, 240);
+        main.appendChild(res);
+      }
+      if (step.error) {
+        var errEl = document.createElement('span'); errEl.className = 'hand-step-error';
+        errEl.textContent = String(step.error);
+        main.appendChild(errEl);
+      }
       var runBtn = document.createElement('button'); runBtn.type = 'button'; runBtn.className = 'btn small'; runBtn.textContent = 'Run';
       runBtn.addEventListener('click', function () { runHandStep(i); });
       row.appendChild(idx); row.appendChild(main); row.appendChild(runBtn);
@@ -1605,6 +1896,8 @@
     var task = $('handTask').value.trim();
     if (!task) { handLog('Describe the task first.'); $('handTask').focus(); return; }
     if (btn) btn.disabled = true;
+    resetHandRun();
+    renderHandSummary(null);
     handLog('Planning...');
     sendTabCommand('page-outline', {}).catch(function () { return null; }).then(function (outline) {
       var prompt = [
@@ -1633,23 +1926,35 @@
             selector: s && s.selector || '', text: s && s.text || '',
             label: s && s.label || '', value: s && s.value != null ? String(s.value) : '',
             amount: s && s.amount, ms: s && s.ms, reason: s && s.reason || '',
-            state: '', statusText: '', confirmed: false
+            state: '', statusText: '', resultText: '', error: '', confirmed: false
           };
         });
         state.handStop = false;
+        ensureHandRun();
+        if (state.handRun) state.handRun.task = task;
+        getActiveTab().then(function (tab) {
+          if (tab && state.handRun) { state.handRun.pageUrl = tab.url || ''; state.handRun.pageTitle = tab.title || ''; }
+        }).catch(function () {});
         renderHandSteps();
-        handLog('Plan ready: ' + state.handSteps.length + ' steps. Run them one at a time or Run all.');
+        handLog('Plan ready: ' + state.handSteps.length + ' steps. Run them one at a time or Run all.', 'info');
       });
     }).catch(function (e) { handLog('Plan failed: ' + e.message); }).then(function () { if (btn) btn.disabled = false; });
   }
   function runHandStep(index) {
     var step = state.handSteps[index];
     if (!step) return Promise.resolve('done');
+    // A run starts at plan success or at the first step run after a finish.
+    if (state.handRunSaved) { resetHandRun(); renderHandSummary(null); }
+    ensureHandRun();
     var action = String(step.action || '').toLowerCase();
-    function mark(stateName, statusText) {
+    function mark(stateName, statusText, resultText, errorText) {
       step.state = stateName; step.statusText = statusText || '';
+      if (typeof resultText === 'string') step.resultText = resultText;
+      if (typeof errorText === 'string') step.error = errorText;
+      else if (stateName === 'done') step.error = '';
       renderHandSteps();
     }
+    step.error = '';
     mark('', 'running');
     if (action === 'navigate' || action === 'wait') {
       var bgPayload = { type: 'handStep', action: action, url: step.url || '', ms: step.ms || step.amount || 800, amount: step.amount };
@@ -1658,53 +1963,68 @@
         return sendMessage(bgPayload);
       }).then(function (r) {
         if (action === 'navigate' && r && r.url) { refreshCodeHost(); }
-        mark('done', 'done');
-        handLog('Step ' + (index + 1) + ' ' + action + ': OK');
+        var resultText = handStepResultText(step, r, action).slice(0, HAND_RESULT_MAX);
+        step.resultText = resultText;
+        mark('done', 'done', resultText, '');
+        handLog('Step ' + (index + 1) + ' ' + action + ': OK' + (resultText ? ' — ' + handExcerpt(resultText, 120) : ''), 'ok');
         return 'done';
       }).catch(function (e) {
-        mark('failed', 'failed');
-        handLog('Step ' + (index + 1) + ' ' + action + ' failed: ' + e.message);
+        step.error = e.message || String(e);
+        mark('failed', 'failed', step.resultText || '', step.error);
+        handLog('Step ' + (index + 1) + ' ' + action + ' failed: ' + e.message, 'error');
         return 'failed';
       });
     }
     var command = { click: 'hand-click', fill: 'hand-fill', extract: 'hand-extract', scroll: 'hand-scroll' }[action];
     if (!command) {
-      mark('failed', 'unknown action');
-      handLog('Step ' + (index + 1) + ': unknown action "' + action + '"');
+      step.error = 'unknown action "' + action + '"';
+      mark('failed', 'unknown action', '', step.error);
+      handLog('Step ' + (index + 1) + ': unknown action "' + action + '"', 'error');
       return Promise.resolve('failed');
     }
     var payload = { selector: step.selector, text: step.text, label: step.label, value: step.value, amount: step.amount || 600, maxLength: 20000 };
     return sendTabCommand(command, payload).then(function (r) {
       if (r && r.needsConfirm) {
         if (!step.confirmed) {
+          step.error = '';
           mark('failed', 'needs confirmation');
           var ok = false;
           try { ok = window.confirm('This click looks sensitive: "' + (r.text || step.text || 'element') + '".\n\nRun it anyway?'); } catch (e) { ok = false; }
-          if (!ok) { handLog('Step ' + (index + 1) + ' paused: confirmation declined. Click Run again to retry.'); return 'confirm'; }
+          if (!ok) { handLog('Step ' + (index + 1) + ' paused: confirmation declined. Click Run again to retry.', 'info'); return 'confirm'; }
           step.confirmed = true;
           return runHandStep(index);
         }
         step.confirmed = false;
-        mark('failed', 'blocked');
-        handLog('Step ' + (index + 1) + ' blocked: the page still requires confirmation.');
+        step.error = 'blocked: the page still requires confirmation';
+        mark('failed', 'blocked', step.resultText || '', step.error);
+        handLog('Step ' + (index + 1) + ' blocked: the page still requires confirmation.', 'error');
         return 'confirm';
       }
       if (r && r.ok === false) throw new Error(r.error || 'Step failed');
+      var resultText = '';
       if (action === 'extract' && r && r.text) {
-        handLog('Extracted from ' + (r.title || r.url || 'page') + ':\n' + truncate(r.text, 2000));
+        resultText = String(r.text).slice(0, HAND_EXTRACT_MAX);
+        step.resultText = resultText;
+        handLog('Extracted from ' + (r.title || r.url || 'page') + ':\n' + truncate(r.text, 2000), 'extract');
       } else {
-        handLog('Step ' + (index + 1) + ' ' + action + ': OK' + (r && r.text ? ' (' + truncate(r.text, 80) + ')' : ''));
+        resultText = handStepResultText(step, r, action).slice(0, HAND_RESULT_MAX);
+        step.resultText = resultText;
+        handLog('Step ' + (index + 1) + ' ' + action + ': OK' + (resultText ? ' (' + handExcerpt(resultText, 80) + ')' : ''), 'ok');
       }
-      mark('done', 'done');
+      if (action === 'extract') { /* resultText already stored FULL (cap 20000) above */ }
+      mark('done', 'done', step.resultText, '');
       return 'done';
     }).catch(function (e) {
-      mark('failed', 'failed');
-      handLog('Step ' + (index + 1) + ' ' + action + ' failed: ' + e.message);
+      step.error = e.message || String(e);
+      mark('failed', 'failed', step.resultText || '', step.error);
+      handLog('Step ' + (index + 1) + ' ' + action + ' failed: ' + e.message, 'error');
       return 'failed';
     });
   }
   function handRunAll() {
     if (!state.handSteps.length) { handLog('Plan steps first.'); return; }
+    if (state.handRunSaved) { resetHandRun(); renderHandSummary(null); }
+    ensureHandRun();
     state.handStop = false;
     handLog('Running all steps (supervised)...');
     var chain = Promise.resolve('done');
@@ -1716,10 +2036,12 @@
       });
     });
     chain.then(function (outcome) {
-      if (state.handStop || outcome === 'stopped') handLog('Stopped by user.');
-      else if (outcome === 'failed') handLog('Run stopped: a step failed.');
-      else if (outcome === 'confirm') handLog('Run paused: a step needs confirmation.');
-      else handLog('All steps done.');
+      var finalOutcome;
+      if (state.handStop || outcome === 'stopped') { handLog('Stopped by user.', 'info'); finalOutcome = 'stopped'; }
+      else if (outcome === 'failed') { handLog('Run stopped: a step failed.', 'error'); finalOutcome = handOutcomeFor('failed'); }
+      else if (outcome === 'confirm') { handLog('Run paused: a step needs confirmation.', 'info'); finalOutcome = 'paused'; }
+      else { handLog('All steps done.', 'ok'); finalOutcome = handOutcomeFor('done'); }
+      return finishHandRun(finalOutcome);
     });
   }
   function handOutline() {
@@ -2022,6 +2344,9 @@
     if ($('handOutlineBtn')) $('handOutlineBtn').addEventListener('click', handOutline);
     if ($('handRunAllBtn')) $('handRunAllBtn').addEventListener('click', handRunAll);
     if ($('handStopBtn')) $('handStopBtn').addEventListener('click', function () { state.handStop = true; handLog('Stop requested — the current step will finish, then the run halts.'); });
+    if ($('handFinishBtn')) $('handFinishBtn').addEventListener('click', function () { finishHandRun(handOutcomeFor()); });
+    if ($('handCopySummaryBtn')) $('handCopySummaryBtn').addEventListener('click', copyHandSummary);
+    if ($('handDownloadSummaryBtn')) $('handDownloadSummaryBtn').addEventListener('click', downloadHandSummary);
     if ($('researchRunBtn')) $('researchRunBtn').addEventListener('click', runResearch);
     if ($('researchCopyBtn')) $('researchCopyBtn').addEventListener('click', function () {
       if (!state.researchRaw) return;

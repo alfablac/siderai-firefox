@@ -649,12 +649,12 @@ check("background prompt path guarded and loads settings", () => {
   assert.ok(!/(^|[^\w.$])global\./.test(bg), "background.js must not use the bare global object");
 });
 
-check("manifest background order and release version 1.0.24", () => {
+check("manifest background order and release version 1.0.25", () => {
   assert.ok(manifest, "manifest required");
   const scripts = (manifest.background && manifest.background.scripts) || [];
   const iP = scripts.indexOf("lib/prompts.js"), iY = scripts.indexOf("lib/youtube.js"), iB = scripts.indexOf("background.js");
   assert.ok(iP >= 0 && iY >= 0 && iB > iP && iB > iY, "lib/prompts.js + lib/youtube.js load before background.js");
-  assert.strictEqual(manifest.version, "1.0.24", "release version");
+  assert.strictEqual(manifest.version, "1.0.25", "release version");
 });
 
 /* ---------- 1.0.6 bug: transcript truncated at 22:52 of a 44:59 video -----
@@ -1517,7 +1517,7 @@ Promise.all([Promise.resolve(sseDone), Promise.resolve(imageDone), Promise.resol
    fallback, widened liveness, touch selection, helper payloads. */
 check("1.0.21: version, model-select wiring, detach transport, mobile surfaces", () => {
   assert.ok(manifest, "manifest required");
-  assert.strictEqual(manifest.version, "1.0.24", "release version");
+  assert.strictEqual(manifest.version, "1.0.25", "release version");
   assert.ok(manifest.browser_specific_settings.gecko_android, "gecko_android block present");
   // Shared picker loads before both helpers.
   const ytEntry = (manifest.content_scripts || []).find((cs) => (cs.js || []).includes("content/youtube.js"));
@@ -1613,7 +1613,7 @@ check("1.0.19: icons built as same-document SVG nodes (no DOMParser import)", ()
    static 9px text; now icons-only everywhere, name via long-press. */
 check("1.0.23: panel placement ladder + long-press toolbar labels", () => {
   assert.ok(manifest, "manifest required");
-  assert.strictEqual(manifest.version, "1.0.24", "release version 1.0.24");
+  assert.strictEqual(manifest.version, "1.0.25", "release version 1.0.25");
   const yt = fs.readFileSync(path.join(EXT, "content/youtube.js"), "utf8");
   // Ladder exists, tried sequentially in priority order.
   const ladder = yt.slice(yt.indexOf("const PANEL_PLACEMENTS"), yt.indexOf("function bestPanelPlacement"));
@@ -1762,4 +1762,46 @@ check("1.0.23: research lib parses, dedupes, and builds cited prompts", () => {
   assert.ok(/\[n\]/.test(prompt), "inline citation instruction");
   const empty = R.buildResearchPrompt("Q", [], {});
   assert.ok(empty.includes("no sources are available"), "empty sources stated plainly");
+});
+
+check("Hand run records: storage, background cases outside pinned slice, summary UI", () => {
+  const storage = fs.readFileSync(path.join(EXT, "lib/storage.js"), "utf8");
+  assert.ok(storage.includes("graphiteSider.handRuns.v1"), "hand runs storage key");
+  assert.ok(/HAND_KEY/.test(storage), "HAND_KEY defined");
+  ["saveHandRun", "listHandRuns", "getHandRun", "deleteHandRun"].forEach((fn) => {
+    assert.ok(storage.includes("function " + fn), "storage defines " + fn);
+    assert.ok(storage.includes(fn + ": " + fn), "storage exports " + fn);
+  });
+  assert.ok(/HAND_KEY:\s*HAND_KEY/.test(storage), "storage exports HAND_KEY");
+
+  const bg = fs.readFileSync(path.join(EXT, "background.js"), "utf8");
+  ["saveHandRun", "listHandRuns", "getHandRun", "deleteHandRun"].forEach((t) => {
+    assert.ok(bg.includes("case '" + t + "'"), "background handles " + t);
+  });
+  const sliceStart = bg.indexOf("case 'buildYouTubePrompt':");
+  const sliceEnd = bg.indexOf("case 'getActiveTab':");
+  assert.ok(sliceStart > -1 && sliceEnd > sliceStart, "pinned slice anchors present");
+  const slice = bg.slice(sliceStart, sliceEnd);
+  ["saveHandRun", "listHandRuns", "getHandRun", "deleteHandRun"].forEach((t) => {
+    assert.ok(!slice.includes("case '" + t + "'"), t + " not inside pinned slice");
+  });
+  assert.ok(bg.includes("GraphiteStorage.saveHandRun"), "background delegates to GraphiteStorage");
+
+  const html = fs.readFileSync(path.join(EXT, "sidebar/sidebar.html"), "utf8");
+  ["handFinishBtn", "handSummary", "handCopySummaryBtn", "handDownloadSummaryBtn", "handRunsList"].forEach((id) => {
+    assert.ok(html.includes('id="' + id + '"'), "sidebar element #" + id);
+  });
+  assert.ok(html.includes("Finish &amp; summarize") || html.includes("Finish & summarize"), "finish button label");
+
+  const side = fs.readFileSync(path.join(EXT, "sidebar/sidebar.js"), "utf8");
+  ["finishHandRun", "handSummaryMarkdown", "copyHandSummary", "downloadHandSummary", "renderHandRunsList", "renderHandSummary", "buildHandRunRecord"].forEach((fn) => {
+    assert.ok(side.includes("function " + fn), "sidebar implements " + fn);
+  });
+  ["handFinishBtn", "handCopySummaryBtn", "handDownloadSummaryBtn", "handRunsList"].forEach((id) => {
+    assert.ok(side.includes(id), "sidebar references #" + id);
+  });
+  assert.ok(/step\.resultText/.test(side), "step resultText stored");
+  assert.ok(/handLogEntries/.test(side), "structured hand log entries");
+  assert.ok(side.includes("20000"), "hand extract cap 20000 present");
+  assert.ok(!/innerHTML\s*=/.test(side), "sidebar still never assigns innerHTML");
 });

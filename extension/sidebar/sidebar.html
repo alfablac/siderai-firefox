@@ -129,8 +129,20 @@
     <div class="row">
       <button id="handRunAllBtn" class="btn primary small" type="button">Run all</button>
       <button id="handStopBtn" class="btn small danger-outline" type="button">Stop</button>
+      <button id="handFinishBtn" class="btn small" type="button">Finish &amp; summarize</button>
     </div>
     <div id="handLog" class="log-box" aria-live="polite"></div>
+    <div id="handSummary" class="hand-summary hidden">
+      <div class="row-between"><strong>Run summary</strong><span id="handSummaryOutcome" class="muted small"></span></div>
+      <p id="handSummaryMeta" class="muted small"></p>
+      <div id="handSummarySteps"></div>
+      <div class="row">
+        <button id="handCopySummaryBtn" class="btn small" type="button">Copy summary</button>
+        <button id="handDownloadSummaryBtn" class="btn small" type="button">Download .md</button>
+      </div>
+    </div>
+    <div class="row-between"><strong>Saved runs</strong></div>
+    <div id="handRunsList" class="list"></div>
   </section>
 
   <!-- RESEARCH -->
