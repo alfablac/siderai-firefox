@@ -425,11 +425,14 @@ check("Inter is the first family on every surface", () => {
   assert.ok(/body\s*\{[^}]*font(-family)?:[^;}]*"Inter",/.test(side), "sidebar body Inter-first");
   const opts = fs.readFileSync(path.join(EXT, "options/options.css"), "utf8");
   assert.ok(/font(-family)?:[^;}]*"Inter",system-ui/.test(opts), "options Inter-first");
+  // Content scripts use the private GraphiteInter name: a document-level
+  // @font-face named "Inter" would shadow (or be shadowed by) a host
+  // page's own Inter. Extension pages (sidebar/options above) keep "Inter".
   const contentCss = fs.readFileSync(path.join(EXT, "content/content.css"), "utf8");
-  assert.ok(/font-family:\s*"Inter",|@font-face/.test(contentCss), "content.css Inter");
+  assert.ok(/font-family:\s*"GraphiteInter",/.test(contentCss), "content.css GraphiteInter-first");
   const overlay = fs.readFileSync(path.join(EXT, "content/overlay.css"), "utf8");
   const root = overlay.match(/\.gs-root\s*\{([^}]*)\}/);
-  assert.ok(root && /font-family:\s*"Inter",/.test(root[1]), "overlay .gs-root Inter-first");
+  assert.ok(root && /font-family:\s*"GraphiteInter",/.test(root[1]), "overlay .gs-root GraphiteInter-first");
   assert.ok(!/-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial/.test(overlay), "old stack left in overlay.css");
 });
 check("bundled Inter woff2 files exist with WOFF2 magic", () => {
@@ -649,12 +652,12 @@ check("background prompt path guarded and loads settings", () => {
   assert.ok(!/(^|[^\w.$])global\./.test(bg), "background.js must not use the bare global object");
 });
 
-check("manifest background order and release version 1.0.29", () => {
+check("manifest background order and release version 1.0.30", () => {
   assert.ok(manifest, "manifest required");
   const scripts = (manifest.background && manifest.background.scripts) || [];
   const iP = scripts.indexOf("lib/prompts.js"), iY = scripts.indexOf("lib/youtube.js"), iB = scripts.indexOf("background.js");
   assert.ok(iP >= 0 && iY >= 0 && iB > iP && iB > iY, "lib/prompts.js + lib/youtube.js load before background.js");
-  assert.strictEqual(manifest.version, "1.0.29", "release version");
+  assert.strictEqual(manifest.version, "1.0.30", "release version");
 });
 
 /* ---------- 1.0.6 bug: transcript truncated at 22:52 of a 44:59 video -----
@@ -953,7 +956,7 @@ let activityDone = Promise.resolve();
    of the main results column. */
 check("search AI answer: right rail, Google #22242a background", () => {
   const src = fs.readFileSync(path.join(EXT, "content/search.js"), "utf8");
-  const css = fs.readFileSync(path.join(EXT, "content/overlay.css"), "utf8");
+  const css = fs.readFileSync(path.join(EXT, "content/panel.css"), "utf8");
   // Background is Google's #22242a, not the old graphite panel #1f2227, and
   // the whole card (not a child) carries it.
   const cardCss = css.match(/\.gs-search-card\s\{[^}]*\}/);
@@ -989,7 +992,7 @@ check("search AI answer: right rail, Google #22242a background", () => {
    shrank into a 336px floated column outside a native rail. */
 check("1.0.24: search card re-collects results and stretches to fill its container", () => {
   const src = fs.readFileSync(path.join(EXT, "content/search.js"), "utf8");
-  const css = fs.readFileSync(path.join(EXT, "content/overlay.css"), "utf8");
+  const css = fs.readFileSync(path.join(EXT, "content/panel.css"), "utf8");
   const build = src.slice(src.indexOf("function buildCard"), src.indexOf("async function init"));
   // Results are live state, refreshed re-entrantly — not a mount snapshot.
   assert.ok(build.includes("refreshResults"), "card refreshes results after mount");
@@ -1520,7 +1523,7 @@ Promise.all([Promise.resolve(sseDone), Promise.resolve(imageDone), Promise.resol
    fallback, widened liveness, touch selection, helper payloads. */
 check("1.0.21: version, model-select wiring, detach transport, mobile surfaces", () => {
   assert.ok(manifest, "manifest required");
-  assert.strictEqual(manifest.version, "1.0.29", "release version");
+  assert.strictEqual(manifest.version, "1.0.30", "release version");
   assert.ok(manifest.browser_specific_settings.gecko_android, "gecko_android block present");
   // Shared picker loads before both helpers.
   const ytEntry = (manifest.content_scripts || []).find((cs) => (cs.js || []).includes("content/youtube.js"));
@@ -1580,8 +1583,9 @@ check("1.0.21: version, model-select wiring, detach transport, mobile surfaces",
   assert.ok(content.includes("snapshotFieldSelection"), "field selection snapshot for touch apply");
   assert.ok(content.includes("isComposing"), "Enter submits guard IME composition");
   // CSS: coarse-pointer targets + narrow search card + chat-tab layout.
-  const css = fs.readFileSync(path.join(EXT, "content/overlay.css"), "utf8");
-  assert.ok(css.includes("@media (pointer: coarse)"), "coarse-pointer block in overlay.css");
+  // Page-level surfaces live in panel.css; overlay.css is shadow-only now.
+  const css = fs.readFileSync(path.join(EXT, "content/panel.css"), "utf8");
+  assert.ok(css.includes("@media (pointer: coarse)"), "coarse-pointer block in panel.css");
   assert.ok(css.includes(".gs-model-picker"), "picker styles present");
   assert.ok(css.includes(".gs-search-card--rail-fallback"), "narrow search card stacking present");
   const sideCss = fs.readFileSync(path.join(EXT, "sidebar/sidebar.css"), "utf8");
@@ -1616,7 +1620,7 @@ check("1.0.19: icons built as same-document SVG nodes (no DOMParser import)", ()
    static 9px text; now icons-only everywhere, name via long-press. */
 check("1.0.23: panel placement ladder + long-press toolbar labels", () => {
   assert.ok(manifest, "manifest required");
-  assert.strictEqual(manifest.version, "1.0.29", "release version 1.0.29");
+  assert.strictEqual(manifest.version, "1.0.30", "release version 1.0.30");
   const yt = fs.readFileSync(path.join(EXT, "content/youtube.js"), "utf8");
   // Ladder exists, tried sequentially in priority order.
   const ladder = yt.slice(yt.indexOf("const PANEL_PLACEMENTS"), yt.indexOf("function bestPanelPlacement"));
@@ -1646,8 +1650,11 @@ check("1.0.23: panel placement ladder + long-press toolbar labels", () => {
   assert.ok(factory.includes("stopImmediatePropagation"), "long-press click is suppressed before actions");
   assert.ok(factory.includes("addEventListener('pointerdown', (event) => event.preventDefault())"),
     "focus-preservation pointerdown unchanged");
+  // Shadow toolbar styles stay in overlay.css (shadow-only); the page-level
+  // coarse block moved to panel.css with 1.0.30's page-CSS isolation fix.
   const css = fs.readFileSync(path.join(EXT, "content/overlay.css"), "utf8");
-  const coarse = css.slice(css.indexOf("@media (pointer: coarse)"));
+  const panelCss = fs.readFileSync(path.join(EXT, "content/panel.css"), "utf8");
+  const coarse = css.slice(css.indexOf("@media (pointer: coarse)")) + panelCss.slice(panelCss.indexOf("@media (pointer: coarse)"));
   assert.ok(!/\.gs-toolbar-btn::after\s*\{[^}]*position:\s*static/.test(coarse),
     "no static always-visible toolbar labels on coarse pointers");
   assert.ok(!/\.gs-toolbar-btn::after\s*\{[^}]*font-size:\s*9px/.test(coarse),
@@ -1957,7 +1964,7 @@ check("1.0.27 blob/MSE extraction + per-provider transcription model", () => {
    per-video summary language + model selectors. */
 check("1.0.28 manifest recovery + chunking + summary controls", () => {
   assert.ok(manifest, "manifest required");
-  assert.strictEqual(manifest.version, "1.0.29", "release version");
+  assert.strictEqual(manifest.version, "1.0.30", "release version");
 
   // Watcher: registered at document_start in its OWN entry, before the
   // document_end content entry; webRequest present, blocking variant absent.
@@ -2077,4 +2084,82 @@ check("1.0.29 chat transport: jobPost delivers, sidebar re-attaches", () => {
   const prov = fs.readFileSync(path.join(EXT, "lib/providers.js"), "utf8");
   assert.ok(prov.includes("try { j = JSON.parse(data); } catch (e) { return;"),
     "SSE catch is scoped to JSON.parse (consumer errors still surface)");
+});
+
+/* ---------- 1.0.30: page-CSS isolation ------------------------------------
+   Regression: content/overlay.css was injected into every page as a
+   manifest content stylesheet, and its coarse-pointer block carried bare
+   button/input/textarea/select selectors (44px min-height, 16px font,
+   touch-action) that restyled every form control on every site on touch
+   devices. overlay.css is now Shadow-DOM-only (fetched by content.js);
+   the only page-level component stylesheet is panel.css, with every rule
+   rooted at .gs-yt-panel / .gs-search-card. Pins: manifest css list,
+   bare-selector ban in every page-injected stylesheet, private font and
+   keyframe names, renames, and the panel root marker classes. */
+check("1.0.30 CSS isolation: page stylesheets cannot touch host UI", () => {
+  assert.ok(manifest, "manifest required");
+  assert.strictEqual(manifest.version, "1.0.30", "release version");
+
+  // overlay.css (shadow-only) must never be page-injected again; panel.css
+  // carries the small page-level surface (YouTube panel, search card).
+  const cssLists = (manifest.content_scripts || []).map((cs) => cs.css || []);
+  const injected = cssLists.flat();
+  assert.ok(!injected.includes("content/overlay.css"), "manifest css excludes overlay.css");
+  assert.ok(injected.includes("content/panel.css"), "manifest css includes panel.css");
+  const mainEntry = cssLists.find((l) => l.includes("content/content.css"));
+  assert.ok(mainEntry && mainEntry.includes("content/panel.css"),
+    "panel.css rides the document_end entry next to content.css");
+
+  // Bare element selectors are banned in EVERY page-injected stylesheet:
+  // they would restyle the host site's input boxes, checkboxes, toggles
+  // and other UI. Selector chunks are the text between } and {.
+  const bareEl = /^(a|abbr|address|area|article|aside|audio|b|base|bdi|bdo|blockquote|body|br|button|canvas|caption|cite|code|col|colgroup|data|datalist|dd|del|details|dfn|dialog|div|dl|dt|em|embed|fieldset|figcaption|figure|footer|form|h1|h2|h3|h4|h5|h6|head|header|hgroup|hr|html|i|iframe|img|input|ins|kbd|label|legend|li|link|main|map|mark|meta|meter|nav|noscript|object|ol|optgroup|option|output|p|picture|pre|progress|q|rp|rt|ruby|s|samp|script|search|section|select|slot|small|source|span|strong|style|sub|summary|sup|table|tbody|td|template|textarea|tfoot|th|thead|time|title|tr|track|u|ul|var|video|wbr)([\s>+~:.#\[]|$)/;
+  for (const f of ["content/content.css", "content/panel.css"]) {
+    const text = fs.readFileSync(path.join(EXT, f), "utf8")
+      .replace(/\/\*[\s\S]*?\*\//g, ""); // comments carry prose, not selectors
+    for (const m of text.matchAll(/([^{}]+)\{/g)) {
+      const sel = m[1].trim();
+      if (sel.startsWith("@")) continue;   // @media/@font-face/@keyframes header
+      for (const part of sel.split(",").map((s) => s.trim())) {
+        const first = part.split(/[\s>+~]/)[0];
+        if (first === "*" || first === ":root" || /^[\d.]+%/.test(first)) {
+          assert.fail(f + ": universal/:root/keyframe selector leaked page-level: " + part);
+        }
+        assert.ok(!bareEl.test(first), f + ": bare element selector " + first + " would restyle host " + first + "s");
+      }
+    }
+  }
+
+  // Private global names in page-injected CSS: the public "Inter" family
+  // and the old "gs-spin" keyframes could collide with a host page's own.
+  const contentCss = fs.readFileSync(path.join(EXT, "content/content.css"), "utf8");
+  assert.ok(!/@font-face\s*\{[^}]*font-family:\s*"Inter"/.test(contentCss), "no global Inter @font-face in content.css");
+  assert.ok(contentCss.includes('@font-face{font-family:"GraphiteInter"'), "GraphiteInter is the content @font-face");
+  const panelCss = fs.readFileSync(path.join(EXT, "content/panel.css"), "utf8");
+  assert.ok(!/@font-face\s*\{/.test(panelCss), "panel.css needs no @font-face rule (content.css carries it)");
+  assert.ok(!panelCss.includes("@keyframes gs-spin") && !panelCss.includes("@keyframes gs-"),
+    "no old gs-spin-style keyframe name in panel.css");
+  assert.ok(panelCss.includes("@keyframes graphite-sider-spin"), "panel keyframes use the private name");
+
+  // Renames applied everywhere the old page-visible utility could match
+  // host classes (.gs-hidden / animation gs-spin).
+  for (const f of ["content/content.js", "content/search.js", "content/youtube.js"]) {
+    const js = fs.readFileSync(path.join(EXT, f), "utf8");
+    assert.ok(!/gs-hidden/.test(js), "gs-hidden renamed away in content/" + f);
+    assert.ok(!/\bgs-spin\b/.test(js), "no gs-spin reference in content/" + f);
+  }
+  assert.ok(!/\.gs-hidden\b/.test(panelCss), "panel.css defines no .gs-hidden utility");
+  assert.ok(!/\.gs-hidden\b/.test(fs.readFileSync(path.join(EXT, "content/overlay.css"), "utf8")),
+    "overlay.css defines no .gs-hidden utility either (renamed graphite-sider-hidden)");
+
+  // The page-level roots carry the marker class the scoped utilities
+  // anchor to, and the shadow copy is fetched (never manifest-injected).
+  const yt = fs.readFileSync(path.join(EXT, "content/youtube.js"), "utf8");
+  assert.ok(yt.includes("gs-yt-panel graphite-sider-ui"), "YouTube panel carries the graphite-sider-ui marker");
+  const search = fs.readFileSync(path.join(EXT, "content/search.js"), "utf8");
+  assert.ok(search.includes("gs-search-card graphite-sider-ui"), "search card carries the graphite-sider-ui marker");
+  const content = fs.readFileSync(path.join(EXT, "content/content.js"), "utf8");
+  assert.ok(/getURL\('content\/overlay\.css'\)/.test(content) && content.includes("fetch(url)"),
+    "overlay.css is fetched into the shadow root");
+  assert.ok(content.includes("gs-root graphite-sider-ui"), "shadow root carries the graphite-sider-ui marker");
 });

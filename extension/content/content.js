@@ -2,7 +2,11 @@
    Selection toolbar, result popover, writing assistant, full-page
    translate, read-aloud, page-text extraction and image OCR.
    All overlay UI lives in a Shadow DOM root (#graphite-sider-root)
-   styled by content/overlay.css to avoid page CSS leakage. */
+   styled by content/overlay.css (fetched into the shadow tree only).
+   Page-level CSS is limited to content.css (host element, translation
+   notes, subtitle overlay) and panel.css (YouTube panel, search card),
+   both fully scoped to the extension's own containers — the extension
+   must never restyle the host site's inputs, checkboxes or toggles. */
 (function () {
   'use strict';
 
@@ -366,11 +370,11 @@
     style.textContent = overlayCssText;
     shadowRoot.appendChild(style);
     const root = document.createElement('div');
-    root.className = 'gs-root';
-    const toolbarEl = createEl('div', 'gs-toolbar gs-hidden');
+    root.className = 'gs-root graphite-sider-ui';
+    const toolbarEl = createEl('div', 'gs-toolbar graphite-sider-hidden');
     toolbarEl.setAttribute('data-gs', 'toolbar');
     root.appendChild(toolbarEl);
-    const cardEl = createEl('div', 'gs-card gs-hidden');
+    const cardEl = createEl('div', 'gs-card graphite-sider-hidden');
     cardEl.setAttribute('data-gs', 'card');
     const cardHeader = createEl('div', 'gs-card-header');
     cardHeader.setAttribute('data-gs', 'card-header');
@@ -391,13 +395,13 @@
     root.appendChild(cardEl);
     const writeBtn = document.createElement('button');
     writeBtn.type = 'button';
-    writeBtn.className = 'gs-write-btn gs-hidden';
+    writeBtn.className = 'gs-write-btn graphite-sider-hidden';
     writeBtn.setAttribute('data-gs', 'write-btn');
     writeBtn.title = 'Graphite writing assistant';
     writeBtn.setAttribute('aria-label', 'Graphite writing assistant');
     setIcon(writeBtn, '<svg viewBox="0 0 32 32" width="16" height="16" aria-hidden="true" focusable="false"><path d="M16 2 L28 12 L16 30 L4 12 Z" fill="#26292f" stroke="currentColor" stroke-width="1.6" /><path d="M4 12 H28 M16 2 L11 12 L16 30 L21 12 L16 2" fill="none" stroke="#8b9bb4" stroke-width="1" /></svg>');
     root.appendChild(writeBtn);
-    const writeMenu = createEl('div', 'gs-write-menu gs-hidden');
+    const writeMenu = createEl('div', 'gs-write-menu graphite-sider-hidden');
     writeMenu.setAttribute('data-gs', 'write-menu');
     root.appendChild(writeMenu);
     shadowRoot.appendChild(root);
@@ -548,15 +552,16 @@
   }
 
   function fontFaceCss() {
-    // Inter @font-face for the shadow UI only. overlay.css is ALSO a
-    // declared content stylesheet (manifest content_scripts css), where a
-    // __GS_FONT_BASE__ token would not be substituted; page-level Inter is
-    // already declared in content.css. So the shadow copy gets a generated
-    // block built with runtime.getURL() prepended here.
+    // Bundled Inter @font-face for the shadow UI only, under the private
+    // "GraphiteInter" family so it can never shadow (or be shadowed by) a
+    // host page's own Inter. Page-level GraphiteInter is declared in
+    // content.css. The shadow copy gets a generated block built with
+    // runtime.getURL() prepended here, since url() inside the fetched
+    // overlay.css resolves against the page, not the extension.
     try {
       const base = runtime.getURL('fonts/');
       return [400, 500, 600, 700].map((w) =>
-        '@font-face{font-family:"Inter";src:url("' + base + 'inter-latin-' + w + '-normal.woff2") format("woff2");font-weight:' + w + ';font-style:normal;font-display:swap}'
+        '@font-face{font-family:"GraphiteInter";src:url("' + base + 'inter-latin-' + w + '-normal.woff2") format("woff2");font-weight:' + w + ';font-style:normal;font-display:swap}'
       ).join('');
     } catch (e) { return ''; }
   }
@@ -573,8 +578,8 @@
       overlayCssText = overlayCssText.split('__GS_FONT_BASE__').join(runtime.getURL('fonts/'));
     } else {
       overlayCssText =
-        '.gs-toolbar,.gs-card,.gs-write-menu{position:fixed;background:#1f2227;color:#e6e8eb;border:1px solid #33373f;font-family:"Inter",system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;z-index:2147483647}' +
-        '.gs-hidden{display:none!important}.gs-spinner{width:18px;height:18px;border-radius:50%;border:2px solid #33373f;border-top-color:#5ec8c0;animation:gs-spin .8s linear infinite}@keyframes gs-spin{to{transform:rotate(360deg)}}';
+        '.gs-toolbar,.gs-card,.gs-write-menu{position:fixed;background:#1f2227;color:#e6e8eb;border:1px solid #33373f;font-family:"GraphiteInter",system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;z-index:2147483647}' +
+        '.graphite-sider-hidden{display:none!important}.gs-spinner{width:18px;height:18px;border-radius:50%;border:2px solid #33373f;border-top-color:#5ec8c0;animation:graphite-sider-spin .8s linear infinite}@keyframes graphite-sider-spin{to{transform:rotate(360deg)}}';
     }
     overlayCssText = fontFaceCss() + overlayCssText;
   }
@@ -609,7 +614,7 @@
   function showCard(title, anchorRect) {
     const card = qs('[data-gs="card"]');
     qs('[data-gs="card-title"]').textContent = title || 'Graphite';
-    card.classList.remove('gs-hidden');
+    card.classList.remove('graphite-sider-hidden');
     const width = 368;
     const estimatedHeight = 280;
     let left = window.innerWidth / 2 - width / 2;
@@ -629,12 +634,12 @@
 
   function hideCard() {
     const card = qs('[data-gs="card"]');
-    if (card) card.classList.add('gs-hidden');
+    if (card) card.classList.add('graphite-sider-hidden');
   }
 
   function isCardVisible() {
     const card = qs('[data-gs="card"]');
-    return !!card && !card.classList.contains('gs-hidden');
+    return !!card && !card.classList.contains('graphite-sider-hidden');
   }
 
   function setCardLoading(label) {
@@ -901,7 +906,7 @@
     row.appendChild(goBtn);
     body.appendChild(row);
     const customRow = document.createElement('div');
-    customRow.className = 'gs-lang-custom-row gs-hidden';
+    customRow.className = 'gs-lang-custom-row graphite-sider-hidden';
     customRow.setAttribute('data-gs', 'lang-custom-row');
     const customInput = document.createElement('input');
     customInput.className = 'gs-ask-input gs-lang-custom-input';
@@ -910,7 +915,7 @@
     customRow.appendChild(customInput);
     body.appendChild(customRow);
     select.addEventListener('change', () => {
-      customRow.classList.toggle('gs-hidden', select.value !== '__other__');
+      customRow.classList.toggle('graphite-sider-hidden', select.value !== '__other__');
       if (select.value === '__other__') {
         setTimeout(() => { try { customInput.focus(); } catch (e) { /* ignore */ } }, 30);
       }
@@ -962,7 +967,7 @@
 
   function hideToolbar() {
     const toolbar = qs('[data-gs="toolbar"]');
-    if (toolbar) toolbar.classList.add('gs-hidden');
+    if (toolbar) toolbar.classList.add('graphite-sider-hidden');
   }
 
   // Icon-only toolbar buttons: the word is the tooltip (data-label,
@@ -1126,7 +1131,7 @@
     // Measure hidden but laid out, position with the real size, then reveal,
     // so the first paint cannot overflow the right/bottom edge.
     toolbar.style.visibility = 'hidden';
-    toolbar.classList.remove('gs-hidden');
+    toolbar.classList.remove('graphite-sider-hidden');
     const width = toolbar.offsetWidth || 300;
     const height = toolbar.offsetHeight || 38;
     let left = rect.left + rect.width / 2 - width / 2;
@@ -1262,23 +1267,23 @@
 
   function hideWriteButton() {
     const btn = qs('[data-gs="write-btn"]');
-    if (btn) btn.classList.add('gs-hidden');
+    if (btn) btn.classList.add('graphite-sider-hidden');
     hideWriteMenu();
   }
 
   function hideWriteMenu() {
     const menu = qs('[data-gs="write-menu"]');
-    if (menu) menu.classList.add('gs-hidden');
+    if (menu) menu.classList.add('graphite-sider-hidden');
   }
 
   function positionWriteButton(el) {
     const btn = qs('[data-gs="write-btn"]');
     const rect = el.getBoundingClientRect();
     if (rect.width < 40 || rect.height < 16 || rect.bottom < 0 || rect.top > window.innerHeight) {
-      btn.classList.add('gs-hidden');
+      btn.classList.add('graphite-sider-hidden');
       return;
     }
-    btn.classList.remove('gs-hidden');
+    btn.classList.remove('graphite-sider-hidden');
     const pos = clampRect(rect.right - 32, rect.bottom - 32, 26, 26);
     btn.style.left = pos.left + 'px';
     btn.style.top = pos.top + 'px';
@@ -1355,7 +1360,7 @@
     // "Rewrite as ▾" submenu trigger: expands inline inside the scrollable
     // menu; items are indented via the .gs-submenu class in overlay.css.
     const submenu = document.createElement('div');
-    submenu.className = 'gs-submenu gs-hidden';
+    submenu.className = 'gs-submenu graphite-sider-hidden';
     submenu.setAttribute('data-gs', 'rewrite-submenu');
     const trigger = document.createElement('button');
     trigger.type = 'button';
@@ -1365,7 +1370,7 @@
     trigger.setAttribute('aria-expanded', 'false');
     trigger.addEventListener('pointerdown', (event) => event.preventDefault());
     trigger.addEventListener('click', () => {
-      const isHidden = submenu.classList.toggle('gs-hidden');
+      const isHidden = submenu.classList.toggle('graphite-sider-hidden');
       trigger.textContent = isHidden ? 'Rewrite as ▾' : 'Rewrite as ▴';
       trigger.setAttribute('aria-expanded', isHidden ? 'false' : 'true');
       // Re-clamp with the new measured height (flip above if needed).
@@ -1411,7 +1416,7 @@
     submenu.appendChild(customRow);
     menu.appendChild(submenu);
     menu.style.visibility = 'hidden';
-    menu.classList.remove('gs-hidden');
+    menu.classList.remove('graphite-sider-hidden');
     positionWriteMenu(el, menu);
     menu.style.visibility = '';
   }
@@ -2819,7 +2824,7 @@
       if (vvTimer) clearTimeout(vvTimer);
       vvTimer = setTimeout(() => {
         const toolbar = qs('[data-gs="toolbar"]');
-        if (!toolbar || toolbar.classList.contains('gs-hidden')) return;
+        if (!toolbar || toolbar.classList.contains('graphite-sider-hidden')) return;
         const info = getSelectionInfo();
         if (info) { lastSelectionText = info.text; lastSelectionRect = info.rect; showToolbar(info.rect, info.text); }
       }, 120);
@@ -2907,4 +2912,6 @@
     await applySavedCodeRules();
     startCodeRuleSpaWatch();
   })();
+
+
 })();

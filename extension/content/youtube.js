@@ -979,11 +979,12 @@
     try { return buildPanel(); } finally { panelMutating = false; }
   }
 
+
   function buildPanel() {
     let panel = document.querySelector('.gs-yt-panel');
     if (panel) return panel;
     panel = document.createElement('div');
-    panel.className = 'gs-yt-panel';
+    panel.className = 'gs-yt-panel graphite-sider-ui';
     panel.dataset.gsPlacement = '99';
     var head = document.createElement('div');
     head.className = 'gs-yt-head';

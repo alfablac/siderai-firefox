@@ -1,18 +1,26 @@
 /* Graphite content-script page-level styles.
    Shadow-DOM UI (toolbar / popover / writing assistant) is styled by
-   overlay.css, which content.js also injects into the shadow root.
+   overlay.css, which content.js fetches and injects into the shadow root.
+   Page-level UI (YouTube panel, search card) is styled by panel.css.
    This file only styles elements inserted directly into the page DOM:
-   the host element, full-page translation notes and subtitle overlays. */
+   the host element, full-page translation notes and subtitle overlays.
+   ISOLATION CONTRACT: every page-injected stylesheet must only style the
+   extension's own components (containers #graphite-sider-root,
+   .gs-yt-panel, .gs-search-card and their .gs-* children) — never bare
+   element selectors (button/input/textarea/select/...) and never global
+   font/keyframe names, which would alter the host site's UI. */
 
-/* Inter — bundled locally. @font-face inlined (not @import of
+/* Bundled Inter under a private family name — a plain "Inter" @font-face
+   would be registered document-wide and shadow (or be shadowed by) the
+   host page's own Inter. @font-face inlined (not @import of
    ../fonts/inter.css): @import in manifest-injected content stylesheets
    is fragile in Firefox (must precede all other rules, extra fetch chain,
    resolution against the page can fail). url() here resolves relative to
    this stylesheet's moz-extension:// URL: extension/content/ -> extension/fonts/. */
-@font-face{font-family:"Inter";src:url("../fonts/inter-latin-400-normal.woff2") format("woff2");font-weight:400;font-style:normal;font-display:swap}
-@font-face{font-family:"Inter";src:url("../fonts/inter-latin-500-normal.woff2") format("woff2");font-weight:500;font-style:normal;font-display:swap}
-@font-face{font-family:"Inter";src:url("../fonts/inter-latin-600-normal.woff2") format("woff2");font-weight:600;font-style:normal;font-display:swap}
-@font-face{font-family:"Inter";src:url("../fonts/inter-latin-700-normal.woff2") format("woff2");font-weight:700;font-style:normal;font-display:swap}
+@font-face{font-family:"GraphiteInter";src:url("../fonts/inter-latin-400-normal.woff2") format("woff2");font-weight:400;font-style:normal;font-display:swap}
+@font-face{font-family:"GraphiteInter";src:url("../fonts/inter-latin-500-normal.woff2") format("woff2");font-weight:500;font-style:normal;font-display:swap}
+@font-face{font-family:"GraphiteInter";src:url("../fonts/inter-latin-600-normal.woff2") format("woff2");font-weight:600;font-style:normal;font-display:swap}
+@font-face{font-family:"GraphiteInter";src:url("../fonts/inter-latin-700-normal.woff2") format("woff2");font-weight:700;font-style:normal;font-display:swap}
 
 #graphite-sider-root {
   all: initial;
@@ -48,7 +56,7 @@
   border: 1px solid #33373f;
   border-radius: 8px;
   padding: 6px 12px;
-  font-family: "Inter", system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  font-family: "GraphiteInter", system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
   font-size: 15px;
   line-height: 1.45;
   pointer-events: none;

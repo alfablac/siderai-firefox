@@ -3,9 +3,11 @@
    offline and never phones home for type. Weights 400/500/600/700.
    Paths are relative to each stylesheet that @imports this file only
    when that stylesheet lives in extension/fonts/; see per-surface
-   @font-face blocks in sidebar.css / options.css / overlay.css, which
-   use surface-relative paths. This file is the canonical copy for
-   pages that link it directly. */
+   @font-face blocks in sidebar.css / options.css (family "Inter",
+   extension pages only) and content.css / content.js (family
+   "GraphiteInter", content scripts — the private name keeps the
+   page-level @font-face from shadowing a host page's own Inter).
+   This file is the canonical copy for pages that link it directly. */
 @font-face {
   font-family: "Inter";
   src: url("inter-latin-400-normal.woff2") format("woff2");

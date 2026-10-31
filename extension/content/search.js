@@ -307,7 +307,7 @@
 
   function buildCard(query, initialResults) {
     const card = document.createElement('section');
-    card.className = 'gs-search-card';
+    card.className = 'gs-search-card graphite-sider-ui';
     // Live state, not the mount-time snapshot: refreshResults() re-collects
     // so late-rendered results are seen, and the Generate handler always
     // reads this array instead of a stale closure.
@@ -486,7 +486,7 @@
         target.el.prepend(card);
       } else {
         // No native rail: the card becomes a full-width block of its own
-        // above the results list (the stretch class in overlay.css), never
+        // above the results list (the stretch class in panel.css), never
         // a shrunk floated column.
         card.classList.add('gs-search-card--stretch');
         target.el.prepend(card);
