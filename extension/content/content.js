@@ -20,6 +20,7 @@
 
   const DEFAULT_SETTINGS = {
     selectionToolbar: true,
+    selectionToolbarPosition: 'above',
     searchEnhance: true,
     writingAssistant: true,
     targetLanguage: 'English',
@@ -64,6 +65,7 @@
     if (Array.isArray(inner.translationLanguages)) flat.translationLanguages = inner.translationLanguages;
     else if (!Array.isArray(flat.translationLanguages)) flat.translationLanguages = undefined;
     flat.selectionToolbar = inner.selectionToolbar !== false;
+    flat.selectionToolbarPosition = inner.selectionToolbarPosition === 'below' ? 'below' : 'above';
     flat.searchEnhance = inner.searchEnhance !== false;
     flat.writingAssistant = inner.writingAssistant !== false;
     return flat;
@@ -1135,8 +1137,17 @@
     const width = toolbar.offsetWidth || 300;
     const height = toolbar.offsetHeight || 38;
     let left = rect.left + rect.width / 2 - width / 2;
-    let top = rect.top - height - 10;
-    if (top < 8) top = rect.bottom + 10;
+    // User setting: prefer showing the selection menu above or below the
+    // selection; fall back to the other side only when the preferred side
+    // would leave the viewport, and clampRect() still clamps the result.
+    let top;
+    if (settings.selectionToolbarPosition === 'below') {
+      top = rect.bottom + 10;
+      if (top + height > window.innerHeight - 8) top = rect.top - height - 10;
+    } else {
+      top = rect.top - height - 10;
+      if (top < 8) top = rect.bottom + 10;
+    }
     const pos = clampRect(left, top, width, height);
     toolbar.style.left = pos.left + 'px';
     toolbar.style.top = pos.top + 'px';

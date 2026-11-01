@@ -204,6 +204,10 @@
     youtubeAutoSummary: false,
     searchEnhance: true,
     selectionToolbar: true,
+    // Where the floating selection menu sits relative to the selected text:
+    // 'above' (default, historical) or 'below'. Falls back to the other side
+    // only when the preferred side would leave the viewport.
+    selectionToolbarPosition: 'above',
     bilingualSubtitles: false,
     // Issue 4: preferred sidebar side. Firefox (not the extension) controls
     // the actual built-in sidebar position; this records the user's choice
@@ -324,6 +328,9 @@
       });
       if (out.settings.sidebarSide !== 'left' && out.settings.sidebarSide !== 'right') {
         out.settings.sidebarSide = 'right';
+      }
+      if (out.settings.selectionToolbarPosition !== 'above' && out.settings.selectionToolbarPosition !== 'below') {
+        out.settings.selectionToolbarPosition = 'above';
       }
       out.settings.translationLanguages = normalizeLangList(out.settings.translationLanguages);
       // Coerce a string maxTokens (older/options saves) to a number so the

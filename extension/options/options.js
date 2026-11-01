@@ -100,7 +100,7 @@ function libDefaults() {
 var DEFAULT_SETTINGS = {
   targetLang: "English", temperature: 0.7, maxTokens: 0, // 0 = provider default
   systemPrompt: "", youtubeAutoSummary: false, searchEnhance: true,
-  selectionToolbar: true, bilingualSubtitles: false
+  selectionToolbar: true, selectionToolbarPosition: "above", bilingualSubtitles: false
 };
 
 function defaultState() {
@@ -302,6 +302,7 @@ function normalizeState(raw) {
   if (raw.settings && typeof raw.settings === "object") {
     s.settings = Object.assign({}, DEFAULT_SETTINGS, raw.settings);
     if (s.settings.sidebarSide !== "left" && s.settings.sidebarSide !== "right") s.settings.sidebarSide = "right";
+    if (s.settings.selectionToolbarPosition !== "above" && s.settings.selectionToolbarPosition !== "below") s.settings.selectionToolbarPosition = "above";
   }
   if (Array.isArray(raw.prompts)) {
     s.prompts = raw.prompts.filter(function (p) { return p && typeof p === "object"; }).map(function (p) {
@@ -667,6 +668,7 @@ function renderDefaults() {
     : "(0 = provider default)";
   el("systemPrompt").value = state.settings.systemPrompt || "";
   el("featSelectionToolbar").checked = !!state.settings.selectionToolbar;
+  if (el("selectionToolbarPosition")) el("selectionToolbarPosition").value = state.settings.selectionToolbarPosition === "below" ? "below" : "above";
   el("featSearchEnhance").checked = !!state.settings.searchEnhance;
   el("featYoutubeAutoSummary").checked = !!state.settings.youtubeAutoSummary;
   el("featBilingualSubtitles").checked = !!state.settings.bilingualSubtitles;
@@ -687,6 +689,7 @@ function readDefaultsFromUI() {
     state.settings.translationLanguages = parseLanguageLines(el("translationLanguages").value);
   }
   state.settings.selectionToolbar = el("featSelectionToolbar").checked;
+  if (el("selectionToolbarPosition")) state.settings.selectionToolbarPosition = el("selectionToolbarPosition").value === "below" ? "below" : "above";
   state.settings.searchEnhance = el("featSearchEnhance").checked;
   state.settings.youtubeAutoSummary = el("featYoutubeAutoSummary").checked;
   state.settings.bilingualSubtitles = el("featBilingualSubtitles").checked;
@@ -1195,6 +1198,10 @@ function bindEvents() {
   if (el("openSidebarBtn")) el("openSidebarBtn").addEventListener("click", openSidebar);
   if (el("sidebarSidePref")) el("sidebarSidePref").addEventListener("change", function () {
     state.settings.sidebarSide = el("sidebarSidePref").value === "left" ? "left" : "right";
+    schedulePersist();
+  });
+  if (el("selectionToolbarPosition")) el("selectionToolbarPosition").addEventListener("change", function () {
+    state.settings.selectionToolbarPosition = el("selectionToolbarPosition").value === "below" ? "below" : "above";
     schedulePersist();
   });
   el("importAllFile").addEventListener("change", function (ev) {
