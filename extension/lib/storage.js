@@ -208,6 +208,12 @@
     // 'above' (default, historical) or 'below'. Falls back to the other side
     // only when the preferred side would leave the viewport.
     selectionToolbarPosition: 'above',
+    // Milliseconds to wait after the selection stops changing before the
+    // menu appears. On mobile this lets the user keep dragging a selection
+    // handle below without the menu popping up mid-selection. 0-10000.
+    selectionToolbarDelayMs: 800,
+    // Pixel gap between the selection and the floating menu. 0-80.
+    selectionToolbarPaddingPx: 10,
     bilingualSubtitles: false,
     // Issue 4: preferred sidebar side. Firefox (not the extension) controls
     // the actual built-in sidebar position; this records the user's choice
@@ -332,6 +338,12 @@
       if (out.settings.selectionToolbarPosition !== 'above' && out.settings.selectionToolbarPosition !== 'below') {
         out.settings.selectionToolbarPosition = 'above';
       }
+      var delayMs = Number(out.settings.selectionToolbarDelayMs);
+      out.settings.selectionToolbarDelayMs = (isFinite(delayMs) && delayMs >= 0)
+        ? Math.min(10000, Math.floor(delayMs)) : 800;
+      var padPx = Number(out.settings.selectionToolbarPaddingPx);
+      out.settings.selectionToolbarPaddingPx = (isFinite(padPx) && padPx >= 0)
+        ? Math.min(80, Math.floor(padPx)) : 10;
       out.settings.translationLanguages = normalizeLangList(out.settings.translationLanguages);
       // Coerce a string maxTokens (older/options saves) to a number so the
       // background's numeric check never silently drops the user's value.

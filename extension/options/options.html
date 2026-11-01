@@ -108,6 +108,16 @@
       </select>
       <span class="hint">Where the floating menu appears when text is selected. It switches side automatically if the chosen side would go off-screen.</span>
     </label>
+    <label class="field">
+      <span>Selection menu delay (milliseconds)</span>
+      <input id="selectionToolbarDelayMs" type="number" min="0" max="10000" step="100">
+      <span class="hint">How long to wait after you stop adjusting a selection before the menu appears. Raise it on mobile so the menu does not pop up while you are still dragging the selection handles (for example 1500). 0 shows it immediately.</span>
+    </label>
+    <label class="field">
+      <span>Selection menu padding (pixels)</span>
+      <input id="selectionToolbarPaddingPx" type="number" min="0" max="80" step="1">
+      <span class="hint">Gap between the selected text and the floating menu, so it stays clear of the selection handles and the text below.</span>
+    </label>
     <label class="toggle">
       <input id="featSearchEnhance" type="checkbox">
       <span><strong>Search engine boost</strong><br><small>Show an AI answer panel alongside Google / Bing / DuckDuckGo and other supported search results.</small></span>

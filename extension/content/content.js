@@ -21,6 +21,8 @@
   const DEFAULT_SETTINGS = {
     selectionToolbar: true,
     selectionToolbarPosition: 'above',
+    selectionToolbarDelayMs: 800,
+    selectionToolbarPaddingPx: 10,
     searchEnhance: true,
     writingAssistant: true,
     targetLanguage: 'English',
@@ -66,6 +68,14 @@
     else if (!Array.isArray(flat.translationLanguages)) flat.translationLanguages = undefined;
     flat.selectionToolbar = inner.selectionToolbar !== false;
     flat.selectionToolbarPosition = inner.selectionToolbarPosition === 'below' ? 'below' : 'above';
+    flat.selectionToolbarDelayMs = (function (v) {
+      const n = Number(v);
+      return (isFinite(n) && n >= 0) ? Math.min(10000, Math.floor(n)) : 800;
+    })(inner.selectionToolbarDelayMs);
+    flat.selectionToolbarPaddingPx = (function (v) {
+      const n = Number(v);
+      return (isFinite(n) && n >= 0) ? Math.min(80, Math.floor(n)) : 10;
+    })(inner.selectionToolbarPaddingPx);
     flat.searchEnhance = inner.searchEnhance !== false;
     flat.writingAssistant = inner.writingAssistant !== false;
     return flat;
@@ -967,6 +977,16 @@
 
   // ------------------------------------------------------ selection toolbar
 
+  function selectionDelayMs() {
+    const n = Number(settings.selectionToolbarDelayMs);
+    return (isFinite(n) && n >= 0) ? Math.min(10000, Math.floor(n)) : 800;
+  }
+
+  function selectionPaddingPx() {
+    const n = Number(settings.selectionToolbarPaddingPx);
+    return (isFinite(n) && n >= 0) ? Math.min(80, Math.floor(n)) : 10;
+  }
+
   function hideToolbar() {
     const toolbar = qs('[data-gs="toolbar"]');
     if (toolbar) toolbar.classList.add('graphite-sider-hidden');
@@ -1140,13 +1160,14 @@
     // User setting: prefer showing the selection menu above or below the
     // selection; fall back to the other side only when the preferred side
     // would leave the viewport, and clampRect() still clamps the result.
+    const pad = selectionPaddingPx();
     let top;
     if (settings.selectionToolbarPosition === 'below') {
-      top = rect.bottom + 10;
-      if (top + height > window.innerHeight - 8) top = rect.top - height - 10;
+      top = rect.bottom + pad;
+      if (top + height > window.innerHeight - 8) top = rect.top - height - pad;
     } else {
-      top = rect.top - height - 10;
-      if (top < 8) top = rect.bottom + 10;
+      top = rect.top - height - pad;
+      if (top < 8) top = rect.bottom + pad;
     }
     const pos = clampRect(left, top, width, height);
     toolbar.style.left = pos.left + 'px';
@@ -2800,10 +2821,17 @@
 
   document.addEventListener('mouseup', onMouseUp, true);
   // Touch selection on mobile never fires a useful mouseup/keyup pair:
-  // selectionchange (debounced) and pointerup (longer delay for touch, so
-  // selection handles can settle) drive the same show/hide decision.
+  // selectionchange drives the show decision, and it must be DEBOUNCED, not
+  // just delayed. While the user drags a selection handle, selectionchange
+  // keeps firing; the old fixed 300ms timer let the menu appear as soon as
+  // the first change settled for 300ms, often right over the text the user
+  // was still trying to extend. Every change now restarts the countdown, so
+  // the menu only appears once the selection has been still for
+  // selectionToolbarDelayMs (settings, default 800ms). A visible menu is
+  // re-anchored to the live rect rather than rebuilt, so adjusting an
+  // already-shown selection never re-lays-out over the handles.
   let selectionChangeTimer = 0;
-  let lastPointerUpAt = 0;
+  let toolbarShownForText = '';
   function checkSelectionNow() {
     if (settings.selectionToolbar === false) return;
     if (toolbarDragActive || Date.now() < toolbarDragSuppressUntil) return;
@@ -2811,19 +2839,28 @@
     if (info) {
       lastSelectionText = info.text;
       lastSelectionRect = info.rect;
+      const toolbar = qs('[data-gs="toolbar"]');
+      const visible = !!(toolbar && !toolbar.classList.contains('graphite-sider-hidden'));
+      if (visible && toolbarShownForText === info.text) {
+        // Same selection, menu already up: keep it where it is. Moving it
+        // mid-adjustment is what made it jump under the user's finger.
+        return;
+      }
       showToolbar(info.rect, info.text);
+      toolbarShownForText = info.text;
     } else {
+      toolbarShownForText = '';
       hideToolbar();
     }
   }
-  document.addEventListener('selectionchange', () => {
+  function scheduleSelectionCheck() {
     if (selectionChangeTimer) clearTimeout(selectionChangeTimer);
-    selectionChangeTimer = setTimeout(checkSelectionNow, 300);
-  }, true);
+    selectionChangeTimer = setTimeout(checkSelectionNow, selectionDelayMs());
+  }
+  document.addEventListener('selectionchange', scheduleSelectionCheck, true);
   document.addEventListener('pointerup', (event) => {
     if (event.target && event.target.closest && event.target.closest('#graphite-sider-root')) return;
-    lastPointerUpAt = Date.now();
-    if (event.pointerType === 'touch') setTimeout(checkSelectionNow, 300);
+    if (event.pointerType === 'touch') scheduleSelectionCheck();
     else if (event.pointerType === 'mouse') onMouseUp(event);
   }, true);
   // While the soft keyboard or browser chrome resizes, re-anchor the

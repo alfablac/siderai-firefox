@@ -652,12 +652,12 @@ check("background prompt path guarded and loads settings", () => {
   assert.ok(!/(^|[^\w.$])global\./.test(bg), "background.js must not use the bare global object");
 });
 
-check("manifest background order and release version 1.0.31", () => {
+check("manifest background order and release version 1.0.32", () => {
   assert.ok(manifest, "manifest required");
   const scripts = (manifest.background && manifest.background.scripts) || [];
   const iP = scripts.indexOf("lib/prompts.js"), iY = scripts.indexOf("lib/youtube.js"), iB = scripts.indexOf("background.js");
   assert.ok(iP >= 0 && iY >= 0 && iB > iP && iB > iY, "lib/prompts.js + lib/youtube.js load before background.js");
-  assert.strictEqual(manifest.version, "1.0.31", "release version");
+  assert.strictEqual(manifest.version, "1.0.32", "release version");
 });
 
 /* ---------- 1.0.6 bug: transcript truncated at 22:52 of a 44:59 video -----
@@ -1523,7 +1523,7 @@ Promise.all([Promise.resolve(sseDone), Promise.resolve(imageDone), Promise.resol
    fallback, widened liveness, touch selection, helper payloads. */
 check("1.0.21: version, model-select wiring, detach transport, mobile surfaces", () => {
   assert.ok(manifest, "manifest required");
-  assert.strictEqual(manifest.version, "1.0.31", "release version");
+  assert.strictEqual(manifest.version, "1.0.32", "release version");
   assert.ok(manifest.browser_specific_settings.gecko_android, "gecko_android block present");
   // Shared picker loads before both helpers.
   const ytEntry = (manifest.content_scripts || []).find((cs) => (cs.js || []).includes("content/youtube.js"));
@@ -1620,7 +1620,7 @@ check("1.0.19: icons built as same-document SVG nodes (no DOMParser import)", ()
    static 9px text; now icons-only everywhere, name via long-press. */
 check("1.0.23: panel placement ladder + long-press toolbar labels", () => {
   assert.ok(manifest, "manifest required");
-  assert.strictEqual(manifest.version, "1.0.31", "release version");
+  assert.strictEqual(manifest.version, "1.0.32", "release version");
   const yt = fs.readFileSync(path.join(EXT, "content/youtube.js"), "utf8");
   // Ladder exists, tried sequentially in priority order.
   const ladder = yt.slice(yt.indexOf("const PANEL_PLACEMENTS"), yt.indexOf("function bestPanelPlacement"));
@@ -1964,7 +1964,7 @@ check("1.0.27 blob/MSE extraction + per-provider transcription model", () => {
    per-video summary language + model selectors. */
 check("1.0.28 manifest recovery + chunking + summary controls", () => {
   assert.ok(manifest, "manifest required");
-  assert.strictEqual(manifest.version, "1.0.31", "release version");
+  assert.strictEqual(manifest.version, "1.0.32", "release version");
 
   // Watcher: registered at document_start in its OWN entry, before the
   // document_end content entry; webRequest present, blocking variant absent.
@@ -2098,7 +2098,7 @@ check("1.0.29 chat transport: jobPost delivers, sidebar re-attaches", () => {
    keyframe names, renames, and the panel root marker classes. */
 check("1.0.30 CSS isolation: page stylesheets cannot touch host UI", () => {
   assert.ok(manifest, "manifest required");
-  assert.strictEqual(manifest.version, "1.0.31", "release version");
+  assert.strictEqual(manifest.version, "1.0.32", "release version");
 
   // overlay.css (shadow-only) must never be page-injected again; panel.css
   // carries the small page-level surface (YouTube panel, search card).
@@ -2171,7 +2171,7 @@ check("1.0.30 CSS isolation: page stylesheets cannot touch host UI", () => {
    flatten, and the above/below placement branch in showToolbar(). */
 check("1.0.31 selection menu position: setting plumbed end to end", () => {
   assert.ok(manifest, "manifest required");
-  assert.strictEqual(manifest.version, "1.0.31", "release version");
+  assert.strictEqual(manifest.version, "1.0.32", "release version");
 
   const storageJs = fs.readFileSync(path.join(EXT, "lib/storage.js"), "utf8");
   assert.ok(storageJs.includes("selectionToolbarPosition: 'above'"), "storage default is above");
@@ -2184,9 +2184,9 @@ check("1.0.31 selection menu position: setting plumbed end to end", () => {
   assert.ok(content.includes("flat.selectionToolbarPosition = inner.selectionToolbarPosition === 'below' ? 'below' : 'above'"),
     "content flattens the nested setting");
   assert.ok(content.includes("if (settings.selectionToolbarPosition === 'below')"), "showToolbar branches on the setting");
-  assert.ok(content.includes("if (top + height > window.innerHeight - 8) top = rect.top - height - 10;"),
+  assert.ok(content.includes("if (top + height > window.innerHeight - 8) top = rect.top - height - pad;"),
     "below falls back above only when it would leave the viewport");
-  assert.ok(content.includes("if (top < 8) top = rect.bottom + 10;"), "above falls back below only when it would leave the viewport");
+  assert.ok(content.includes("if (top < 8) top = rect.bottom + pad;"), "above falls back below only when it would leave the viewport");
 
   const optHtml = fs.readFileSync(path.join(EXT, "options/options.html"), "utf8");
   assert.ok(optHtml.includes('id="selectionToolbarPosition"'), "options page has the position select");
@@ -2202,4 +2202,61 @@ check("1.0.31 selection menu position: setting plumbed end to end", () => {
     "options reads the select back into settings");
   assert.ok(optJs.includes('if (el("selectionToolbarPosition")) el("selectionToolbarPosition").addEventListener("change"'),
     "position select persists on change");
+});
+
+/* ---------- 1.0.32: selection menu delay + padding -------------------------
+   On mobile the menu appeared ~300ms after the first selectionchange, so
+   it popped up while the user was still dragging a handle to select more
+   text below, covering the text/handles. The debounce now restarts on
+   every change and only shows once the selection has been still for the
+   configured delay (default 800ms); the gap between selection and menu is
+   configurable too. Pinned end to end like 1.0.31. */
+check("1.0.32 selection menu delay + padding: debounced, configurable", () => {
+  assert.ok(manifest, "manifest required");
+  assert.strictEqual(manifest.version, "1.0.32", "release version");
+
+  const storageJs = fs.readFileSync(path.join(EXT, "lib/storage.js"), "utf8");
+  assert.ok(storageJs.includes("selectionToolbarDelayMs: 800"), "storage delay default is 800ms");
+  assert.ok(storageJs.includes("selectionToolbarPaddingPx: 10"), "storage padding default is 10px");
+  assert.ok(storageJs.includes("out.settings.selectionToolbarDelayMs = (isFinite(delayMs) && delayMs >= 0)"),
+    "storage normalizes the delay");
+  assert.ok(storageJs.includes("out.settings.selectionToolbarPaddingPx = (isFinite(padPx) && padPx >= 0)"),
+    "storage normalizes the padding");
+
+  const content = fs.readFileSync(path.join(EXT, "content/content.js"), "utf8");
+  assert.ok(content.includes("selectionToolbarDelayMs: 800"), "content delay default is 800ms");
+  assert.ok(content.includes("selectionToolbarPaddingPx: 10"), "content padding default is 10px");
+  assert.ok(content.includes("function selectionDelayMs()"), "content has the delay accessor");
+  assert.ok(content.includes("function selectionPaddingPx()"), "content has the padding accessor");
+  assert.ok(content.includes("selectionChangeTimer = setTimeout(checkSelectionNow, selectionDelayMs())"),
+    "selection timer uses the configured delay");
+  assert.ok(content.includes("document.addEventListener('selectionchange', scheduleSelectionCheck, true)"),
+    "selectionchange is debounced through the scheduler");
+  assert.ok(!content.includes("selectionChangeTimer = setTimeout(checkSelectionNow, 300)"),
+    "old fixed 300ms selectionchange timer is gone");
+  assert.ok(!content.includes("setTimeout(checkSelectionNow, 300)"),
+    "old fixed 300ms touch pointerup timer is gone");
+  assert.ok(content.includes("if (event.pointerType === 'touch') scheduleSelectionCheck();"),
+    "touch pointerup schedules through the configured delay");
+  assert.ok(content.includes("const pad = selectionPaddingPx();"), "showToolbar uses the configured padding");
+  assert.ok(content.includes("top = rect.bottom + pad;"), "below placement uses the padding");
+  assert.ok(content.includes("top = rect.top - height - pad;"), "above placement uses the padding");
+  assert.ok(!content.includes("top = rect.bottom + 10;"), "hardcoded 10px below gap is gone");
+  assert.ok(!content.includes("top = rect.top - height - 10;"), "hardcoded 10px above gap is gone");
+  assert.ok(content.includes("toolbarShownForText === info.text"),
+    "an already-visible menu is not rebuilt for the same selection");
+
+  const optHtml = fs.readFileSync(path.join(EXT, "options/options.html"), "utf8");
+  assert.ok(optHtml.includes('id="selectionToolbarDelayMs"'), "options page has the delay input");
+  assert.ok(optHtml.includes('id="selectionToolbarPaddingPx"'), "options page has the padding input");
+
+  const optJs = fs.readFileSync(path.join(EXT, "options/options.js"), "utf8");
+  assert.ok(optJs.includes("selectionToolbarDelayMs: 800"), "options fallback delay default is 800");
+  assert.ok(optJs.includes("selectionToolbarPaddingPx: 10"), "options fallback padding default is 10");
+  assert.ok(optJs.includes('state.settings.selectionToolbarDelayMs = (isFinite(dN) && dN >= 0)'),
+    "options reads the delay back into settings");
+  assert.ok(optJs.includes('state.settings.selectionToolbarPaddingPx = (isFinite(pN) && pN >= 0)'),
+    "options reads the padding back into settings");
+  assert.ok(optJs.includes('["selectionToolbarDelayMs", "selectionToolbarPaddingPx"].forEach'),
+    "delay/padding inputs persist on change");
 });

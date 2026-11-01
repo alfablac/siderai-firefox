@@ -100,7 +100,8 @@ function libDefaults() {
 var DEFAULT_SETTINGS = {
   targetLang: "English", temperature: 0.7, maxTokens: 0, // 0 = provider default
   systemPrompt: "", youtubeAutoSummary: false, searchEnhance: true,
-  selectionToolbar: true, selectionToolbarPosition: "above", bilingualSubtitles: false
+  selectionToolbar: true, selectionToolbarPosition: "above",
+  selectionToolbarDelayMs: 800, selectionToolbarPaddingPx: 10, bilingualSubtitles: false
 };
 
 function defaultState() {
@@ -303,6 +304,10 @@ function normalizeState(raw) {
     s.settings = Object.assign({}, DEFAULT_SETTINGS, raw.settings);
     if (s.settings.sidebarSide !== "left" && s.settings.sidebarSide !== "right") s.settings.sidebarSide = "right";
     if (s.settings.selectionToolbarPosition !== "above" && s.settings.selectionToolbarPosition !== "below") s.settings.selectionToolbarPosition = "above";
+    var sDelay = Number(s.settings.selectionToolbarDelayMs);
+    s.settings.selectionToolbarDelayMs = (isFinite(sDelay) && sDelay >= 0) ? Math.min(10000, Math.floor(sDelay)) : 800;
+    var sPad = Number(s.settings.selectionToolbarPaddingPx);
+    s.settings.selectionToolbarPaddingPx = (isFinite(sPad) && sPad >= 0) ? Math.min(80, Math.floor(sPad)) : 10;
   }
   if (Array.isArray(raw.prompts)) {
     s.prompts = raw.prompts.filter(function (p) { return p && typeof p === "object"; }).map(function (p) {
@@ -669,6 +674,8 @@ function renderDefaults() {
   el("systemPrompt").value = state.settings.systemPrompt || "";
   el("featSelectionToolbar").checked = !!state.settings.selectionToolbar;
   if (el("selectionToolbarPosition")) el("selectionToolbarPosition").value = state.settings.selectionToolbarPosition === "below" ? "below" : "above";
+  if (el("selectionToolbarDelayMs")) el("selectionToolbarDelayMs").value = String(state.settings.selectionToolbarDelayMs != null ? state.settings.selectionToolbarDelayMs : 800);
+  if (el("selectionToolbarPaddingPx")) el("selectionToolbarPaddingPx").value = String(state.settings.selectionToolbarPaddingPx != null ? state.settings.selectionToolbarPaddingPx : 10);
   el("featSearchEnhance").checked = !!state.settings.searchEnhance;
   el("featYoutubeAutoSummary").checked = !!state.settings.youtubeAutoSummary;
   el("featBilingualSubtitles").checked = !!state.settings.bilingualSubtitles;
@@ -690,6 +697,14 @@ function readDefaultsFromUI() {
   }
   state.settings.selectionToolbar = el("featSelectionToolbar").checked;
   if (el("selectionToolbarPosition")) state.settings.selectionToolbarPosition = el("selectionToolbarPosition").value === "below" ? "below" : "above";
+  if (el("selectionToolbarDelayMs")) {
+    var dN = Number(el("selectionToolbarDelayMs").value);
+    state.settings.selectionToolbarDelayMs = (isFinite(dN) && dN >= 0) ? Math.min(10000, Math.floor(dN)) : 800;
+  }
+  if (el("selectionToolbarPaddingPx")) {
+    var pN = Number(el("selectionToolbarPaddingPx").value);
+    state.settings.selectionToolbarPaddingPx = (isFinite(pN) && pN >= 0) ? Math.min(80, Math.floor(pN)) : 10;
+  }
   state.settings.searchEnhance = el("featSearchEnhance").checked;
   state.settings.youtubeAutoSummary = el("featYoutubeAutoSummary").checked;
   state.settings.bilingualSubtitles = el("featBilingualSubtitles").checked;
@@ -1203,6 +1218,11 @@ function bindEvents() {
   if (el("selectionToolbarPosition")) el("selectionToolbarPosition").addEventListener("change", function () {
     state.settings.selectionToolbarPosition = el("selectionToolbarPosition").value === "below" ? "below" : "above";
     schedulePersist();
+  });
+  ["selectionToolbarDelayMs", "selectionToolbarPaddingPx"].forEach(function (id) {
+    if (!el(id)) return;
+    el(id).addEventListener("input", function () { readDefaultsFromUI(); schedulePersist(); });
+    el(id).addEventListener("change", function () { readDefaultsFromUI(); schedulePersist(); });
   });
   el("importAllFile").addEventListener("change", function (ev) {
     var input = ev.target;
