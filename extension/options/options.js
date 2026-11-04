@@ -100,6 +100,7 @@ function libDefaults() {
 var DEFAULT_SETTINGS = {
   targetLang: "English", temperature: 0.7, maxTokens: 0, // 0 = provider default
   systemPrompt: "", youtubeAutoSummary: false, searchEnhance: true,
+  writingIconOpacity: 68, writingMenuOpacity: 100,
   selectionToolbar: true, selectionToolbarPosition: "above",
   selectionToolbarDelayMs: 800, selectionToolbarPaddingPx: 10, bilingualSubtitles: false,
   floatPanel: false
@@ -304,6 +305,10 @@ function normalizeState(raw) {
   if (raw.settings && typeof raw.settings === "object") {
     s.settings = Object.assign({}, DEFAULT_SETTINGS, raw.settings);
     if (s.settings.sidebarSide !== "left" && s.settings.sidebarSide !== "right") s.settings.sidebarSide = "right";
+    ["writingIconOpacity", "writingMenuOpacity"].forEach(function (id) {
+      var n = Number(s.settings[id]);
+      s.settings[id] = isFinite(n) && n >= 10 && n <= 100 ? Math.round(n) : (id === "writingIconOpacity" ? 68 : 100);
+    });
     if (s.settings.selectionToolbarPosition !== "above" && s.settings.selectionToolbarPosition !== "below") s.settings.selectionToolbarPosition = "above";
     var sDelay = Number(s.settings.selectionToolbarDelayMs);
     s.settings.selectionToolbarDelayMs = (isFinite(sDelay) && sDelay >= 0) ? Math.min(10000, Math.floor(sDelay)) : 800;
@@ -675,6 +680,7 @@ function renderDefaults() {
     : "(0 = provider default)";
   el("systemPrompt").value = state.settings.systemPrompt || "";
   el("featSelectionToolbar").checked = !!state.settings.selectionToolbar;
+  ["writingIconOpacity", "writingMenuOpacity"].forEach(function (id) { el(id).value = state.settings[id]; });
   if (el("selectionToolbarPosition")) el("selectionToolbarPosition").value = state.settings.selectionToolbarPosition === "below" ? "below" : "above";
   if (el("selectionToolbarDelayMs")) el("selectionToolbarDelayMs").value = String(state.settings.selectionToolbarDelayMs != null ? state.settings.selectionToolbarDelayMs : 800);
   if (el("selectionToolbarPaddingPx")) el("selectionToolbarPaddingPx").value = String(state.settings.selectionToolbarPaddingPx != null ? state.settings.selectionToolbarPaddingPx : 10);
@@ -699,6 +705,10 @@ function readDefaultsFromUI() {
     state.settings.translationLanguages = parseLanguageLines(el("translationLanguages").value);
   }
   state.settings.selectionToolbar = el("featSelectionToolbar").checked;
+  ["writingIconOpacity", "writingMenuOpacity"].forEach(function (id) {
+    var n = Number(el(id).value);
+    if (isFinite(n) && n >= 10 && n <= 100) state.settings[id] = Math.round(n);
+  });
   if (el("selectionToolbarPosition")) state.settings.selectionToolbarPosition = el("selectionToolbarPosition").value === "below" ? "below" : "above";
   if (el("selectionToolbarDelayMs")) {
     var dN = Number(el("selectionToolbarDelayMs").value);
@@ -1227,7 +1237,7 @@ function bindEvents() {
     state.settings.selectionToolbarPosition = el("selectionToolbarPosition").value === "below" ? "below" : "above";
     schedulePersist();
   });
-  ["selectionToolbarDelayMs", "selectionToolbarPaddingPx"].forEach(function (id) {
+  ["selectionToolbarDelayMs", "selectionToolbarPaddingPx", "writingIconOpacity", "writingMenuOpacity"].forEach(function (id) {
     if (!el(id)) return;
     el(id).addEventListener("input", function () { readDefaultsFromUI(); schedulePersist(); });
     el(id).addEventListener("change", function () { readDefaultsFromUI(); schedulePersist(); });

@@ -77,6 +77,8 @@ if (manifest) {
     assert.ok(manifest.sidebar_action && typeof manifest.sidebar_action === "object",
       "manifest.sidebar_action missing");
     assert.ok(manifest.sidebar_action.default_panel, "sidebar_action.default_panel missing");
+    assert.ok(manifest.browser_action && !manifest.browser_action.default_popup,
+      "browser_action should remain a direct sidebar toggle, not open a page/popup");
   });
 
   check("options page declared and exists on disk", () => {

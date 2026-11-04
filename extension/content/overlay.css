@@ -590,6 +590,8 @@
   user-select: none;
   padding: 0;
   box-sizing: border-box;
+  opacity: var(--gs-write-icon-opacity, 0.68);
+  transition: opacity 120ms ease;
 }
 
 .gs-write-btn svg {
@@ -601,7 +603,9 @@
 }
 
 .gs-write-btn:hover,
+.gs-write-btn:focus,
 .gs-write-btn:focus-visible {
+  opacity: 1;
   border-color: #5ec8c0;
   color: #5ec8c0;
   outline: none;
@@ -625,6 +629,12 @@
   box-sizing: border-box;
   scrollbar-width: thin;
   scrollbar-color: #33373f #1f2227;
+  opacity: var(--gs-write-menu-opacity, 1);
+  transition: opacity 120ms ease;
+}
+
+.gs-write-menu:hover {
+  opacity: 1;
 }
 
 .gs-menu-item {

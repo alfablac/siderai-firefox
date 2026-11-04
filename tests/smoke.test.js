@@ -55,11 +55,21 @@ if (!fs.existsSync(manifestPath)) {
   });
 }
 if (manifest) {
-  check("manifest is MV2 with gecko id and sidebar_action", () => {
+check("manifest is MV2 with gecko id and sidebar_action", () => {
     assert.strictEqual(manifest.manifest_version, 2);
     assert.ok(manifest.browser_specific_settings.gecko.id, "gecko id");
     assert.ok(manifest.sidebar_action.default_panel, "sidebar_action.default_panel");
+    assert.ok(manifest.browser_action && !manifest.browser_action.default_popup,
+      "browser_action must not open a full-width popup page");
   });
+check("browser action toggles the native sidebar before async fallbacks", () => {
+  const bg = fs.readFileSync(path.join(EXT, "background.js"), "utf8");
+  const click = bg.slice(bg.indexOf("if (ext.browserAction && ext.browserAction.onClicked)"),
+    bg.indexOf("// MV3-style action alias"));
+  assert.ok(click.includes("ext.sidebarAction.toggle()"), "direct native sidebar toggle");
+  assert.ok(click.indexOf("ext.sidebarAction.toggle()") < click.indexOf("toggleSidebar().then"),
+    "do not wait for async work before native sidebar toggle");
+});
   check("all manifest-referenced files exist on disk", () => {
     const refs = new Set();
     const add = (p) => { if (typeof p === "string" && p) refs.add(p); };
@@ -408,6 +418,9 @@ check("write menu is the scroll container with viewport clamps", () => {
   assert.ok(/max-width:/.test(m[1]), ".gs-write-menu max-width");
   const js = fs.readFileSync(path.join(EXT, "content/content.js"), "utf8");
   assert.ok(js.includes("positionWriteMenu"), "measured positioning helper");
+  assert.ok(/opacity:\s*var\(--gs-write-menu-opacity, 1\)/.test(m[1]), "write menu opacity is configurable and defaults to opaque");
+  assert.match(css, /\.gs-write-menu:hover\s*\{\s*opacity:\s*1\s*;?\s*\}/,
+    "write menu becomes opaque only on hover, not while the editor retains focus");
 });
 check("in-box translate picker with language select exists", () => {
   const js = fs.readFileSync(path.join(EXT, "content/content.js"), "utf8");
@@ -662,12 +675,12 @@ check("background prompt path guarded and loads settings", () => {
   assert.ok(!/(^|[^\w.$])global\./.test(bg), "background.js must not use the bare global object");
 });
 
-check("manifest background order and release version 1.0.36", () => {
+check("manifest background order and release version 1.0.37", () => {
   assert.ok(manifest, "manifest required");
   const scripts = (manifest.background && manifest.background.scripts) || [];
   const iP = scripts.indexOf("lib/prompts.js"), iY = scripts.indexOf("lib/youtube.js"), iB = scripts.indexOf("background.js");
   assert.ok(iP >= 0 && iY >= 0 && iB > iP && iB > iY, "lib/prompts.js + lib/youtube.js load before background.js");
-  assert.strictEqual(manifest.version, "1.0.36", "release version");
+  assert.strictEqual(manifest.version, "1.0.37", "release version");
 });
 
 /* ---------- 1.0.6 bug: transcript truncated at 22:52 of a 44:59 video -----
@@ -1563,7 +1576,7 @@ Promise.all([Promise.resolve(sseDone), Promise.resolve(imageDone), Promise.resol
    fallback, widened liveness, touch selection, helper payloads. */
 check("1.0.21: version, model-select wiring, detach transport, mobile surfaces", () => {
   assert.ok(manifest, "manifest required");
-  assert.strictEqual(manifest.version, "1.0.36", "release version");
+  assert.strictEqual(manifest.version, "1.0.37", "release version");
   assert.ok(manifest.browser_specific_settings.gecko_android, "gecko_android block present");
   // Shared picker loads before both helpers.
   const ytEntry = (manifest.content_scripts || []).find((cs) => (cs.js || []).includes("content/youtube.js"));
@@ -1660,7 +1673,7 @@ check("1.0.19: icons built as same-document SVG nodes (no DOMParser import)", ()
    static 9px text; now icons-only everywhere, name via long-press. */
 check("1.0.23: panel placement ladder + long-press toolbar labels", () => {
   assert.ok(manifest, "manifest required");
-  assert.strictEqual(manifest.version, "1.0.36", "release version");
+  assert.strictEqual(manifest.version, "1.0.37", "release version");
   const yt = fs.readFileSync(path.join(EXT, "content/youtube.js"), "utf8");
   // Ladder exists, tried sequentially in priority order.
   const ladder = yt.slice(yt.indexOf("const PANEL_PLACEMENTS"), yt.indexOf("function bestPanelPlacement"));
@@ -2004,7 +2017,7 @@ check("1.0.27 blob/MSE extraction + per-provider transcription model", () => {
    per-video summary language + model selectors. */
 check("1.0.28 manifest recovery + chunking + summary controls", () => {
   assert.ok(manifest, "manifest required");
-  assert.strictEqual(manifest.version, "1.0.36", "release version");
+  assert.strictEqual(manifest.version, "1.0.37", "release version");
 
   // Watcher: registered at document_start in its OWN entry, before the
   // document_end content entry; webRequest present, blocking variant absent.
@@ -2138,7 +2151,7 @@ check("1.0.29 chat transport: jobPost delivers, sidebar re-attaches", () => {
    keyframe names, renames, and the panel root marker classes. */
 check("1.0.30 CSS isolation: page stylesheets cannot touch host UI", () => {
   assert.ok(manifest, "manifest required");
-  assert.strictEqual(manifest.version, "1.0.36", "release version");
+  assert.strictEqual(manifest.version, "1.0.37", "release version");
 
   // overlay.css (shadow-only) must never be page-injected again; panel.css
   // carries the small page-level surface (YouTube panel, search card).
@@ -2211,7 +2224,7 @@ check("1.0.30 CSS isolation: page stylesheets cannot touch host UI", () => {
    flatten, and the above/below placement branch in showToolbar(). */
 check("1.0.31 selection menu position: setting plumbed end to end", () => {
   assert.ok(manifest, "manifest required");
-  assert.strictEqual(manifest.version, "1.0.36", "release version");
+  assert.strictEqual(manifest.version, "1.0.37", "release version");
 
   const storageJs = fs.readFileSync(path.join(EXT, "lib/storage.js"), "utf8");
   assert.ok(storageJs.includes("selectionToolbarPosition: 'above'"), "storage default is above");
@@ -2253,7 +2266,7 @@ check("1.0.31 selection menu position: setting plumbed end to end", () => {
    configurable too. Pinned end to end like 1.0.31. */
 check("1.0.32 selection menu delay + padding: debounced, configurable", () => {
   assert.ok(manifest, "manifest required");
-  assert.strictEqual(manifest.version, "1.0.36", "release version");
+  assert.strictEqual(manifest.version, "1.0.37", "release version");
 
   const storageJs = fs.readFileSync(path.join(EXT, "lib/storage.js"), "utf8");
   assert.ok(storageJs.includes("selectionToolbarDelayMs: 800"), "storage delay default is 800ms");
@@ -2297,7 +2310,7 @@ check("1.0.32 selection menu delay + padding: debounced, configurable", () => {
     "options reads the delay back into settings");
   assert.ok(optJs.includes('state.settings.selectionToolbarPaddingPx = (isFinite(pN) && pN >= 0)'),
     "options reads the padding back into settings");
-  assert.ok(optJs.includes('["selectionToolbarDelayMs", "selectionToolbarPaddingPx"].forEach'),
+  assert.ok(optJs.includes('["selectionToolbarDelayMs", "selectionToolbarPaddingPx", "writingIconOpacity", "writingMenuOpacity"].forEach'),
     "delay/padding inputs persist on change");
 });
 
@@ -2315,7 +2328,7 @@ check("1.0.32 selection menu delay + padding: debounced, configurable", () => {
    and the 1.0.32 debounce could be starved forever. Pinned below. */
 check("1.0.34 floating panel + self-healing menus", () => {
   assert.ok(manifest, "manifest required");
-  assert.strictEqual(manifest.version, "1.0.36", "release version");
+  assert.strictEqual(manifest.version, "1.0.37", "release version");
 
   const content = fs.readFileSync(path.join(EXT, "content/content.js"), "utf8");
   // Floating panel: build, persist, toggle.

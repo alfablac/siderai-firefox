@@ -297,6 +297,16 @@ createMenus();
 
 if (ext.browserAction && ext.browserAction.onClicked) {
   ext.browserAction.onClicked.addListener(function () {
+    // Keep the native sidebar toggle in the browser-action user gesture.
+    // Awaiting settings/content-script work first can lose that activation,
+    // make sidebarAction.toggle() reject, and incorrectly open a full tab.
+    if (ext.sidebarAction && typeof ext.sidebarAction.toggle === 'function') {
+      try {
+        var toggle = ext.sidebarAction.toggle();
+        if (toggle && typeof toggle.catch === 'function') toggle.catch(function () {});
+        return;
+      } catch (e) { /* use the fallback on browsers without a working sidebar API */ }
+    }
     toggleSidebar().then(function (r) {
       gsLog('ui', 'browserAction toggle', { opened: r.opened, mode: r.mode });
     });

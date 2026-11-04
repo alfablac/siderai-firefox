@@ -214,6 +214,8 @@
     selectionToolbarDelayMs: 800,
     // Pixel gap between the selection and the floating menu. 0-80.
     selectionToolbarPaddingPx: 10,
+    writingIconOpacity: 68,
+    writingMenuOpacity: 100,
     bilingualSubtitles: false,
     // Issue 4: preferred sidebar side. Firefox (not the extension) controls
     // the actual built-in sidebar position; this records the user's choice
@@ -343,6 +345,11 @@
       if (out.settings.selectionToolbarPosition !== 'above' && out.settings.selectionToolbarPosition !== 'below') {
         out.settings.selectionToolbarPosition = 'above';
       }
+      ['writingIconOpacity', 'writingMenuOpacity'].forEach(function (key) {
+        var opacity = Number(out.settings[key]);
+        out.settings[key] = isFinite(opacity) && opacity >= 10 && opacity <= 100
+          ? Math.round(opacity) : (key === 'writingIconOpacity' ? 68 : 100);
+      });
       var delayMs = Number(out.settings.selectionToolbarDelayMs);
       out.settings.selectionToolbarDelayMs = (isFinite(delayMs) && delayMs >= 0)
         ? Math.min(10000, Math.floor(delayMs)) : 800;

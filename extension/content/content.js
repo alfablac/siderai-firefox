@@ -79,6 +79,10 @@
     })(inner.selectionToolbarPaddingPx);
     flat.searchEnhance = inner.searchEnhance !== false;
     flat.writingAssistant = inner.writingAssistant !== false;
+    ['writingIconOpacity', 'writingMenuOpacity'].forEach((key) => {
+      const n = Number(inner[key]);
+      flat[key] = isFinite(n) && n >= 10 && n <= 100 ? n : (key === 'writingIconOpacity' ? 68 : 100);
+    });
     flat.floatPanel = inner.floatPanel === true;
     return flat;
   }
@@ -103,6 +107,7 @@
         const change = changes['graphiteSider.settings.v1'] || changes.graphite_settings;
         if (change) {
           settings = Object.assign({}, DEFAULT_SETTINGS, flattenSettings(change.newValue || {}));
+          updateWriteOpacity();
           if (settings.selectionToolbar === false) hideToolbar();
           if (settings.writingAssistant === false) { activeField = null; hideWriteButton(); }
           else if (settings.writingAssistant) {
@@ -501,6 +506,7 @@
     root.appendChild(writeMenu);
     buildFloatPanel(root);
     shadowRoot.appendChild(root);
+    updateWriteOpacity();
     wireCard(root);
     wireToolbarDrag(root);
     wireWriteMenu(root);
@@ -892,6 +898,7 @@
     } else {
       overlayCssText =
         '.gs-toolbar,.gs-card,.gs-write-menu{position:fixed;background:#1f2227;color:#e6e8eb;border:1px solid #33373f;font-family:"GraphiteInter",system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;z-index:2147483647}' +
+        '.gs-write-menu{opacity:var(--gs-write-menu-opacity,1);transition:opacity 120ms ease}.gs-write-menu:hover{opacity:1}' +
         '.graphite-sider-hidden{display:none!important}.gs-spinner{width:18px;height:18px;border-radius:50%;border:2px solid #33373f;border-top-color:#5ec8c0;animation:graphite-sider-spin .8s linear infinite}@keyframes graphite-sider-spin{to{transform:rotate(360deg)}}';
     }
     overlayCssText = fontFaceCss() + overlayCssText;
@@ -1589,10 +1596,18 @@
   // (activeField / writeFocusOutTimer are declared near the top of this
   // IIFE — settings listeners need them before this section executes.)
   let writeButtonTimer = null;
+  let writeFieldObserver = null;
+  let observedWriteField = null;
   // Field selection snapshot taken when the write menu opens: on touch,
   // focusing the menu target can collapse the field's selection before an
   // action runs, so applyToField restores from this snapshot.
   let fieldSelectionSnapshot = null;
+  function updateWriteOpacity() {
+    const root = shadowRoot && shadowRoot.querySelector('.gs-root');
+    if (!root) return;
+    root.style.setProperty('--gs-write-icon-opacity', (settings.writingIconOpacity || 68) / 100);
+    root.style.setProperty('--gs-write-menu-opacity', (settings.writingMenuOpacity || 100) / 100);
+  }
   function snapshotFieldSelection(el) {
     fieldSelectionSnapshot = null;
     if (!el) return;
@@ -1649,6 +1664,9 @@
   }
 
   function hideWriteButton() {
+    if (writeButtonTimer) clearTimeout(writeButtonTimer);
+    if (writeFieldObserver) writeFieldObserver.disconnect();
+    observedWriteField = null;
     const btn = qs('[data-gs="write-btn"]');
     if (btn) btn.classList.add('graphite-sider-hidden');
     hideWriteMenu();
@@ -1673,8 +1691,21 @@
   }
 
   function scheduleWriteButton(el) {
+    if (typeof ResizeObserver !== 'undefined') {
+      if (!writeFieldObserver) writeFieldObserver = new ResizeObserver(() => {
+        const btn = qs('[data-gs="write-btn"]');
+        if (activeField && activeField.isConnected && btn && !btn.classList.contains('graphite-sider-hidden')) scheduleWriteButton(activeField);
+      });
+      if (observedWriteField !== el) {
+        writeFieldObserver.disconnect();
+        writeFieldObserver.observe(el);
+        observedWriteField = el;
+      }
+    }
     if (writeButtonTimer) clearTimeout(writeButtonTimer);
-    writeButtonTimer = setTimeout(() => positionWriteButton(el), 60);
+    writeButtonTimer = setTimeout(() => {
+      if (el === activeField && el.isConnected && settings.writingAssistant !== false) positionWriteButton(el);
+    }, 60);
   }
 
   function fieldText(el) {
@@ -1726,6 +1757,7 @@
   }
 
   function showWriteMenu(el) {
+    updateWriteOpacity();
     // A stale/detached field positioned the menu at 0,0 or nowhere.
     if (!el || !el.isConnected || !isEditable(el)) return;
     // Opening the menu wins over a pending focus-out hide: the menu items
@@ -1819,7 +1851,9 @@
 
   async function runWritingAction(action, label, el, options) {
     const opts = options || {};
-    const text = fieldText(el).trim();
+    const snapshot = fieldSelectionSnapshot && Object.assign({}, fieldSelectionSnapshot);
+    const selected = snapshot && (snapshot.range ? !snapshot.range.collapsed && el.contains(snapshot.range.commonAncestorContainer) : snapshot.start !== snapshot.end);
+    const text = (selected ? (snapshot.range ? snapshot.range.toString() : el.value.slice(snapshot.start, snapshot.end)) : (el.isContentEditable ? el.innerText || el.textContent || '' : el.value || '')).trim();
     if (!text) {
       showCard(label, el.getBoundingClientRect());
       setCardError('Select some text or write something first.');
@@ -1863,9 +1897,8 @@
           label: effectiveAction === 'continue' ? 'Insert' : 'Apply',
           primary: true,
           onClick: (button) => {
-            applyToField(el, result, effectiveAction);
+            applyToField(el, result, effectiveAction, snapshot, selected);
             button.textContent = 'Applied';
-            button.disabled = true;
           }
         }
       ].concat(defaultFooter()));
@@ -1875,25 +1908,45 @@
     }
   }
 
-  function applyToField(el, result, action) {
+  function applyToField(el, result, action, snapshot, selected) {
     try { el.focus(); } catch (e) { /* ignore */ }
+    if (!snapshot && selected === undefined) {
+      if (el.isContentEditable) {
+        const current = window.getSelection();
+        if (current && current.rangeCount && !current.isCollapsed && el.contains(current.getRangeAt(0).commonAncestorContainer)) {
+          snapshot = { range: current.getRangeAt(0).cloneRange() }; selected = true;
+        }
+      } else if (typeof el.selectionStart === 'number' && el.selectionStart !== el.selectionEnd) {
+        snapshot = { start: el.selectionStart, end: el.selectionEnd }; selected = true;
+      }
+    }
     if (el.isContentEditable) {
       const selection = window.getSelection();
-      if (action !== 'continue' && selection && selection.rangeCount && !selection.isCollapsed) {
-        const range = selection.getRangeAt(0);
-        range.deleteContents();
-        range.insertNode(document.createTextNode(result));
-        selection.collapseToEnd();
+      if (selection && action !== 'continue') {
+        const range = selected && snapshot && snapshot.range && el.contains(snapshot.range.commonAncestorContainer) ? snapshot.range.cloneRange() : document.createRange();
+        if (!selected || !snapshot || !snapshot.range || !el.contains(snapshot.range.commonAncestorContainer)) range.selectNodeContents(el);
+        selection.removeAllRanges();
+        selection.addRange(range);
+        if (selected || !document.execCommand('insertText', false, result)) {
+          range.deleteContents();
+          const node = document.createTextNode(result);
+          range.insertNode(node);
+          range.selectNode(node);
+        } else {
+          range.selectNodeContents(el);
+        }
+        if (snapshot) snapshot.range = range.cloneRange();
       } else {
-        document.execCommand('insertText', false, (action === 'continue' ? ' ' : '') + result);
+        document.execCommand('insertText', false, ' ' + result);
       }
     } else if (typeof el.setRangeText === 'function') {
-      const start = typeof el.selectionStart === 'number' ? el.selectionStart : el.value.length;
-      const end = typeof el.selectionEnd === 'number' ? el.selectionEnd : el.value.length;
+      const start = selected && snapshot ? snapshot.start : (typeof el.selectionStart === 'number' ? el.selectionStart : el.value.length);
+      const end = selected && snapshot ? snapshot.end : (typeof el.selectionEnd === 'number' ? el.selectionEnd : el.value.length);
       if (action === 'continue') {
         el.setRangeText((start > 0 && !/\s$/.test(el.value) ? ' ' : '') + result, end, end, 'end');
-      } else if (start !== end) {
+      } else if (selected && start !== end) {
         el.setRangeText(result, start, end, 'end');
+        snapshot.end = start + result.length;
       } else {
         el.setRangeText(result, 0, el.value.length, 'end');
       }
@@ -3290,6 +3343,10 @@
   }, true);
   document.addEventListener('focusin', onFocusIn, true);
   document.addEventListener('focusout', onFocusOut, true);
+  window.addEventListener('resize', () => {
+    const btn = qs('[data-gs="write-btn"]');
+    if (activeField && activeField.isConnected && settings.writingAssistant !== false && btn && !btn.classList.contains('graphite-sider-hidden')) scheduleWriteButton(activeField);
+  });
   document.addEventListener('scroll', () => {
     if (activeField && settings.writingAssistant !== false) scheduleWriteButton(activeField);
   }, true);
