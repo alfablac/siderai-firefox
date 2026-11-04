@@ -373,6 +373,7 @@
     };
     const move = (event) => {
       if (!gesture) return;
+      if (typeof event.buttons === 'number' && event.buttons === 0) { end(); return; }
       if (gesture.mode === 'drag') {
         applySearchGeometry(card, Object.assign({}, gesture, {
           left: gesture.left + event.clientX - gesture.x,
