@@ -652,12 +652,12 @@ check("background prompt path guarded and loads settings", () => {
   assert.ok(!/(^|[^\w.$])global\./.test(bg), "background.js must not use the bare global object");
 });
 
-check("manifest background order and release version 1.0.33", () => {
+check("manifest background order and release version 1.0.34", () => {
   assert.ok(manifest, "manifest required");
   const scripts = (manifest.background && manifest.background.scripts) || [];
   const iP = scripts.indexOf("lib/prompts.js"), iY = scripts.indexOf("lib/youtube.js"), iB = scripts.indexOf("background.js");
   assert.ok(iP >= 0 && iY >= 0 && iB > iP && iB > iY, "lib/prompts.js + lib/youtube.js load before background.js");
-  assert.strictEqual(manifest.version, "1.0.33", "release version");
+  assert.strictEqual(manifest.version, "1.0.34", "release version");
 });
 
 /* ---------- 1.0.6 bug: transcript truncated at 22:52 of a 44:59 video -----
@@ -1256,12 +1256,15 @@ check("1.0.16: dragged toolbar stays where released (no snap-back)", () => {
   // not visible inside the vm context, so expose it as a sandbox global
   // before the generated script runs.
   sandbox.__gsToolbar = toolbar;
+  sandbox.shadowRoot = null; // resetStaleToolbarDrag reads it (guarded)
   vm.createContext(sandbox);
   vm.runInContext("var toolbar = __gsToolbar;", sandbox);
+  const watchdog = src.slice(src.indexOf("function resetStaleToolbarDrag"), src.indexOf("function onMouseUp"));
+  assert.ok(watchdog.includes("toolbarDragStartedAt"), "drag watchdog extractable");
   vm.runInContext(
-    "let toolbarDragActive = false;\nlet toolbarDragSuppressUntil = 0;\n" +
+    "let toolbarDragActive = false;\nlet toolbarDragSuppressUntil = 0;\nlet toolbarDragStartedAt = 0;\n" +
     src.slice(src.indexOf("function clamp("), src.indexOf("function truncate(")) +
-    "\n" + drag + "\n" + mouseUp +
+    "\n" + drag + "\n" + watchdog + "\n" + mouseUp +
     "\ndocument.addEventListener('mouseup', onMouseUp, true);\n" +
     "wireToolbarDrag({ querySelector: () => toolbar });",
     sandbox);
@@ -1546,7 +1549,7 @@ Promise.all([Promise.resolve(sseDone), Promise.resolve(imageDone), Promise.resol
    fallback, widened liveness, touch selection, helper payloads. */
 check("1.0.21: version, model-select wiring, detach transport, mobile surfaces", () => {
   assert.ok(manifest, "manifest required");
-  assert.strictEqual(manifest.version, "1.0.33", "release version");
+  assert.strictEqual(manifest.version, "1.0.34", "release version");
   assert.ok(manifest.browser_specific_settings.gecko_android, "gecko_android block present");
   // Shared picker loads before both helpers.
   const ytEntry = (manifest.content_scripts || []).find((cs) => (cs.js || []).includes("content/youtube.js"));
@@ -1643,7 +1646,7 @@ check("1.0.19: icons built as same-document SVG nodes (no DOMParser import)", ()
    static 9px text; now icons-only everywhere, name via long-press. */
 check("1.0.23: panel placement ladder + long-press toolbar labels", () => {
   assert.ok(manifest, "manifest required");
-  assert.strictEqual(manifest.version, "1.0.33", "release version");
+  assert.strictEqual(manifest.version, "1.0.34", "release version");
   const yt = fs.readFileSync(path.join(EXT, "content/youtube.js"), "utf8");
   // Ladder exists, tried sequentially in priority order.
   const ladder = yt.slice(yt.indexOf("const PANEL_PLACEMENTS"), yt.indexOf("function bestPanelPlacement"));
@@ -1987,7 +1990,7 @@ check("1.0.27 blob/MSE extraction + per-provider transcription model", () => {
    per-video summary language + model selectors. */
 check("1.0.28 manifest recovery + chunking + summary controls", () => {
   assert.ok(manifest, "manifest required");
-  assert.strictEqual(manifest.version, "1.0.33", "release version");
+  assert.strictEqual(manifest.version, "1.0.34", "release version");
 
   // Watcher: registered at document_start in its OWN entry, before the
   // document_end content entry; webRequest present, blocking variant absent.
@@ -2121,7 +2124,7 @@ check("1.0.29 chat transport: jobPost delivers, sidebar re-attaches", () => {
    keyframe names, renames, and the panel root marker classes. */
 check("1.0.30 CSS isolation: page stylesheets cannot touch host UI", () => {
   assert.ok(manifest, "manifest required");
-  assert.strictEqual(manifest.version, "1.0.33", "release version");
+  assert.strictEqual(manifest.version, "1.0.34", "release version");
 
   // overlay.css (shadow-only) must never be page-injected again; panel.css
   // carries the small page-level surface (YouTube panel, search card).
@@ -2194,7 +2197,7 @@ check("1.0.30 CSS isolation: page stylesheets cannot touch host UI", () => {
    flatten, and the above/below placement branch in showToolbar(). */
 check("1.0.31 selection menu position: setting plumbed end to end", () => {
   assert.ok(manifest, "manifest required");
-  assert.strictEqual(manifest.version, "1.0.33", "release version");
+  assert.strictEqual(manifest.version, "1.0.34", "release version");
 
   const storageJs = fs.readFileSync(path.join(EXT, "lib/storage.js"), "utf8");
   assert.ok(storageJs.includes("selectionToolbarPosition: 'above'"), "storage default is above");
@@ -2236,7 +2239,7 @@ check("1.0.31 selection menu position: setting plumbed end to end", () => {
    configurable too. Pinned end to end like 1.0.31. */
 check("1.0.32 selection menu delay + padding: debounced, configurable", () => {
   assert.ok(manifest, "manifest required");
-  assert.strictEqual(manifest.version, "1.0.33", "release version");
+  assert.strictEqual(manifest.version, "1.0.34", "release version");
 
   const storageJs = fs.readFileSync(path.join(EXT, "lib/storage.js"), "utf8");
   assert.ok(storageJs.includes("selectionToolbarDelayMs: 800"), "storage delay default is 800ms");
@@ -2251,7 +2254,7 @@ check("1.0.32 selection menu delay + padding: debounced, configurable", () => {
   assert.ok(content.includes("selectionToolbarPaddingPx: 10"), "content padding default is 10px");
   assert.ok(content.includes("function selectionDelayMs()"), "content has the delay accessor");
   assert.ok(content.includes("function selectionPaddingPx()"), "content has the padding accessor");
-  assert.ok(content.includes("selectionChangeTimer = setTimeout(checkSelectionNow, selectionDelayMs())"),
+  assert.ok(content.includes("selectionChangeTimer = setTimeout(checkSelectionNow, wait)"),
     "selection timer uses the configured delay");
   assert.ok(content.includes("document.addEventListener('selectionchange', scheduleSelectionCheck, true)"),
     "selectionchange is debounced through the scheduler");
@@ -2282,4 +2285,81 @@ check("1.0.32 selection menu delay + padding: debounced, configurable", () => {
     "options reads the padding back into settings");
   assert.ok(optJs.includes('["selectionToolbarDelayMs", "selectionToolbarPaddingPx"].forEach'),
     "delay/padding inputs persist on change");
+});
+
+/* ---------- 1.0.34: floating sidebar panel + self-healing menus ----------
+   Two reports: (1) the sidebar should float on the right — draggable,
+   resizable, position remembered; Firefox's MV2 sidebar_action cannot
+   do any of that, so 1.0.34 adds an in-page floating panel (iframe of
+   sidebar/sidebar.html?surface=float) in the shadow root, native sidebar
+   kept as fallback, background routes float-first when opted in.
+   (2) after a tab is open a while, the selection menu and the writing
+   fast menu stop working — root causes: ensureRoot() trusted a cached
+   shadowRoot forever (page removing the host killed both menus until
+   reload), toolbarDragActive could latch, activeField pointed at
+   detached editor nodes, the focus-out timer hid the just-opened menu,
+   and the 1.0.32 debounce could be starved forever. Pinned below. */
+check("1.0.34 floating panel + self-healing menus", () => {
+  assert.ok(manifest, "manifest required");
+  assert.strictEqual(manifest.version, "1.0.34", "release version");
+
+  const content = fs.readFileSync(path.join(EXT, "content/content.js"), "utf8");
+  // Floating panel: build, persist, toggle.
+  assert.ok(content.includes("buildFloatPanel(root)"), "float panel is built into the shadow root");
+  assert.ok(content.includes("sidebar/sidebar.html?surface=float"), "panel hosts the sidebar as the float surface");
+  assert.ok(content.includes("FLOAT_PANEL_KEY = 'graphiteSider.floatPanel.v1'"), "geometry persists under its own storage key");
+  assert.ok(content.includes("function saveFloatGeometry(panel)"), "drag/resize saves geometry on release");
+  assert.ok(content.includes("function toggleFloatPanel()"), "content script can toggle the panel");
+  assert.ok(content.includes("case 'showFloatPanel':") && content.includes("case 'hideFloatPanel':"),
+    "content script answers show/hide panel commands");
+  // ensureRoot validation/rebuild (selection + write menu death cause 1).
+  assert.ok(content.includes("host.isConnected && host.shadowRoot === shadowRoot"),
+    "ensureRoot validates the cached host instead of trusting it");
+  assert.ok(content.includes("function rootElsPresent(root)"), "ensureRoot checks the UI nodes survive");
+  // Drag latch (cause 2) — the watchdog clears a stuck drag.
+  assert.ok(content.includes("function resetStaleToolbarDrag()"), "stale drag watchdog exists");
+  assert.ok(content.includes("Date.now() - toolbarDragStartedAt > 3000"), "watchdog clears drags older than 3s");
+  // Write menu: never trust a detached field (cause 3).
+  assert.ok(content.includes("function liveField()"), "write menu re-validates the field before use");
+  assert.ok(content.includes("function normalizeField("), "contenteditable children normalize to the editable root");
+  // Focus-out must not hide a menu opened inside our shadow (cause 4).
+  assert.ok(content.includes("writeFocusOutTimer"), "focus-out hide is a stored, cancellable timer");
+  assert.ok(content.includes("if (focusWithinShadow()) return;"), "focus inside our shadow wins over focus-out hide");
+  // Debounce starvation cap (cause 5).
+  assert.ok(content.includes("selectionCheckFirstAt + 1500"), "debounce has a 1.5s max-wait cap");
+  assert.ok(content.includes("toolbarShownForText === info.text"), "same-selection guard retained");
+  assert.ok(content.includes("toolbarShownForRect"), "same-selection guard also compares the rect");
+
+  // Background: float-first routing + native escape hatch.
+  const bg = fs.readFileSync(path.join(EXT, "background.js"), "utf8");
+  assert.ok(bg.includes("async function tryFloatPanel(command)"), "background tries the float panel first");
+  assert.ok(bg.includes("settings.settings.floatPanel !== true) return false"), "float routing is opt-in only");
+  assert.ok(bg.includes("case 'openSidebarNative':"), "background can open the native sidebar on request");
+  assert.ok(bg.includes("surface: 'float'"), "float dispatches are marked for the float instance");
+  const dispatch = bg.slice(bg.indexOf("async function dispatchToSidebar"), bg.indexOf("// Native-only open"));
+  assert.ok(dispatch.indexOf("var opened = await openSidebar()") < dispatch.indexOf("GraphiteStorage.setPendingAction(action)"),
+    "pending action is surface-scoped before publishing to avoid native/float race");
+  assert.ok(dispatch.includes("action: action"), "runtime notification uses the scoped action");
+
+  // Sidebar: the float instance must not steal native pending actions.
+  const sb = fs.readFileSync(path.join(EXT, "sidebar/sidebar.js"), "utf8");
+  assert.ok(sb.includes("IS_FLOAT"), "sidebar detects the float surface");
+  assert.ok(sb.includes("function pendingForThisSurface(action)"), "pending actions are surface-scoped");
+  assert.ok(sb.includes("if (IS_FLOAT) return;"), "float instance skips the consuming background poll");
+
+  // Settings plumbing for the opt-in.
+  const storageJs = fs.readFileSync(path.join(EXT, "lib/storage.js"), "utf8");
+  assert.ok(storageJs.includes("floatPanel: false"), "storage default: native sidebar until opted in");
+  assert.ok(storageJs.includes("out.settings.floatPanel = out.settings.floatPanel === true"), "storage normalizes the toggle");
+  const optHtml = fs.readFileSync(path.join(EXT, "options/options.html"), "utf8");
+  assert.ok(optHtml.includes('id="floatPanel"'), "options page has the floating-sidebar toggle");
+  const optJs = fs.readFileSync(path.join(EXT, "options/options.js"), "utf8");
+  assert.ok(optJs.includes("state.settings.floatPanel = el(\"floatPanel\").checked"), "options persists the toggle");
+
+  // Panel styles stay inside the shadow stylesheet (never page-injected).
+  const overlay = fs.readFileSync(path.join(EXT, "content/overlay.css"), "utf8");
+  assert.ok(overlay.includes(".gs-float-panel {"), "float panel styles live in the shadow stylesheet");
+  assert.ok(overlay.includes(".gs-float-resize"), "resize handle styled");
+  const manifestCss = JSON.stringify(manifest.content_scripts.map((cs) => cs.css || []));
+  assert.ok(!manifestCss.includes("overlay.css"), "shadow stylesheet is still never page-injected");
 });

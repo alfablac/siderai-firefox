@@ -23,6 +23,7 @@
     selectionToolbarPosition: 'above',
     selectionToolbarDelayMs: 800,
     selectionToolbarPaddingPx: 10,
+    floatPanel: false,
     searchEnhance: true,
     writingAssistant: true,
     targetLanguage: 'English',
@@ -78,6 +79,7 @@
     })(inner.selectionToolbarPaddingPx);
     flat.searchEnhance = inner.searchEnhance !== false;
     flat.writingAssistant = inner.writingAssistant !== false;
+    flat.floatPanel = inner.floatPanel === true;
     return flat;
   }
 
@@ -102,10 +104,27 @@
         if (change) {
           settings = Object.assign({}, DEFAULT_SETTINGS, flattenSettings(change.newValue || {}));
           if (settings.selectionToolbar === false) hideToolbar();
+          if (settings.writingAssistant === false) { activeField = null; hideWriteButton(); }
+          else if (settings.writingAssistant) {
+            const ae = document.activeElement;
+            if (isEditable(ae)) { activeField = normalizeField(ae); scheduleWriteButton(activeField); }
+          }
+          if (settings.floatPanel === false) { const fp = floatPanelEl(); if (fp) fp.classList.add('graphite-sider-hidden'); }
+          if (settings.selectionToolbar === true) scheduleSelectionCheck();
         }
       });
     }
   } catch (e) { /* storage change listener is best-effort */ }
+
+  // Storage helpers for the floating panel geometry. Content scripts can
+  // use browser.storage.local directly; keep it best-effort.
+  const FLOAT_PANEL_KEY = 'graphiteSider.floatPanel.v1';
+  function storageGet(key) {
+    try { return (typeof browser !== 'undefined' ? browser : chrome).storage.local.get(key); } catch (e) { return Promise.resolve({}); }
+  }
+  function storageSet(obj) {
+    try { return (typeof browser !== 'undefined' ? browser : chrome).storage.local.set(obj); } catch (e) { return Promise.resolve(); }
+  }
 
   // ---------------------------------------------------------------- utils
 
@@ -233,6 +252,17 @@
     if (res.ok === false) throw new Error(res.text || 'Request failed');
     return res.text || '';
   }
+
+  // Drag watchdog state: endDrag (in wireToolbarDrag) only runs on release
+  // events; if a release is missed entirely (pointer leaves the browser,
+  // OS gesture), toolbarDragActive would latch true and mute every future
+  // selection menu. The watchdog force-resets stale drags.
+  let toolbarDragStartedAt = 0;
+
+  // --- writing assistant state (declared early: settings/storage listeners
+  // above reference these before the writing-assistant section runs) ---
+  let activeField = null;
+  let writeFocusOutTimer = 0;
 
   function openSidebarWith(action, text) {
     try {
@@ -369,15 +399,54 @@
 
   // ------------------------------------------------------- shadow root UI
 
+  // The page (SPA hydration, framework cleanup, another script) can remove
+  // our host or wipe its shadow children at any time. The old code cached
+  // shadowRoot forever, so after that the selection toolbar and write menu
+  // updated a detached tree and silently never appeared again until reload.
+  // Validate on every ensureRoot(); rebuild what is missing. Rebuilding
+  // re-runs the wire* functions, so each guards with __gs*Wired.
+  function rootElsPresent(root) {
+    return !!(root && root.querySelector('[data-gs="toolbar"]') &&
+      root.querySelector('[data-gs="card"]') &&
+      root.querySelector('[data-gs="write-btn"]') &&
+      root.querySelector('[data-gs="write-menu"]'));
+  }
+
   function ensureRoot() {
-    if (shadowRoot) return shadowRoot;
+    if (shadowRoot) {
+      const host = document.getElementById('graphite-sider-root');
+      if (host && host.isConnected && host.shadowRoot === shadowRoot && rootElsPresent(shadowRoot)) {
+        return shadowRoot;
+      }
+      // Host gone or replaced: the cached root is detached, rebuild.
+      // Host present but its shadow was cleared: rebuild inside it.
+      shadowRoot = null;
+      toolbarDragActive = false;
+      toolbarDragSuppressUntil = 0;
+    }
     let host = document.getElementById('graphite-sider-root');
-    if (!host) {
+    if (!host || !host.isConnected) {
       host = document.createElement('div');
       host.id = 'graphite-sider-root';
       (document.documentElement || document.body).appendChild(host);
     }
     shadowRoot = host.shadowRoot || host.attachShadow({ mode: 'open' });
+    if (rootElsPresent(shadowRoot)) {
+      // Host survived with UI intact but our cache was reset (e.g. the
+      // host node was swapped for a clone): just re-adopt it.
+      const gsRoot = shadowRoot.querySelector('.gs-root');
+      wireCard(gsRoot);
+      wireToolbarDrag(gsRoot);
+      wireWriteMenu(gsRoot);
+      // A cloned host's float panel loses its expandos/listeners too.
+      const fp = shadowRoot.querySelector('[data-gs="float-panel"]');
+      if (fp) wireFloatPanel(gsRoot, fp); else buildFloatPanel(gsRoot);
+      return shadowRoot;
+    }
+    // Fresh or emptied shadow: drop leftovers and build the full UI.
+    // The rebuilt float panel needs a fresh iframe load + geometry.
+    floatPanelReady = false;
+    while (shadowRoot.firstChild) shadowRoot.removeChild(shadowRoot.firstChild);
     const style = document.createElement('style');
     style.textContent = overlayCssText;
     shadowRoot.appendChild(style);
@@ -416,11 +485,225 @@
     const writeMenu = createEl('div', 'gs-write-menu graphite-sider-hidden');
     writeMenu.setAttribute('data-gs', 'write-menu');
     root.appendChild(writeMenu);
+    buildFloatPanel(root);
     shadowRoot.appendChild(root);
     wireCard(root);
     wireToolbarDrag(root);
     wireWriteMenu(root);
     return shadowRoot;
+  }
+
+  /* ---------------- floating sidebar panel ----------------------------
+   * Firefox's sidebar_action cannot float, move or resize (Firefox owns
+   * its side/width). This in-page panel hosts the same sidebar/sidebar.html
+   * in an iframe inside our shadow root: draggable by its header,
+   * resizable (SE corner + right/bottom edges), geometry persisted to
+   * storage.local so it reopens where the user left it. It is per-tab,
+   * kept alive (hidden, not removed) so chat state survives toggling, and
+   * the native sidebar remains the fallback on pages where content
+   * scripts cannot run. */
+  let floatPanelReady = false;
+
+  function floatPanelEl() {
+    return shadowRoot ? shadowRoot.querySelector('[data-gs="float-panel"]') : null;
+  }
+
+  function buildFloatPanel(root) {
+    const panel = createEl('div', 'gs-float-panel graphite-sider-hidden');
+    panel.setAttribute('data-gs', 'float-panel');
+    const header = createEl('div', 'gs-float-header');
+    header.setAttribute('data-gs', 'float-header');
+    const title = createEl('span', 'gs-float-title', 'Graphite Sider');
+    title.setAttribute('data-gs', 'float-title');
+    const actions = createEl('span', 'gs-float-actions');
+    const nativeBtn = createEl('button', 'gs-float-btn', '\u2197');
+    nativeBtn.setAttribute('data-gs', 'float-native');
+    nativeBtn.title = 'Open the native sidebar instead';
+    nativeBtn.setAttribute('aria-label', 'Open native sidebar');
+    const closeBtn = createEl('button', 'gs-float-btn', '\u00d7');
+    closeBtn.setAttribute('data-gs', 'float-close');
+    closeBtn.title = 'Close floating panel';
+    closeBtn.setAttribute('aria-label', 'Close floating panel');
+    actions.appendChild(nativeBtn);
+    actions.appendChild(closeBtn);
+    header.appendChild(title);
+    header.appendChild(actions);
+    panel.appendChild(header);
+    const shield = createEl('div', 'gs-float-shield graphite-sider-hidden');
+    shield.setAttribute('data-gs', 'float-shield');
+    panel.appendChild(shield);
+    const frame = document.createElement('iframe');
+    frame.className = 'gs-float-frame';
+    frame.setAttribute('data-gs', 'float-frame');
+    frame.title = 'Graphite Sider';
+    panel.appendChild(frame);
+    const resize = createEl('div', 'gs-float-resize');
+    resize.setAttribute('data-gs', 'float-resize');
+    resize.title = 'Drag to resize';
+    panel.appendChild(resize);
+    root.appendChild(panel);
+    wireFloatPanel(root, panel);
+    return panel;
+  }
+
+  function floatDefaultGeometry() {
+    const vp = viewportSize();
+    const width = clamp(Math.round(vp.width * 0.32) || 400, 320, 520);
+    const height = Math.min(760, Math.max(420, vp.height - 96));
+    return { left: vp.offsetLeft + vp.width - width - 24, top: vp.offsetTop + 64, width, height };
+  }
+
+  function clampFloatGeometry(geo) {
+    const vp = viewportSize();
+    const width = clamp(Math.round(geo.width) || 400, 320, Math.max(320, vp.width - 16));
+    const height = clamp(Math.round(geo.height) || 600, 420, Math.max(420, vp.height - 16));
+    const pos = clampRect(Number(geo.left) || 0, Number(geo.top) || 0, width, height);
+    return { left: pos.left, top: pos.top, width, height };
+  }
+
+  function applyFloatGeometry(panel, geo) {
+    const g = clampFloatGeometry(geo);
+    panel.style.left = g.left + 'px';
+    panel.style.top = g.top + 'px';
+    panel.style.width = g.width + 'px';
+    panel.style.height = g.height + 'px';
+    return g;
+  }
+
+  function saveFloatGeometry(panel) {
+    const rect = panel.getBoundingClientRect();
+    if (!rect.width || !rect.height) return;
+    storageSet({ [FLOAT_PANEL_KEY]: {
+      left: rect.left, top: rect.top, width: rect.width, height: rect.height,
+      updatedAt: Date.now()
+    } }).catch(() => {});
+  }
+
+  function wireFloatPanel(root, panel) {
+    if (panel.__gsFloatWired) return;
+    panel.__gsFloatWired = true;
+    const header = panel.querySelector('[data-gs="float-header"]');
+    const frame = panel.querySelector('[data-gs="float-frame"]');
+    const shield = panel.querySelector('[data-gs="float-shield"]');
+    const resizeHandle = panel.querySelector('[data-gs="float-resize"]');
+    panel.querySelector('[data-gs="float-close"]').addEventListener('click', (event) => {
+      event.preventDefault(); event.stopPropagation(); hideFloatPanel();
+    });
+    panel.querySelector('[data-gs="float-native"]').addEventListener('click', (event) => {
+      event.preventDefault(); event.stopPropagation();
+      try { runtime.sendMessage({ type: 'openSidebarNative' }).catch(() => {}); } catch (e) { /* ignore */ }
+    });
+
+    // One gesture engine for drag (header) and resize (SE handle/edges):
+    // window capture listeners + iframe shield, pattern from wireToolbarDrag.
+    let gesture = null;
+    const isGesturePointer = (event) => {
+      if (!event || event.pointerId == null) return true;
+      if (!gesture || gesture.pointerId === 'mouse') return true;
+      return event.pointerId === gesture.pointerId;
+    };
+    const startGesture = (mode, event) => {
+      if (gesture) return false;
+      if (typeof event.button === 'number' && event.button !== 0) return false;
+      const rect = panel.getBoundingClientRect();
+      gesture = {
+        mode, pointerId: event.pointerId != null ? event.pointerId : 'mouse',
+        startX: event.clientX, startY: event.clientY,
+        left: rect.left, top: rect.top, width: rect.width, height: rect.height
+      };
+      shield.classList.remove('graphite-sider-hidden');
+      panel.classList.add('gs-float-panel--active');
+      event.preventDefault(); event.stopPropagation();
+      return true;
+    };
+    const moveGesture = (event) => {
+      if (!gesture || !isGesturePointer(event)) return;
+      if (typeof event.buttons === 'number' && event.buttons === 0) { endGesture(); return; }
+      if (gesture.mode === 'drag') {
+        const pos = clampRect(gesture.left + (event.clientX - gesture.startX),
+          gesture.top + (event.clientY - gesture.startY), gesture.width, gesture.height);
+        panel.style.left = pos.left + 'px';
+        panel.style.top = pos.top + 'px';
+      } else {
+        applyFloatGeometry(panel, {
+          left: gesture.left, top: gesture.top,
+          width: gesture.width + (event.clientX - gesture.startX),
+          height: gesture.height + (event.clientY - gesture.startY)
+        });
+      }
+      event.preventDefault();
+    };
+    const endGesture = () => {
+      if (!gesture) return;
+      gesture = null;
+      shield.classList.add('graphite-sider-hidden');
+      panel.classList.remove('gs-float-panel--active');
+      saveFloatGeometry(panel);
+    };
+    const on = (target, type, fn, opts) => target.addEventListener(type, fn, opts);
+    on(header, 'pointerdown', (e) => { if (e.target.closest('.gs-float-btn')) return; startGesture('drag', e); }, true);
+    on(header, 'mousedown', (e) => { if (e.target.closest('.gs-float-btn')) return; if (!gesture) startGesture('drag', e); }, true);
+    on(resizeHandle, 'pointerdown', (e) => startGesture('resize', e), true);
+    on(resizeHandle, 'mousedown', (e) => { if (!gesture) startGesture('resize', e); }, true);
+    on(window, 'pointermove', moveGesture, { capture: true, passive: false });
+    on(window, 'mousemove', moveGesture, true);
+    on(window, 'pointerup', (e) => { if (isGesturePointer(e)) endGesture(); }, true);
+    on(window, 'mouseup', (e) => { if (isGesturePointer(e)) endGesture(); }, true);
+    on(window, 'pointercancel', () => endGesture(), true);
+    on(window, 'blur', () => endGesture());
+
+    // Keep the panel on-screen if the viewport shrinks around it.
+    let reclampTimer = 0;
+    on(window, 'resize', () => {
+      if (panel.classList.contains('graphite-sider-hidden')) return;
+      if (reclampTimer) clearTimeout(reclampTimer);
+      reclampTimer = setTimeout(() => {
+        const rect = panel.getBoundingClientRect();
+        applyFloatGeometry(panel, { left: rect.left, top: rect.top, width: rect.width, height: rect.height });
+      }, 120);
+    });
+    void frame;
+  }
+
+  async function showFloatPanel() {
+    ensureRoot();
+    const panel = floatPanelEl();
+    if (!panel) return;
+    const frame = panel.querySelector('[data-gs="float-frame"]');
+    if (!floatPanelReady) {
+      floatPanelReady = true;
+      try { frame.src = runtime.getURL('sidebar/sidebar.html?surface=float'); } catch (e) { /* ignore */ }
+      const saved = await storageGet(FLOAT_PANEL_KEY).catch(() => null);
+      const geo = (saved && saved[FLOAT_PANEL_KEY]) || floatDefaultGeometry();
+      applyFloatGeometry(panel, geo);
+    } else {
+      const rect = panel.getBoundingClientRect();
+      if (rect.width) applyFloatGeometry(panel, { left: rect.left, top: rect.top, width: rect.width, height: rect.height });
+    }
+    panel.classList.remove('graphite-sider-hidden');
+    // Focus the panel so keyboard goes to the chat composer. Two frames:
+    // the iframe document needs a tick before focus() lands inside it.
+    const focusFrame = () => { try { frame.focus(); if (frame.contentWindow) frame.contentWindow.focus(); } catch (e) { /* ignore */ } };
+    requestAnimationFrame(focusFrame);
+    setTimeout(focusFrame, 120);
+  }
+
+  function hideFloatPanel() {
+    const panel = floatPanelEl();
+    if (panel) panel.classList.add('graphite-sider-hidden');
+  }
+
+  function toggleFloatPanel() {
+    ensureRoot();
+    const panel = floatPanelEl();
+    if (!panel) return Promise.resolve(false);
+    if (panel.classList.contains('graphite-sider-hidden')) return showFloatPanel().then(() => true);
+    hideFloatPanel();
+    return Promise.resolve(false);
+  }
+  function isFloatPanelOpen() {
+    const panel = floatPanelEl();
+    return !!(panel && !panel.classList.contains('graphite-sider-hidden'));
   }
 
   // Draggable selection toolbar: drag by the grip handle
@@ -496,6 +779,7 @@
       };
       moved = false;
       toolbarDragActive = true;
+      toolbarDragStartedAt = Date.now();
       toolbar.classList.add('gs-toolbar-dragging');
       event.preventDefault();
       event.stopPropagation();
@@ -522,11 +806,14 @@
 
     const endDrag = (event) => {
       if (!drag) return;
-      if (event && !isDragPointer(event)) return;
+      // A mismatched pointerup can be another pointer's release: only let
+      // it end THIS drag when no gesture is actually in flight anymore.
+      if (event && event.type !== 'blur' && !isDragPointer(event) && Date.now() - toolbarDragStartedAt < 3000) return;
       const wasMoved = moved;
       drag = null;
       moved = false;
       toolbarDragActive = false;
+      toolbarDragStartedAt = 0;
       toolbar.classList.remove('gs-toolbar-dragging');
       if (wasMoved) {
         // H1: the release mouseup lands on document (off the toolbar)
@@ -560,7 +847,7 @@
 
   function qs(selector) {
     ensureRoot();
-    return shadowRoot.querySelector(selector);
+    return shadowRoot ? shadowRoot.querySelector(selector) : null;
   }
 
   function fontFaceCss() {
@@ -599,8 +886,11 @@
   // ---------------------------------------------------------------- card
 
   function wireCard(root) {
+    if (root.__gsCardWired) return;
     const card = root.querySelector('[data-gs="card"]');
     const header = root.querySelector('[data-gs="card-header"]');
+    if (!card || !header) return;
+    root.__gsCardWired = true;
     root.querySelector('[data-gs="card-close"]').addEventListener('click', hideCard);
 
     let drag = null;
@@ -988,6 +1278,8 @@
   }
 
   function hideToolbar() {
+    toolbarShownForText = '';
+    toolbarShownForRect = null;
     const toolbar = qs('[data-gs="toolbar"]');
     if (toolbar) toolbar.classList.add('graphite-sider-hidden');
   }
@@ -1089,6 +1381,7 @@
   function showToolbar(rect, text) {
     if (settings.selectionToolbar === false) return;
     const toolbar = qs('[data-gs="toolbar"]');
+    if (!toolbar) return;
     toolbar.replaceChildren();
     const logo = document.createElement('span');
     logo.className = 'gs-toolbar-logo';
@@ -1173,6 +1466,8 @@
     toolbar.style.left = pos.left + 'px';
     toolbar.style.top = pos.top + 'px';
     toolbar.style.visibility = '';
+    toolbarShownForText = text;
+    toolbarShownForRect = { left: rect.left, top: rect.top, bottom: rect.bottom };
   }
 
   function showAskCard(text, rect) {
@@ -1222,7 +1517,18 @@
     return { text, rect };
   }
 
+  // Drag watchdog: see toolbarDragStartedAt above.
+  function resetStaleToolbarDrag() {
+    if (toolbarDragActive && toolbarDragStartedAt && Date.now() - toolbarDragStartedAt > 3000) {
+      toolbarDragActive = false;
+      toolbarDragStartedAt = 0;
+      const tb = shadowRoot ? shadowRoot.querySelector('[data-gs="toolbar"]') : null;
+      if (tb) tb.classList.remove('gs-toolbar-dragging');
+    }
+  }
+
   function onMouseUp(event) {
+    resetStaleToolbarDrag();
     if (event.target && event.target.closest && event.target.closest('#graphite-sider-root')) return;
     // H1: while a toolbar drag is active, or in the short window after a
     // moved drag released, this mouseup (off the toolbar) must not show,
@@ -1266,7 +1572,8 @@
 
   // ---------------------------------------------------- writing assistant
 
-  let activeField = null;
+  // (activeField / writeFocusOutTimer are declared near the top of this
+  // IIFE — settings listeners need them before this section executes.)
   let writeButtonTimer = null;
   // Field selection snapshot taken when the write menu opens: on touch,
   // focusing the menu target can collapse the field's selection before an
@@ -1283,6 +1590,36 @@
         try { fieldSelectionSnapshot = { range: sel.getRangeAt(0).cloneRange() }; } catch (e) { /* ignore */ }
       }
     }
+  }
+
+  // Rich editors (ProseMirror/Slate/Quill) focus a child <p>/<span> and
+  // replace those nodes on every render; the cached child dies while the
+  // editor root lives. Always track the editable ROOT, and re-validate it
+  // before every use — the write button used to trust a detached node
+  // forever, so its click positioned the menu at 0,0 / never showed it.
+  function normalizeField(el) {
+    if (!el || el.nodeType !== 1) return el;
+    if (el.isContentEditable) {
+      const root = el.closest ? el.closest('[contenteditable]') : null;
+      return root || el;
+    }
+    return el;
+  }
+
+  function liveField() {
+    if (activeField) {
+      if (activeField.isConnected && isEditable(activeField)) return activeField;
+      activeField = null;
+    }
+    const ae = document.activeElement;
+    if (isEditable(ae)) { activeField = normalizeField(ae); return activeField; }
+    const sel = window.getSelection();
+    if (sel && sel.anchorNode) {
+      const node = sel.anchorNode.nodeType === 1 ? sel.anchorNode : sel.anchorNode.parentElement;
+      const host = node && node.closest ? node.closest('[contenteditable], textarea, input') : null;
+      if (host && isEditable(host)) { activeField = normalizeField(host); return activeField; }
+    }
+    return null;
   }
 
   function isEditable(el) {
@@ -1339,12 +1676,19 @@
   }
 
   function wireWriteMenu(root) {
+    if (root.__gsWriteWired) return;
     const btn = root.querySelector('[data-gs="write-btn"]');
+    if (!btn) return;
+    root.__gsWriteWired = true;
     btn.addEventListener('pointerdown', (event) => event.preventDefault());
     btn.addEventListener('click', (event) => {
       event.preventDefault();
       event.stopPropagation();
-      if (activeField) showWriteMenu(activeField);
+      // Never trust a cached field blindly: rich editors replace nodes
+      // on every render, so activeField may be detached by click time.
+      const el = liveField();
+      if (!el) { hideWriteButton(); return; }
+      showWriteMenu(el);
     });
   }
 
@@ -1368,8 +1712,14 @@
   }
 
   function showWriteMenu(el) {
+    // A stale/detached field positioned the menu at 0,0 or nowhere.
+    if (!el || !el.isConnected || !isEditable(el)) return;
+    // Opening the menu wins over a pending focus-out hide: the menu items
+    // preventDefault pointerdown, so focus may leave the field first.
+    if (writeFocusOutTimer) { clearTimeout(writeFocusOutTimer); writeFocusOutTimer = 0; }
     snapshotFieldSelection(el);
     const menu = qs('[data-gs="write-menu"]');
+    if (!menu) return;
     menu.replaceChildren();
     const actions = [
       ['Improve writing', 'improve'],
@@ -1542,22 +1892,33 @@
 
   function onFocusIn(event) {
     if (settings.writingAssistant === false) return;
+    // focusin inside our own shadow UI: document-level target is the host
+    // element — not editable — and must not touch activeField at all.
+    const path = (event.composedPath && event.composedPath()) || [];
+    const host = document.getElementById('graphite-sider-root');
+    if (host && path.includes(host)) return;
     const el = event.target;
     if (isEditable(el)) {
-      activeField = el;
-      scheduleWriteButton(el);
-    } else if (activeField && focusWithinShadow()) {
-      // keep button while focus is inside our shadow UI
+      // Track the editable ROOT, not a doomed child <p>/<span>.
+      activeField = normalizeField(el);
+      scheduleWriteButton(activeField);
     }
+    // Non-editable non-shadow target: keep the current field; the click
+    // path and liveField() re-validate before use.
   }
 
   function onFocusOut(event) {
     const el = event.target;
-    if (el === activeField) {
-      setTimeout(() => {
-        if (document.activeElement !== activeField) hideWriteButton();
-      }, 150);
-    }
+    if (!activeField || el !== activeField) return;
+    if (writeFocusOutTimer) clearTimeout(writeFocusOutTimer);
+    writeFocusOutTimer = setTimeout(() => {
+      writeFocusOutTimer = 0;
+      // Focus moving into our shadow UI (menu, rewrite custom input) or
+      // back into the field must not hide the button/menu.
+      if (document.activeElement === activeField) return;
+      if (focusWithinShadow()) return;
+      hideWriteButton();
+    }, 150);
   }
 
   // Focus retention for our own shadow UI: focus moving INTO the shadow
@@ -2033,6 +2394,18 @@
       }
       case 'ocr-image':
         if (payload.srcUrl) await handleOcrImage(payload.srcUrl);
+        return { ok: true };
+      case 'toggleFloatPanel':
+        return toggleFloatPanel().then(function (open) { return { ok: true, handled: true, open: open }; });
+      case 'showFloatPanel':
+        return showFloatPanel().then(function () { return { ok: true, handled: true, open: true }; });
+      case 'hideFloatPanel':
+        hideFloatPanel();
+        return { ok: true, handled: true, open: false };
+      case 'open-native-sidebar':
+        // The floating panel's own "open native sidebar" request: route
+        // through the background so the NATIVE sidebar opens (not float).
+        try { runtime.sendMessage({ type: 'openSidebarNative' }).catch(() => {}); } catch (e) { /* ignore */ }
         return { ok: true };
       case 'open-popover': {
         const info = currentSelectionOrAsk();
@@ -2831,31 +3204,51 @@
   // re-anchored to the live rect rather than rebuilt, so adjusting an
   // already-shown selection never re-lays-out over the handles.
   let selectionChangeTimer = 0;
+  let selectionCheckFirstAt = 0;
   let toolbarShownForText = '';
+  let toolbarShownForRect = null;
   function checkSelectionNow() {
+    selectionChangeTimer = 0;
+    selectionCheckFirstAt = 0;
     if (settings.selectionToolbar === false) return;
-    if (toolbarDragActive || Date.now() < toolbarDragSuppressUntil) return;
+    if (toolbarDragActive || Date.now() < toolbarDragSuppressUntil) {
+      // Suppressed (mid-drag): requeue instead of dropping the check, or a
+      // selection made during the drag would never get its menu.
+      scheduleSelectionCheck();
+      return;
+    }
     const info = getSelectionInfo();
     if (info) {
       lastSelectionText = info.text;
       lastSelectionRect = info.rect;
       const toolbar = qs('[data-gs="toolbar"]');
       const visible = !!(toolbar && !toolbar.classList.contains('graphite-sider-hidden'));
-      if (visible && toolbarShownForText === info.text) {
-        // Same selection, menu already up: keep it where it is. Moving it
-        // mid-adjustment is what made it jump under the user's finger.
+      const sameSpot = toolbarShownForRect &&
+        Math.abs(toolbarShownForRect.left - info.rect.left) <= 4 &&
+        Math.abs(toolbarShownForRect.top - info.rect.top) <= 4 &&
+        Math.abs(toolbarShownForRect.bottom - info.rect.bottom) <= 4;
+      if (visible && toolbarShownForText === info.text && sameSpot) {
+        // Same selection at the same place, menu already up: keep it where
+        // it is. Moving it mid-adjustment is what made it jump under the
+        // user's finger.
         return;
       }
       showToolbar(info.rect, info.text);
       toolbarShownForText = info.text;
+      toolbarShownForRect = { left: info.rect.left, top: info.rect.top, bottom: info.rect.bottom };
     } else {
-      toolbarShownForText = '';
       hideToolbar();
     }
   }
   function scheduleSelectionCheck() {
+    const now = Date.now();
+    if (!selectionCheckFirstAt) selectionCheckFirstAt = now;
+    // Debounce, but never starve: a page that keeps mutating the selection
+    // must not postpone the menu forever. Cap the wait at 1500ms from the
+    // first change of a burst (or the configured delay, whichever smaller).
+    const wait = Math.max(0, Math.min(selectionDelayMs(), selectionCheckFirstAt + 1500 - now));
     if (selectionChangeTimer) clearTimeout(selectionChangeTimer);
-    selectionChangeTimer = setTimeout(checkSelectionNow, selectionDelayMs());
+    selectionChangeTimer = setTimeout(checkSelectionNow, wait);
   }
   document.addEventListener('selectionchange', scheduleSelectionCheck, true);
   document.addEventListener('pointerup', (event) => {
@@ -2913,8 +3306,25 @@
       hideToolbar();
       hideCard();
       hideWriteMenu();
+      hideFloatPanel();
     }
   }, true);
+
+  // Self-heal watchdog: SPA hydration/navigation (bfcache pageshow, DOM
+  // churn) can remove or empty our shadow host at any time. Re-check on
+  // pageshow and periodically (throttled, only on document activity) so
+  // the selection toolbar / write menu come back without a page reload.
+  window.addEventListener('pageshow', () => { ensureRoot(); });
+  let rootWatchdogTick = 0;
+  setInterval(() => {
+    if (document.hidden) return;
+    rootWatchdogTick++;
+    // ~every 30s at most, and only when the root is actually broken:
+    // ensureRoot() itself is cheap when everything is intact.
+    const host = document.getElementById('graphite-sider-root');
+    if (!host || !host.isConnected) ensureRoot();
+    else if (rootWatchdogTick % 6 === 0 && host.shadowRoot !== shadowRoot) ensureRoot();
+  }, 5000);
 
   runtime.onMessage.addListener((message, sender, sendResponse) => {
     if (!message || typeof message !== 'object') return undefined;

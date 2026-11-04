@@ -218,7 +218,12 @@
     // Issue 4: preferred sidebar side. Firefox (not the extension) controls
     // the actual built-in sidebar position; this records the user's choice
     // so the UI can show the matching one-time Firefox steps. See options.
-    sidebarSide: 'right'
+    sidebarSide: 'right',
+    // Floating sidebar: when true, opening the sidebar shows an in-page
+    // floating panel (draggable/resizable, geometry remembered) instead
+    // of Firefox's fixed native sidebar. The native sidebar stays the
+    // fallback on pages where content scripts cannot run.
+    floatPanel: false
   };
 
   /**
@@ -350,6 +355,7 @@
       // 0 / invalid => provider default (no cap sent).
       var mt = Number(out.settings.maxTokens);
       out.settings.maxTokens = (isFinite(mt) && mt > 0) ? Math.floor(mt) : 0;
+      out.settings.floatPanel = out.settings.floatPanel === true;
     }
     if (Array.isArray(input.prompts)) out.prompts = input.prompts;
     if (Array.isArray(input.history)) out.history = input.history.slice(0, HISTORY_LIMIT);

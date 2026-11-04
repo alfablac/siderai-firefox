@@ -101,7 +101,8 @@ var DEFAULT_SETTINGS = {
   targetLang: "English", temperature: 0.7, maxTokens: 0, // 0 = provider default
   systemPrompt: "", youtubeAutoSummary: false, searchEnhance: true,
   selectionToolbar: true, selectionToolbarPosition: "above",
-  selectionToolbarDelayMs: 800, selectionToolbarPaddingPx: 10, bilingualSubtitles: false
+  selectionToolbarDelayMs: 800, selectionToolbarPaddingPx: 10, bilingualSubtitles: false,
+  floatPanel: false
 };
 
 function defaultState() {
@@ -308,6 +309,7 @@ function normalizeState(raw) {
     s.settings.selectionToolbarDelayMs = (isFinite(sDelay) && sDelay >= 0) ? Math.min(10000, Math.floor(sDelay)) : 800;
     var sPad = Number(s.settings.selectionToolbarPaddingPx);
     s.settings.selectionToolbarPaddingPx = (isFinite(sPad) && sPad >= 0) ? Math.min(80, Math.floor(sPad)) : 10;
+    s.settings.floatPanel = s.settings.floatPanel === true;
   }
   if (Array.isArray(raw.prompts)) {
     s.prompts = raw.prompts.filter(function (p) { return p && typeof p === "object"; }).map(function (p) {
@@ -679,6 +681,7 @@ function renderDefaults() {
   el("featSearchEnhance").checked = !!state.settings.searchEnhance;
   el("featYoutubeAutoSummary").checked = !!state.settings.youtubeAutoSummary;
   el("featBilingualSubtitles").checked = !!state.settings.bilingualSubtitles;
+  if (el("floatPanel")) el("floatPanel").checked = state.settings.floatPanel === true;
   renderActiveProviderOptions();
 }
 
@@ -708,6 +711,7 @@ function readDefaultsFromUI() {
   state.settings.searchEnhance = el("featSearchEnhance").checked;
   state.settings.youtubeAutoSummary = el("featYoutubeAutoSummary").checked;
   state.settings.bilingualSubtitles = el("featBilingualSubtitles").checked;
+  if (el("floatPanel")) state.settings.floatPanel = el("floatPanel").checked;
 }
 
 /* ---------------- Prompts UI ---------------- */
@@ -1213,6 +1217,10 @@ function bindEvents() {
   if (el("openSidebarBtn")) el("openSidebarBtn").addEventListener("click", openSidebar);
   if (el("sidebarSidePref")) el("sidebarSidePref").addEventListener("change", function () {
     state.settings.sidebarSide = el("sidebarSidePref").value === "left" ? "left" : "right";
+    schedulePersist();
+  });
+  if (el("floatPanel")) el("floatPanel").addEventListener("change", function () {
+    state.settings.floatPanel = el("floatPanel").checked;
     schedulePersist();
   });
   if (el("selectionToolbarPosition")) el("selectionToolbarPosition").addEventListener("change", function () {

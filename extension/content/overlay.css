@@ -191,6 +191,133 @@
   background: #33373f;
 }
 
+/* ---------- Floating sidebar panel ----------
+   In-page panel hosting sidebar/sidebar.html in an iframe (Firefox's
+   native sidebar cannot float, move or resize). All selectors stay
+   scoped to our shadow root classes, like every other rule here. */
+
+.gs-float-panel {
+  position: fixed;
+  display: flex;
+  flex-direction: column;
+  background: #1f2227;
+  border: 1px solid #33373f;
+  border-radius: 12px;
+  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.55);
+  z-index: 2147483647;
+  pointer-events: auto;
+  overflow: hidden;
+  min-width: 320px;
+  min-height: 420px;
+}
+
+.gs-float-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 6px 10px;
+  background: #17191d;
+  border-bottom: 1px solid #33373f;
+  cursor: move;
+  user-select: none;
+  touch-action: none;
+  flex: 0 0 auto;
+}
+
+.gs-float-title {
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: #5ec8c0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.gs-float-actions {
+  display: inline-flex;
+  gap: 4px;
+}
+
+.gs-float-btn {
+  all: initial;
+  font-family: inherit;
+  color: #9aa1ab;
+  background: transparent;
+  border: none;
+  font-size: 15px;
+  line-height: 1;
+  padding: 3px 7px;
+  cursor: pointer;
+  border-radius: 6px;
+}
+
+.gs-float-btn:hover {
+  color: #e6e8eb;
+  background: #33373f;
+}
+
+.gs-float-frame {
+  flex: 1 1 auto;
+  width: 100%;
+  border: none;
+  background: #1f2227;
+}
+
+/* Sits over the iframe during drag/resize so the iframe cannot swallow
+   pointermove/pointerup. Covers the frame area below the header. */
+.gs-float-shield {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  top: 33px;
+  z-index: 3;
+}
+
+.gs-float-resize {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  width: 18px;
+  height: 18px;
+  cursor: nwse-resize;
+  touch-action: none;
+  z-index: 4;
+}
+
+.gs-float-resize::after {
+  content: "";
+  position: absolute;
+  right: 3px;
+  bottom: 3px;
+  width: 9px;
+  height: 9px;
+  border-right: 2px solid #5a6068;
+  border-bottom: 2px solid #5a6068;
+  border-bottom-right-radius: 4px;
+}
+
+.gs-float-panel--active .gs-float-frame {
+  pointer-events: none;
+}
+
+@media (pointer: coarse) {
+  .gs-float-btn {
+    min-width: 36px;
+    min-height: 36px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .gs-float-resize {
+    width: 28px;
+    height: 28px;
+  }
+}
+
 /* ---------- Result popover card ---------- */
 
 .gs-card {

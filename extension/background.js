@@ -189,8 +189,37 @@ async function openChatTab() {
   } catch (e) { return false; }
 }
 
-/* @returns {Promise<{opened:boolean, mode:'sidebar'|'tab'|null}>} */
+// Send a graphite-command to a specific tab's content script.
+// Resolves null when no content script answers (restricted page,
+// extension pages, AMO — exactly the float-panel fallback cases).
+function sendTabCommand(tabId, command, extra) {
+  if (tabId == null || !ext.tabs || typeof ext.tabs.sendMessage !== 'function') return Promise.resolve(null);
+  var msg = { type: 'graphite-command', command: command };
+  if (extra) Object.keys(extra).forEach(function (k) { msg[k] = extra[k]; });
+  try {
+    return ext.tabs.sendMessage(tabId, msg).catch(function () { return null; });
+  } catch (e) { return Promise.resolve(null); }
+}
+
+// When the user opted into the floating panel, route the open/toggle
+// to the active tab's content script first. A truthy answer means the
+// panel handled it; null/false (no content script on this page) falls
+// back to the native sidebar / chat tab.
+async function tryFloatPanel(command) {
+  try {
+    var settings = await GraphiteStorage.loadSettings().catch(function () { return null; });
+    if (!settings || !settings.settings || settings.settings.floatPanel !== true) return false;
+    var tabs = await queryActiveTab();
+    var tab = tabs && tabs[0];
+    if (!tab || tab.id == null) return false;
+    var res = await sendTabCommand(tab.id, command || 'showFloatPanel');
+    return !!(res && (res.ok !== false) && res.result && res.result.handled);
+  } catch (e) { return false; }
+}
+
+/* @returns {Promise<{opened:boolean, mode:'sidebar'|'tab'|'float'|null}>} */
 async function openSidebar() {
+  if (await tryFloatPanel('showFloatPanel')) return { opened: true, mode: 'float' };
   if (ext.sidebarAction) {
     try {
       if (typeof ext.sidebarAction.open === 'function') { await ext.sidebarAction.open(); return { opened: true, mode: 'sidebar' }; }
@@ -200,6 +229,7 @@ async function openSidebar() {
 }
 
 async function toggleSidebar() {
+  if (await tryFloatPanel('toggleFloatPanel')) return { opened: true, mode: 'float' };
   if (ext.sidebarAction) {
     try {
       if (typeof ext.sidebarAction.toggle === 'function') { await ext.sidebarAction.toggle(); return { opened: true, mode: 'sidebar' }; }
@@ -213,12 +243,28 @@ async function toggleSidebar() {
  *  @returns {Promise<{opened:boolean, mode:string|null}>} so callers can
  *  report honestly (the options page used to claim success on failure). */
 async function dispatchToSidebar(pending) {
-  try { await GraphiteStorage.setPendingAction(pending); } catch (e) { /* storage unavailable */ }
   var opened = await openSidebar();
+  // Scope before publishing: writing an unrestricted action and then
+  // replacing it races an already-open native sidebar's storage listener.
+  var action = opened && opened.mode === 'float'
+    ? Object.assign({}, pending, { surface: 'float' })
+    : pending;
+  try { await GraphiteStorage.setPendingAction(action); } catch (e) { /* storage unavailable */ }
   try {
-    await ext.runtime.sendMessage({ type: 'pendingAction', action: pending });
+    await ext.runtime.sendMessage({ type: 'pendingAction', action: action });
   } catch (e) { /* Sidebar/chat tab not open yet — it polls the pendingAction storage key on load. */ }
   return opened;
+}
+
+// Native-only open: the floating panel's "open native sidebar" button
+// asks for this, bypassing the float-first routing.
+async function openSidebarNative() {
+  if (ext.sidebarAction) {
+    try {
+      if (typeof ext.sidebarAction.open === 'function') { await ext.sidebarAction.open(); return { opened: true, mode: 'sidebar' }; }
+    } catch (e) { /* fall through to the tab fallback (Android has no sidebar) */ }
+  }
+  return openChatTab().then(function (ok) { return { opened: !!ok, mode: ok ? 'tab' : null }; });
 }
 
 if (menusApi && menusApi.onClicked) {
@@ -1175,6 +1221,8 @@ function handleMessage(msg) {
       return GraphiteStorage.takePendingAction();
     case 'openSidebar':
       return openSidebar();
+    case 'openSidebarNative':
+      return openSidebarNative();
     case 'setActiveModel': {
       // Single writer for the shared model selection (sidebar, YouTube and
       // Search pickers). Goes through saveSettings' serialized

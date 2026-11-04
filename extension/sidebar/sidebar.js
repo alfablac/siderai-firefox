@@ -2973,6 +2973,23 @@
   }
 
   /* ---------------- pending actions ---------------- */
+  // When this page runs inside the floating panel (?surface=float), the
+  // native sidebar/chat-tab may be open at the same time. Both used to
+  // consume graphiteSider.pendingAction (storage key, runtime message and
+  // the getPendingAction poll), so one instance raced the other and an
+  // action could land in the hidden one. Scoping: the float instance
+  // consumes actions whose target surface is 'float' or unrestricted;
+  // the native instance consumes only unrestricted ones. Background
+  // marks float-routed dispatches with surface:'float'.
+  var SURFACE = '';
+  try { SURFACE = new URLSearchParams(location.search).get('surface') || ''; } catch (e) { SURFACE = ''; }
+  var IS_FLOAT = SURFACE === 'float';
+  function pendingForThisSurface(action) {
+    if (!action) return false;
+    var target = action.surface || action.targetSurface || '';
+    if (IS_FLOAT) return target === '' || target === 'float';
+    return target === '';
+  }
   function handlePendingAction(action) {
     if (!action) return;
     var type = action.type || action.action || '';
@@ -3019,13 +3036,19 @@
     } else if (action.prompt) runToolPrompt(action.prompt);
   }
   function checkPendingAction() {
+    // The background getPendingAction handler CONSUMES the action
+    // (takePendingAction). A float instance must not steal a native
+    // action (or vice versa) through this poll: only the native surface
+    // polls the background; the float surface relies on the storage
+    // change listener above, which checks pendingForThisSurface first.
+    if (IS_FLOAT) return;
     sendMessage({ type: 'getPendingAction' }).then(function (r) {
       var a = r && (r.action || r);
-      if (a && (a.type || a.action || a.text || a.prompt)) handlePendingAction(a);
+      if (a && (a.type || a.action || a.text || a.prompt) && pendingForThisSurface(a)) handlePendingAction(a);
     }).catch(function () {});
     storageGet(PENDING_KEY).then(function (o) {
       var a = o[PENDING_KEY];
-      if (a) { var c = {}; c[PENDING_KEY] = null; storageSet(c); handlePendingAction(a); }
+      if (a && pendingForThisSurface(a)) { var c = {}; c[PENDING_KEY] = null; storageSet(c); handlePendingAction(a); }
     }).catch(function () {});
   }
 
@@ -3140,8 +3163,13 @@
     try {
       if (api.storage && api.storage.onChanged) api.storage.onChanged.addListener(function (changes, area) {
         if (area === 'local' && changes[PENDING_KEY] && changes[PENDING_KEY].newValue) {
-          var c = {}; c[PENDING_KEY] = null; storageSet(c);
-          handlePendingAction(changes[PENDING_KEY].newValue);
+          var np = changes[PENDING_KEY].newValue;
+          // Only the surface this action targets may consume it; the
+          // other instance leaves the key for its owner.
+          if (pendingForThisSurface(np)) {
+            var c = {}; c[PENDING_KEY] = null; storageSet(c);
+            handlePendingAction(np);
+          }
         }
         if (area === 'local' && changes[SETTINGS_KEY]) loadSettings();
       });
@@ -3158,7 +3186,7 @@
 
     try {
       if (api.runtime && api.runtime.onMessage) api.runtime.onMessage.addListener(function (msg) {
-        if (msg && msg.type === 'pendingAction' && msg.action) handlePendingAction(msg.action);
+        if (msg && msg.type === 'pendingAction' && msg.action && pendingForThisSurface(msg.action)) handlePendingAction(msg.action);
         return undefined;
       });
     } catch (e) {}
