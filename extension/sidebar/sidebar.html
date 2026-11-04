@@ -11,19 +11,6 @@
 <header class="app-header">
   <div class="brand">
     <svg class="logo" viewBox="0 0 32 32" width="22" height="22" aria-hidden="true"><path d="M16 2 L28 12 L16 30 L4 12 Z" fill="#26292f" stroke="#5ec8c0" stroke-width="1.6"/><path d="M4 12 H28 M16 2 L11 12 L16 30 L21 12 L16 2" fill="none" stroke="#8b9bb4" stroke-width="1"/></svg>
-    <span class="brand-name">Graphite Sider</span>
-  </div>
-  <div class="header-controls">
-    <select id="providerSelect" title="Provider / model" aria-label="Provider"></select>
-    <div id="modelPicker" class="model-picker">
-      <button id="modelButton" class="model-button" type="button" title="Model" aria-label="Model" aria-haspopup="listbox" aria-expanded="false" aria-controls="modelMenu"><span id="modelButtonLabel" class="model-button-label">Default model</span><span class="model-caret" aria-hidden="true">&#9662;</span></button>
-      <div id="modelMenu" class="model-menu hidden">
-        <input id="modelSearch" class="model-search" type="text" placeholder="Search models..." aria-label="Search models" aria-controls="modelList" autocomplete="off">
-        <div id="modelList" class="model-list" role="listbox" aria-label="Models"></div>
-      </div>
-    </div>
-    <button id="newChatBtn" class="icon-btn" title="New chat">+ New</button>
-    <button id="settingsBtn" class="icon-btn" title="Settings" aria-label="Settings">&#9881;</button>
   </div>
 </header>
 
@@ -70,7 +57,22 @@
       <label class="toggle"><input type="checkbox" id="groupToggle"> Group chat</label>
       <span class="muted small">2-4 models answer in parallel</span>
     </div>
-    <div id="groupModels" class="group-models hidden"></div>
+    <div class="chat-controls">
+      <select id="providerSelect" title="Provider / model" aria-label="Provider"></select>
+      <div id="modelPicker" class="model-picker">
+        <button id="modelButton" class="model-button" type="button" title="Model" aria-label="Model" aria-haspopup="listbox" aria-expanded="false" aria-controls="modelMenu"><span id="modelButtonLabel" class="model-button-label">Default model</span><span class="model-caret" aria-hidden="true">&#9662;</span></button>
+        <div id="modelMenu" class="model-menu hidden">
+          <input id="modelSearch" class="model-search" type="text" placeholder="Search models..." aria-label="Search models" aria-controls="modelList" autocomplete="off">
+          <div id="modelList" class="model-list" role="listbox" aria-label="Models"></div>
+        </div>
+      </div>
+      <button id="newChatBtn" class="icon-btn" title="New chat">+ New</button>
+      <button id="settingsBtn" class="icon-btn" title="Settings" aria-label="Settings">&#9881; Settings</button>
+    </div>
+    <div id="groupModels" class="group-models hidden">
+      <input id="groupModelSearch" class="model-search" type="text" placeholder="Filter group models..." aria-label="Filter group chat models" autocomplete="off">
+      <div id="groupModelList" class="group-model-list"></div>
+    </div>
 
     <div class="composer-wrap">
       <div id="slashPopup" class="slash-popup hidden"></div>

@@ -163,6 +163,7 @@
   }
 
   var modelPickerState = { open: false, highlight: -1, filtered: [] };
+  var groupSelection = Object.create(null);
 
   function activeProvider() { return state.providers.find(function (x) { return x.id === state.activeProviderId; }); }
   function currentModels() {
@@ -265,18 +266,22 @@
     sendMessage({ type: 'setActiveModel', providerId: state.activeProviderId, model: m }).catch(function () {});
   }
   function renderGroupModels() {
-    var box = $('groupModels'); box.textContent = '';
-    allModelCombos().forEach(function (c, i) {
+    var box = $('groupModelList'); if (!box) return; box.textContent = '';
+    var query = ($('groupModelSearch') ? $('groupModelSearch').value : '').trim().toLowerCase();
+    var combos = allModelCombos().filter(function (c) { return !query || c.label.toLowerCase().indexOf(query) !== -1; });
+    combos.forEach(function (c, i) {
       var lab = document.createElement('label');
-      var cb = document.createElement('input'); cb.type = 'checkbox'; cb.value = c.providerId + '|' + c.model; cb.checked = i < 2;
+      var cb = document.createElement('input'); cb.type = 'checkbox'; cb.value = c.providerId + '|' + c.model;
+      if (typeof groupSelection[cb.value] === 'undefined') groupSelection[cb.value] = i < 2;
+      cb.checked = groupSelection[cb.value];
+      cb.addEventListener('change', function () { groupSelection[cb.value] = cb.checked; });
       lab.appendChild(cb); lab.appendChild(document.createTextNode(' ' + c.label));
       box.appendChild(lab);
     });
-    if (!box.children.length) { var note = document.createElement('span'); note.className = 'muted small'; note.textContent = 'Configure providers in Settings to use group chat.'; box.appendChild(note); }
+    if (!box.children.length) { var note = document.createElement('span'); note.className = 'muted small'; note.textContent = allModelCombos().length ? 'No matching models' : 'Configure providers in Settings to use group chat.'; box.appendChild(note); }
   }
   function selectedGroupCombos(promptText) {
-    var boxes = Array.prototype.slice.call($('groupModels').querySelectorAll('input:checked'));
-    var combos = boxes.map(function (cb) { var p = cb.value.split('|'); return { providerId: p[0], model: p.slice(1).join('|'), label: providerLabel(p[0]) + ' / ' + p.slice(1).join('|'), providerLabel: (state.providers.find(function (x) { return x.id === p[0]; }) || {}).label || p[0] }; });
+    var combos = allModelCombos().filter(function (c) { return groupSelection[c.providerId + '|' + c.model]; });
     // @mention filter: @ModelName keeps only matching combos
     if (promptText) {
       var mentions = [];
@@ -3099,6 +3104,7 @@
     });
     $('composer').addEventListener('input', checkSlash);
     $('groupToggle').addEventListener('change', function () { state.groupMode = this.checked; $('groupModels').classList.toggle('hidden', !this.checked); });
+    $('groupModelSearch').addEventListener('input', renderGroupModels);
     $('clearContextBtn').addEventListener('click', clearContext);
     $('attachPageBtn').addEventListener('click', function () { attachPage(); });
     $('attachYouTubeBtn').addEventListener('click', function () { attachYouTube(); });

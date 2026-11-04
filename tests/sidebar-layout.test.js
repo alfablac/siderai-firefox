@@ -1,0 +1,12 @@
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const html = fs.readFileSync('extension/sidebar/sidebar.html', 'utf8');
+const css = fs.readFileSync('extension/sidebar/sidebar.css', 'utf8');
+const js = fs.readFileSync('extension/sidebar/sidebar.js', 'utf8');
+assert.ok(html.indexOf('id="groupToggle"') < html.indexOf('class="chat-controls"'));
+assert.ok(html.indexOf('class="chat-controls"') < html.indexOf('id="groupModels"'));
+assert.match(html, /id="groupModelSearch"[^>]*aria-label="Filter group chat models"/);
+assert.match(css, /\.tabs\{[^}]*overflow-x:auto/);
+assert.match(css, /\.tab\{[^}]*border-radius:7px 7px 0 0/);
+assert.match(js, /groupModelSearch'\)\.addEventListener\('input', renderGroupModels\)/);
+assert.match(js, /groupSelection\[cb\.value\] = cb\.checked/);
