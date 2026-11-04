@@ -341,6 +341,29 @@
   flex: none;
 }
 
+.gs-search-card.gs-search-card--float.gs-search-card--resizable {
+  resize: both;
+  min-width: 320px;
+  min-height: 240px;
+  max-width: min(900px, calc(100vw - 24px));
+  overflow: auto;
+}
+
+.gs-search-card.gs-search-card--float .gs-search-head {
+  cursor: move;
+  user-select: none;
+  touch-action: none;
+}
+
+.gs-search-card.gs-search-card--float.gs-search-card--dragging {
+  user-select: none;
+}
+
+.gs-search-card.gs-search-card--float.gs-search-card--dragging,
+.gs-search-card.gs-search-card--float.gs-search-card--dragging * {
+  cursor: move !important;
+}
+
 /* Narrow viewports (in-flow fallback): the card takes its own full-width
    row above the results list (the stretch class in the results column)
    instead of covering results as a fixed box. Mirrors FLOAT_MIN_WIDTH in
@@ -355,7 +378,9 @@
     max-height: none;
     overflow-y: visible;
     box-shadow: none;
+    resize: none;
   }
+  .gs-search-card.gs-search-card--float .gs-search-head { cursor: default; touch-action: auto; }
 }
 .gs-search-card.gs-search-card--stretch,
 .gs-search-card.gs-search-card--rail-fallback {

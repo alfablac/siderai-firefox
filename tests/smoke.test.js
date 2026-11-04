@@ -652,12 +652,12 @@ check("background prompt path guarded and loads settings", () => {
   assert.ok(!/(^|[^\w.$])global\./.test(bg), "background.js must not use the bare global object");
 });
 
-check("manifest background order and release version 1.0.34", () => {
+check("manifest background order and release version 1.0.35", () => {
   assert.ok(manifest, "manifest required");
   const scripts = (manifest.background && manifest.background.scripts) || [];
   const iP = scripts.indexOf("lib/prompts.js"), iY = scripts.indexOf("lib/youtube.js"), iB = scripts.indexOf("background.js");
   assert.ok(iP >= 0 && iY >= 0 && iB > iP && iB > iY, "lib/prompts.js + lib/youtube.js load before background.js");
-  assert.strictEqual(manifest.version, "1.0.34", "release version");
+  assert.strictEqual(manifest.version, "1.0.35", "release version");
 });
 
 /* ---------- 1.0.6 bug: transcript truncated at 22:52 of a 44:59 video -----
@@ -1005,6 +1005,10 @@ check("1.0.33 search AI answer: wide floating box at the right, page theme", () 
   assert.ok(src.includes("getComputedStyle(document.body).backgroundColor"), "page background sampled");
   assert.ok(src.includes("gs-search-card--light"), "light class toggled from the sample");
   assert.ok(src.includes("FLOAT_MIN_WIDTH"), "float width breakpoint mirrored in JS");
+  assert.ok(src.includes("function wireSearchCardControls(card)"), "floating search answer supports drag/resize");
+  assert.ok(src.includes("SEARCH_CARD_GEOMETRY_KEY"), "search-card geometry is stored across page loads");
+  assert.ok(src.includes("gs-search-card--user-geometry"), "saved placement is preserved during remounts");
+  assert.ok(css.includes("resize: both"), "floating answer has a resize affordance");
   // Opt-in generation and the settings gate are unchanged.
   assert.ok(src.includes("Generate answer"), "opt-in Generate button intact");
   assert.ok(src.includes("stored.searchEnhance === false"), "searchEnhance gate intact");
@@ -1549,7 +1553,7 @@ Promise.all([Promise.resolve(sseDone), Promise.resolve(imageDone), Promise.resol
    fallback, widened liveness, touch selection, helper payloads. */
 check("1.0.21: version, model-select wiring, detach transport, mobile surfaces", () => {
   assert.ok(manifest, "manifest required");
-  assert.strictEqual(manifest.version, "1.0.34", "release version");
+  assert.strictEqual(manifest.version, "1.0.35", "release version");
   assert.ok(manifest.browser_specific_settings.gecko_android, "gecko_android block present");
   // Shared picker loads before both helpers.
   const ytEntry = (manifest.content_scripts || []).find((cs) => (cs.js || []).includes("content/youtube.js"));
@@ -1646,7 +1650,7 @@ check("1.0.19: icons built as same-document SVG nodes (no DOMParser import)", ()
    static 9px text; now icons-only everywhere, name via long-press. */
 check("1.0.23: panel placement ladder + long-press toolbar labels", () => {
   assert.ok(manifest, "manifest required");
-  assert.strictEqual(manifest.version, "1.0.34", "release version");
+  assert.strictEqual(manifest.version, "1.0.35", "release version");
   const yt = fs.readFileSync(path.join(EXT, "content/youtube.js"), "utf8");
   // Ladder exists, tried sequentially in priority order.
   const ladder = yt.slice(yt.indexOf("const PANEL_PLACEMENTS"), yt.indexOf("function bestPanelPlacement"));
@@ -1990,7 +1994,7 @@ check("1.0.27 blob/MSE extraction + per-provider transcription model", () => {
    per-video summary language + model selectors. */
 check("1.0.28 manifest recovery + chunking + summary controls", () => {
   assert.ok(manifest, "manifest required");
-  assert.strictEqual(manifest.version, "1.0.34", "release version");
+  assert.strictEqual(manifest.version, "1.0.35", "release version");
 
   // Watcher: registered at document_start in its OWN entry, before the
   // document_end content entry; webRequest present, blocking variant absent.
@@ -2124,7 +2128,7 @@ check("1.0.29 chat transport: jobPost delivers, sidebar re-attaches", () => {
    keyframe names, renames, and the panel root marker classes. */
 check("1.0.30 CSS isolation: page stylesheets cannot touch host UI", () => {
   assert.ok(manifest, "manifest required");
-  assert.strictEqual(manifest.version, "1.0.34", "release version");
+  assert.strictEqual(manifest.version, "1.0.35", "release version");
 
   // overlay.css (shadow-only) must never be page-injected again; panel.css
   // carries the small page-level surface (YouTube panel, search card).
@@ -2197,7 +2201,7 @@ check("1.0.30 CSS isolation: page stylesheets cannot touch host UI", () => {
    flatten, and the above/below placement branch in showToolbar(). */
 check("1.0.31 selection menu position: setting plumbed end to end", () => {
   assert.ok(manifest, "manifest required");
-  assert.strictEqual(manifest.version, "1.0.34", "release version");
+  assert.strictEqual(manifest.version, "1.0.35", "release version");
 
   const storageJs = fs.readFileSync(path.join(EXT, "lib/storage.js"), "utf8");
   assert.ok(storageJs.includes("selectionToolbarPosition: 'above'"), "storage default is above");
@@ -2239,7 +2243,7 @@ check("1.0.31 selection menu position: setting plumbed end to end", () => {
    configurable too. Pinned end to end like 1.0.31. */
 check("1.0.32 selection menu delay + padding: debounced, configurable", () => {
   assert.ok(manifest, "manifest required");
-  assert.strictEqual(manifest.version, "1.0.34", "release version");
+  assert.strictEqual(manifest.version, "1.0.35", "release version");
 
   const storageJs = fs.readFileSync(path.join(EXT, "lib/storage.js"), "utf8");
   assert.ok(storageJs.includes("selectionToolbarDelayMs: 800"), "storage delay default is 800ms");
@@ -2301,7 +2305,7 @@ check("1.0.32 selection menu delay + padding: debounced, configurable", () => {
    and the 1.0.32 debounce could be starved forever. Pinned below. */
 check("1.0.34 floating panel + self-healing menus", () => {
   assert.ok(manifest, "manifest required");
-  assert.strictEqual(manifest.version, "1.0.34", "release version");
+  assert.strictEqual(manifest.version, "1.0.35", "release version");
 
   const content = fs.readFileSync(path.join(EXT, "content/content.js"), "utf8");
   // Floating panel: build, persist, toggle.

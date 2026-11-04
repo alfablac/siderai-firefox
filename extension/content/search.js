@@ -296,6 +296,7 @@
     // state and the watcher expandos survive.
     card.classList.remove('gs-search-card--stretch');
     card.classList.add('gs-search-card--float');
+    wireSearchCardControls(card);
     document.body.appendChild(card);
   }
 
@@ -314,6 +315,106 @@
   // box would overlap the results column, so the in-flow fallback is used;
   // wide viewports keep results untouched on the left.
   const FLOAT_MIN_WIDTH = 1150;
+  const SEARCH_CARD_GEOMETRY_KEY = 'graphiteSider.searchCardGeometry.v1';
+
+  function clampSearchGeometry(geometry) {
+    const margin = 12;
+    const width = Math.min(Math.max(320, Number(geometry.width) || 420), Math.max(320, window.innerWidth - margin * 2));
+    const height = Math.min(Math.max(240, Number(geometry.height) || 560), Math.max(240, window.innerHeight - margin * 2));
+    return {
+      left: Math.max(margin, Math.min(Number(geometry.left) || margin, window.innerWidth - width - margin)),
+      top: Math.max(margin, Math.min(Number(geometry.top) || margin, window.innerHeight - height - margin)),
+      width,
+      height
+    };
+  }
+
+  function applySearchGeometry(card, geometry) {
+    const g = clampSearchGeometry(geometry);
+    card.style.left = g.left + 'px';
+    card.style.top = g.top + 'px';
+    card.style.right = 'auto';
+    card.style.width = g.width + 'px';
+    card.style.height = g.height + 'px';
+    card.style.maxHeight = 'none';
+  }
+
+  function saveSearchGeometry(card) {
+    const rect = card.getBoundingClientRect();
+    if (!rect.width || !rect.height) return;
+    try {
+      const api = typeof browser !== 'undefined' ? browser : chrome;
+      api.storage.local.set({ [SEARCH_CARD_GEOMETRY_KEY]: {
+        left: rect.left, top: rect.top, width: rect.width, height: rect.height
+      } });
+    } catch (e) { /* best-effort */ }
+  }
+
+  function wireSearchCardControls(card) {
+    if (card.__gsControlsWired) return;
+    card.__gsControlsWired = true;
+    card.classList.add('gs-search-card--resizable');
+    const header = card.querySelector('.gs-search-head');
+    let gesture = null;
+    const end = () => {
+      if (!gesture) return;
+      gesture = null;
+      card.classList.remove('gs-search-card--dragging');
+      saveSearchGeometry(card);
+    };
+    const start = (mode, event) => {
+      if (event.button != null && event.button !== 0) return;
+      if (event.target.closest('button, select, input, a')) return;
+      if (mode === 'drag' && event.target.closest('.gs-model-picker')) return;
+      const r = card.getBoundingClientRect();
+      gesture = { mode, x: event.clientX, y: event.clientY, left: r.left, top: r.top, width: r.width, height: r.height };
+      card.classList.add('gs-search-card--dragging');
+      event.preventDefault();
+    };
+    const move = (event) => {
+      if (!gesture) return;
+      if (gesture.mode === 'drag') {
+        applySearchGeometry(card, Object.assign({}, gesture, {
+          left: gesture.left + event.clientX - gesture.x,
+          top: gesture.top + event.clientY - gesture.y
+        }));
+      } else {
+        applySearchGeometry(card, Object.assign({}, gesture, {
+          width: gesture.width + event.clientX - gesture.x,
+          height: gesture.height + event.clientY - gesture.y
+        }));
+      }
+      event.preventDefault();
+    };
+    if (header) {
+      header.title = 'Drag to move';
+      header.addEventListener('pointerdown', (e) => start('drag', e));
+      header.addEventListener('mousedown', (e) => { if (!gesture) start('drag', e); });
+    }
+    card.addEventListener('pointerdown', (e) => {
+      const rect = card.getBoundingClientRect();
+      if (e.clientX >= rect.right - 22 && e.clientY >= rect.bottom - 22) start('resize', e);
+    });
+    card.addEventListener('mousedown', (e) => {
+      const rect = card.getBoundingClientRect();
+      if (!gesture && e.clientX >= rect.right - 22 && e.clientY >= rect.bottom - 22) start('resize', e);
+    });
+    window.addEventListener('pointermove', move, { capture: true, passive: false });
+    window.addEventListener('mousemove', move, true);
+    window.addEventListener('pointerup', end, true);
+    window.addEventListener('mouseup', end, true);
+    window.addEventListener('blur', end);
+    try {
+      const api = typeof browser !== 'undefined' ? browser : chrome;
+      api.storage.local.get(SEARCH_CARD_GEOMETRY_KEY).then((value) => {
+        const saved = value && value[SEARCH_CARD_GEOMETRY_KEY];
+        if (saved && window.innerWidth >= FLOAT_MIN_WIDTH) {
+          card.classList.add('gs-search-card--user-geometry');
+          applySearchGeometry(card, saved);
+        }
+      }).catch(() => {});
+    } catch (e) { /* use default placement */ }
+  }
 
   // Engines can flip light/dark at runtime (theme toggle, OS scheme
   // change) without any DOM mutation, so keep the sampled page theme
@@ -518,6 +619,7 @@
       if (card.parentElement === document.body &&
           card.classList.contains('gs-search-card--float')) return;
       mountCard(card);
+      if (card.classList.contains('gs-search-card--user-geometry')) return;
       applyPageTheme(card);
       return;
     }
