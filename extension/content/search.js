@@ -1,5 +1,9 @@
 /* Graphite Sider - search engine enhancer (Google / Bing / DuckDuckGo).
-   Inserts a "Graphite AI Answer" card in the right rail alongside the
+   On wide viewports the "Graphite AI Answer" card is a wide floating box
+   fixed at the right of the viewport, so the engine's results stay on the
+   left in their intended layout and are never pushed or reflowed; the
+   card's colors follow the results page's own light/dark theme. On narrow
+   viewports it falls back to an in-flow full-width block above the
    results. Generation is opt-in (click) so no tokens are spent passively. */
 (function () {
   'use strict';
@@ -278,31 +282,63 @@
     return results;
   }
 
-  // The answer belongs in the right rail (Google #rhs, Bing #b_context,
-  // DuckDuckGo sidebar) and must fill that container; without a native rail it
-  // stretches across the results area instead of sitting shrunk in a narrow
-  // floated column. Insertion never lands at the top of the results column.
-  function insertionPoint() {
-    // 1. The engine's own right rail, when present (Google renders #rhs
-    //    only with knowledge-panel-type content; on plain queries it is
-    //    usually absent, so the check below must not stop here).
-    const railSelectors = ['#rhs', '#b_context', '.results--sidebar', '#sidebar', '.sidebar', '#b_dynRail'];
-    for (const selector of railSelectors) {
-      const el = document.querySelector(selector);
-      if (el && el.getClientRects().length && getComputedStyle(el).display !== 'none') {
-        return { el, rail: true };
-      }
-    }
-    // 2. No rail: park the card in its own full-width block above the results
-    //    list (inside #rcnt/#search it spans the container instead of being
-    //    squeezed into a 336px float); tryInsert marks it with the stretch
-    //    class so the CSS below can lay it out wide.
+  // Results stay on the left in the engine's intended layout. On wide
+  // viewports the card is a floating box fixed at the right (mounted on
+  // <body>, out of flow), so it can never push the results around; the
+  // gs-search-card--float class in panel.css carries that layout and it
+  // only applies above the wide breakpoint. On narrow viewports a fixed
+  // box would cover results, so there the card falls back in-flow: its own
+  // full-width block above the results list, marked with the stretch class.
+  function mountCard(card) {
+    // Grafted onto <body>: a transformed or filtered ancestor would
+    // hijack position:fixed positioning, and body has none on search
+    // pages. The same node is moved (never rebuilt) so live result
+    // state and the watcher expandos survive.
+    card.classList.remove('gs-search-card--stretch');
+    card.classList.add('gs-search-card--float');
+    document.body.appendChild(card);
+  }
+
+  // In-flow fallback host (narrow viewports): the results column itself,
+  // where the card takes a whole full-width row above the list.
+  function fallbackInsertionPoint() {
     const mainSelectors = ['#rcnt', '#search', '#b_results', '#links', '#web_content_wrapper', 'main'];
     for (const selector of mainSelectors) {
       const el = document.querySelector(selector);
-      if (el) return { el, rail: false };
+      if (el) return el;
     }
     return null;
+  }
+
+  // Below this width (mirrors the CSS breakpoint in panel.css) a floating
+  // box would overlap the results column, so the in-flow fallback is used;
+  // wide viewports keep results untouched on the left.
+  const FLOAT_MIN_WIDTH = 1150;
+
+  // Engines can flip light/dark at runtime (theme toggle, OS scheme
+  // change) without any DOM mutation, so keep the sampled page theme
+  // fresh on a slow interval while the card lives. Cleared on unload;
+  // one timer per page (the content script runs once per frame).
+  setInterval(() => {
+    const card = document.querySelector('.gs-search-card');
+    if (card) applyPageTheme(card);
+  }, 3000);
+
+  // Follow the results page's own theme: sample the rendered page
+  // background and mark light cards so the CSS variable set flips to the
+  // engine's light palette (Google #fff card on #fff/#f8f9fa pages,
+  // #202124 text). Dark pages keep the Graphite dark palette (default
+  // #22242a). getComputedStyle always resolves rgba(); a transparent body
+  // falls back to the document element.
+  function applyPageTheme(card) {
+    try {
+      const bg = getComputedStyle(document.body).backgroundColor;
+      const m = /rgba?\((\d+)[,\s]+(\d+)[,\s]+(\d+)(?:[,\s/]+([\d.]+%?))?\)/.exec(bg || '');
+      if (!m || (m[4] !== undefined && parseFloat(m[4]) === 0)) return;
+      const lum = (0.2126 * Number(m[1]) + 0.7152 * Number(m[2]) + 0.0722 * Number(m[3])) / 255;
+      if (lum > 0.6) card.classList.add('gs-search-card--light');
+      else card.classList.remove('gs-search-card--light');
+    } catch (e) { /* theme stays dark, the historical default */ }
   }
 
   function buildCard(query, initialResults) {
@@ -429,7 +465,7 @@
       } catch (error) {
         while (body.firstChild) body.removeChild(body.firstChild);
         const errP = document.createElement('p');
-        errP.style.color = '#e88a8a';
+        errP.style.color = 'var(--gs-card-error, #e88a8a)';
         errP.textContent = error && error.message ? error.message : 'Request failed';
         body.appendChild(errP);
         button.disabled = false;
@@ -447,15 +483,52 @@
   function watchCard(card) {
     if (!card || card.__gsWatching) return;
     card.__gsWatching = true;
+    // A viewport resize can cross the float breakpoint in either direction;
+    // re-anchor the same node so the layout mode always matches.
+    let resizeTimer = 0;
+    const onResize = () => {
+      if (resizeTimer) clearTimeout(resizeTimer);
+      resizeTimer = setTimeout(() => { ensureMount(card); }, 150);
+    };
+    window.addEventListener('resize', onResize);
     let ticks = 0;
     const observer = new MutationObserver(() => {
       ticks += 1;
       if (typeof card.__gsRefreshResults === 'function') card.__gsRefreshResults();
+      // The page can re-render under the card (Google swaps result columns
+      // without a resize): keep the mount layout in step, and re-sample
+      // the page theme in case the engine flipped light/dark.
+      ensureMount(card);
+      applyPageTheme(card);
       const done = typeof card.__gsHasResults === 'function' && card.__gsHasResults();
       if (done || ticks > 40) observer.disconnect();
     });
     observer.observe(document.documentElement, { childList: true, subtree: true });
     setTimeout(() => observer.disconnect(), 15000);
+  }
+
+  // Idempotently place the card for the current viewport: floating box at
+  // the right on wide viewports, in-flow full-width fallback on narrow
+  // ones. Moving the same node keeps state and expandos; when the card is
+  // already where it belongs this is a no-op (MutationObserver feedback
+  // would otherwise re-trigger itself forever).
+  function ensureMount(card) {
+    if (!card || !card.isConnected && !document.body) return;
+    if (window.innerWidth >= FLOAT_MIN_WIDTH) {
+      if (card.parentElement === document.body &&
+          card.classList.contains('gs-search-card--float')) return;
+      mountCard(card);
+      applyPageTheme(card);
+      return;
+    }
+    if (card.parentElement !== document.body &&
+        card.classList.contains('gs-search-card--stretch')) return;
+    const host = fallbackInsertionPoint();
+    if (!host) return;
+    card.classList.remove('gs-search-card--float');
+    card.classList.add('gs-search-card--stretch');
+    host.prepend(card);
+    applyPageTheme(card);
   }
 
   async function init() {
@@ -472,25 +545,19 @@
     const tryInsert = () => {
       const existing = document.querySelector('.gs-search-card');
       if (existing) {
-        // Keep the mounted card fed with late-rendered results.
+        // Keep the mounted card fed with late-rendered results, and keep
+        // its mount layout matching the viewport.
+        ensureMount(existing);
         watchCard(existing);
         return true;
       }
       const query = getQuery();
       if (!query) return false;
-      const target = insertionPoint();
-      if (!target) return false;
+      if (!document.body) return false;
       const results = collectResults(5);
       const card = buildCard(query, results);
-      if (target.rail) {
-        target.el.prepend(card);
-      } else {
-        // No native rail: the card becomes a full-width block of its own
-        // above the results list (the stretch class in panel.css), never
-        // a shrunk floated column.
-        card.classList.add('gs-search-card--stretch');
-        target.el.prepend(card);
-      }
+      mountCard(card);
+      ensureMount(card);
       watchCard(card);
       return true;
     };

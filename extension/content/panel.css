@@ -171,10 +171,29 @@
 
 /* ---------- Search answer card (page level) ---------- */
 
+/* Theme variables: the card follows the results page's own light/dark
+   theme. The defaults are the Graphite dark palette (used on dark search
+   pages); search.js adds .gs-search-card--light when the rendered page
+   background is light, flipping the whole variable set to the engine's
+   light palette — on Google: #fff card, #202124 text, #dadce0 borders,
+   #f1f3f4 code, #5f6368 muted — so the box reads as part of the results
+   page instead of a foreign dark slab. Fixed values keep the smoke pin
+   literal: the dark background stays exactly #22242a. */
 .gs-search-card {
+  --gs-card-bg: #22242a;
+  --gs-card-text: #e6e8eb;
+  --gs-card-border: #33373f;
+  --gs-card-accent: #5ec8c0;
+  --gs-card-code-bg: #2c2f38;
+  --gs-card-code-border: #3a3f4a;
+  --gs-card-pre-bg: #17191d;
+  --gs-card-quote-bg: #262932;
+  --gs-card-muted: #9aa1ab;
+  --gs-card-error: #e88a8a;
+  --gs-card-shadow: 0 12px 32px rgba(0, 0, 0, 0.45);
   background: #22242a;
   color: #e6e8eb;
-  border: 1px solid #33373f;
+  border: 1px solid var(--gs-card-border);
   border-radius: 12px;
   padding: 16px 18px;
   margin: 0 0 16px;
@@ -182,12 +201,29 @@
   font-size: 14px;
   line-height: 1.6;
   box-sizing: border-box;
-  /* Fill the container it lands in (rail or results column) instead of
-     shrinking to content width. */
+  /* Fill the container it lands in (results column, in-flow mode) instead
+     of shrinking to content width. */
   width: 100%;
   min-width: 0;
   max-width: 100%;
   flex: 1 1 auto;
+}
+
+/* Light-page palette: applied when the results page itself is light. */
+.gs-search-card.gs-search-card--light {
+  --gs-card-bg: #ffffff;
+  --gs-card-text: #202124;
+  --gs-card-border: #dadce0;
+  --gs-card-accent: #1a73e8;
+  --gs-card-code-bg: #f1f3f4;
+  --gs-card-code-border: #dadce0;
+  --gs-card-pre-bg: #f8f9fa;
+  --gs-card-quote-bg: #f8f9fa;
+  --gs-card-muted: #5f6368;
+  --gs-card-error: #b3261e;
+  --gs-card-shadow: 0 12px 32px rgba(60, 64, 67, 0.28);
+  background: #ffffff;
+  color: #202124;
 }
 
 .gs-search-card * {
@@ -204,7 +240,7 @@
 
 .gs-search-card .gs-search-title {
   font-weight: 700;
-  color: #5ec8c0;
+  color: var(--gs-card-accent);
   font-size: 13px;
   letter-spacing: 0.02em;
 }
@@ -212,11 +248,11 @@
 .gs-search-card .gs-search-body p { margin: 0 0 8px; }
 .gs-search-card .gs-search-body ul, .gs-search-card .gs-search-body ol { margin: 0 0 8px; padding-left: 18px; }
 .gs-search-card .gs-search-body li { margin: 0 0 3px; }
-.gs-search-card .gs-search-body a { color: #5ec8c0; }
+.gs-search-card .gs-search-body a { color: var(--gs-card-accent); }
 .gs-search-card .gs-search-body code {
   font-family: ui-monospace, Menlo, Consolas, monospace;
-  background: #2c2f38;
-  border: 1px solid #3a3f4a;
+  background: var(--gs-card-code-bg);
+  border: 1px solid var(--gs-card-code-border);
   border-radius: 4px;
   padding: 1px 4px;
 }
@@ -225,7 +261,7 @@
 .gs-search-card .gs-search-body h3, .gs-search-card .gs-search-body h4, .gs-search-card .gs-search-body h5, .gs-search-card .gs-search-body h6 {
   margin: 12px 0 6px;
   line-height: 1.35;
-  color: #e6e8eb;
+  color: var(--gs-card-text);
 }
 .gs-search-card .gs-search-body h3 { font-size: 15px; }
 .gs-search-card .gs-search-body h4 { font-size: 14px; }
@@ -233,15 +269,15 @@
 .gs-search-card .gs-search-body blockquote {
   margin: 0 0 8px;
   padding: 6px 10px;
-  border-left: 3px solid #5ec8c0;
-  background: #262932;
-  color: #c9ced6;
+  border-left: 3px solid var(--gs-card-accent);
+  background: var(--gs-card-quote-bg);
+  color: var(--gs-card-muted);
 }
 .gs-search-card .gs-search-body pre {
   margin: 0 0 8px;
   padding: 10px 12px;
-  background: #17191d;
-  border: 1px solid #3a3f4a;
+  background: var(--gs-card-pre-bg);
+  border: 1px solid var(--gs-card-code-border);
   border-radius: 8px;
   overflow-x: auto;
 }
@@ -254,7 +290,7 @@
 }
 .gs-search-card .gs-search-body hr {
   border: none;
-  border-top: 1px solid #3a3f4a;
+  border-top: 1px solid var(--gs-card-code-border);
   margin: 10px 0;
 }
 .gs-search-card .gs-search-body table {
@@ -265,12 +301,12 @@
   overflow-x: auto;
 }
 .gs-search-card .gs-search-body th, .gs-search-card .gs-search-body td {
-  border: 1px solid #3a3f4a;
+  border: 1px solid var(--gs-card-code-border);
   padding: 5px 8px;
   text-align: left;
   vertical-align: top;
 }
-.gs-search-card .gs-search-body th { background: #262932; }
+.gs-search-card .gs-search-body th { background: var(--gs-card-quote-bg); }
 
 .gs-search-card .gs-search-foot {
   display: flex;
@@ -279,20 +315,53 @@
 }
 
 .gs-search-card .gs-search-sources {
-  color: #9aa1ab;
+  color: var(--gs-card-muted);
   font-size: 11px;
   margin-top: 8px;
 }
 
-/* No native rail on this results page: the card stretches to fill its
-   container (full width of the results column, capped at a readable measure)
-   instead of the old shrunk 336px floated column. The legacy
-   --rail-fallback class is kept as an alias for any already-mounted card. */
+/* Wide viewports: the card is a wide FLOATING box fixed at the right of
+   the viewport. The results column stays on the left in the engine's own
+   intended layout and is never pushed, shrunk, or reflowed — the card is
+   mounted on <body>, out of flow (search.js mountCard). Position and size
+   keep it clear of the search header and within the viewport; long
+   answers scroll inside the box. min(520px, ...) keeps it from ever
+   exceeding a narrow window even above the breakpoint. */
+.gs-search-card.gs-search-card--float {
+  position: fixed;
+  top: 132px;
+  right: 24px;
+  width: clamp(360px, 34vw, 520px);
+  max-width: min(520px, calc(100vw - 32px));
+  max-height: calc(100vh - 156px);
+  overflow-y: auto;
+  margin: 0;
+  z-index: 1000;
+  box-shadow: var(--gs-card-shadow);
+  flex: none;
+}
+
+/* Narrow viewports (in-flow fallback): the card takes its own full-width
+   row above the results list (the stretch class in the results column)
+   instead of covering results as a fixed box. Mirrors FLOAT_MIN_WIDTH in
+   search.js; the class only applies in that range, where search.js mounts
+   the card in-flow. The legacy --rail-fallback class is kept as an alias
+   for any already-mounted card. */
+@media (max-width: 1149px) {
+  .gs-search-card.gs-search-card--float {
+    position: static;
+    width: 100%;
+    max-width: 100%;
+    max-height: none;
+    overflow-y: visible;
+    box-shadow: none;
+  }
+}
 .gs-search-card.gs-search-card--stretch,
 .gs-search-card.gs-search-card--rail-fallback {
   float: none;
   width: 100%;
-  max-width: 880px;
+  max-width: 100%;
   margin: 0 auto 20px 0;
   /* Flex/grid containers: take a whole row, not a squeezed flex item. */
   flex: 1 1 100%;
@@ -311,9 +380,7 @@
   min-width: 0;
 }
 .gs-yt-panel .gs-model-provider,
-.gs-yt-panel .gs-model-model,
-.gs-search-card .gs-model-provider,
-.gs-search-card .gs-model-model {
+.gs-yt-panel .gs-model-model {
   all: initial;
   font-family: inherit;
   font-size: 12px;
@@ -327,11 +394,29 @@
   max-width: 150px;
   min-width: 0;
 }
+.gs-search-card .gs-model-provider,
+.gs-search-card .gs-model-model {
+  all: initial;
+  font-family: inherit;
+  font-size: 12px;
+  color: var(--gs-card-text);
+  background: var(--gs-card-pre-bg);
+  border: 1px solid var(--gs-card-border);
+  border-radius: 8px;
+  padding: 6px 8px;
+  line-height: 1.3;
+  cursor: pointer;
+  max-width: 150px;
+  min-width: 0;
+}
 .gs-yt-panel .gs-model-provider:focus,
-.gs-yt-panel .gs-model-model:focus,
+.gs-yt-panel .gs-model-model:focus {
+  border-color: #5ec8c0;
+  outline: none;
+}
 .gs-search-card .gs-model-provider:focus,
 .gs-search-card .gs-model-model:focus {
-  border-color: #5ec8c0;
+  border-color: var(--gs-card-accent);
   outline: none;
 }
 

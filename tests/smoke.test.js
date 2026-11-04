@@ -652,12 +652,12 @@ check("background prompt path guarded and loads settings", () => {
   assert.ok(!/(^|[^\w.$])global\./.test(bg), "background.js must not use the bare global object");
 });
 
-check("manifest background order and release version 1.0.32", () => {
+check("manifest background order and release version 1.0.33", () => {
   assert.ok(manifest, "manifest required");
   const scripts = (manifest.background && manifest.background.scripts) || [];
   const iP = scripts.indexOf("lib/prompts.js"), iY = scripts.indexOf("lib/youtube.js"), iB = scripts.indexOf("background.js");
   assert.ok(iP >= 0 && iY >= 0 && iB > iP && iB > iY, "lib/prompts.js + lib/youtube.js load before background.js");
-  assert.strictEqual(manifest.version, "1.0.32", "release version");
+  assert.strictEqual(manifest.version, "1.0.33", "release version");
 });
 
 /* ---------- 1.0.6 bug: transcript truncated at 22:52 of a 44:59 video -----
@@ -950,49 +950,76 @@ let activityDone = Promise.resolve();
     (e) => fail("providers: raw SSE bytes fire onActivity even with no content", e));
 }
 
-/* ---------- 1.0.8: search AI answer on the right side -------------------
-   The card belongs in the right rail (Google #rhs, Bing #b_context,
-   DuckDuckGo sidebar) with Google's #22242a background, never at the top
-   of the main results column. */
-check("search AI answer: right rail, Google #22242a background", () => {
+/* ---------- 1.0.33: search AI answer — wide floating box at the right ----
+   The card no longer mounts inside Google's #rhs rail or results column:
+   on wide viewports it is a wide floating box (position:fixed) at the
+   right, mounted on <body> out of flow, so results stay on the left in
+   Google's intended layout and are never pushed. Its colors follow the
+   results page's own light/dark theme (sampled page background → light
+   class → variable palette). Narrow viewports keep the in-flow full-width
+   fallback. The dark default background stays Google's #22242a. */
+check("1.0.33 search AI answer: wide floating box at the right, page theme", () => {
   const src = fs.readFileSync(path.join(EXT, "content/search.js"), "utf8");
   const css = fs.readFileSync(path.join(EXT, "content/panel.css"), "utf8");
-  // Background is Google's #22242a, not the old graphite panel #1f2227, and
+  // Dark default background is Google's #22242a, not the old #1f2227, and
   // the whole card (not a child) carries it.
   const cardCss = css.match(/\.gs-search-card\s\{[^}]*\}/);
   assert.ok(cardCss, ".gs-search-card rule present");
-  assert.ok(cardCss[0].includes("background: #22242a"), "card background is Google #22242a");
+  assert.ok(cardCss[0].includes("background: #22242a"), "card dark background is Google #22242a");
   assert.ok(!cardCss[0].includes("background: #1f2227"), "old #1f2227 background gone from the card");
-  // Code chips stay legible on #22242a (lighter than the card, no #17191d).
+  assert.ok(cardCss[0].includes("--gs-card-bg: #22242a"), "dark theme variable set present");
+  // Light palette: follows the page's own theme (Google light values).
+  const lightCss = css.match(/\.gs-search-card\.gs-search-card--light\s\{[^}]*\}/);
+  assert.ok(lightCss, "light theme class rule present");
+  assert.ok(lightCss[0].includes("--gs-card-bg: #ffffff"), "light card background follows Google");
+  assert.ok(lightCss[0].includes("--gs-card-text: #202124"), "light text follows Google #202124");
+  assert.ok(lightCss[0].includes("--gs-card-code-bg: #f1f3f4"), "light code follows Google #f1f3f4");
+  // Code chips stay legible (variable-driven, no hardcoded #17191d chip).
   const chipCss = css.match(/\.gs-search-body code\s\{[^}]*\}/);
-  assert.ok(chipCss && !chipCss[0].includes("#17191d"), "code chips contrast on #22242a");
-  // Right side: the rail is preferred; fallbacks get the right-column class.
-  const insert = src.slice(src.indexOf("function insertionPoint"), src.indexOf("function buildCard"));
-  assert.ok(insert.includes("'#rhs'"), "Google #rhs still a rail candidate");
-  assert.ok(insert.includes("'#b_context'"), "Bing #b_context still a rail candidate");
-  assert.ok(insert.includes("getClientRects"), "empty/hidden rails are skipped");
-  assert.ok(insert.indexOf("'#rhs'") < insert.indexOf("'#rcnt'"), "rail is tried before main-column fallbacks");
-  assert.ok(src.includes("gs-search-card--stretch"), "fallback path marks the card to stretch full-width");
+  assert.ok(chipCss && !chipCss[0].includes("#17191d"), "code chips contrast on the card");
+  assert.ok(chipCss[0].includes("var(--gs-card-code-bg)"), "code chips use the theme variable");
+  // Floating layout: fixed at the right, wide, capped by viewport height.
+  const floatCss = css.match(/\.gs-search-card\.gs-search-card--float\s\{[^}]*\}/);
+  assert.ok(floatCss, "float rule present");
+  assert.ok(floatCss[0].includes("position: fixed"), "card floats fixed, out of flow");
+  assert.ok(floatCss[0].includes("right: 24px"), "card anchored at the right");
+  assert.ok(floatCss[0].includes("width: clamp(360px, 34vw, 520px)"), "card is wide (360-520px)");
+  assert.ok(floatCss[0].includes("overflow-y: auto"), "long answers scroll inside the box");
+  assert.ok(floatCss[0].includes("z-index: 1000"), "card stacks above page content");
+  // Narrow viewports: the fixed box reverts to static full-width so it can
+  // never cover results on mobile.
+  assert.ok(css.includes("@media (max-width: 1149px)"), "narrow breakpoint reverts the float");
+  // Mount: on <body>, out of flow; same node relocated, never rebuilt.
+  assert.ok(src.includes("function mountCard"), "mountCard exists");
+  assert.ok(src.includes("document.body.appendChild(card)"), "card mounted on document.body");
+  assert.ok(src.includes("gs-search-card--float"), "wide mount uses the float class");
+  assert.ok(src.includes("gs-search-card--stretch"), "narrow fallback marks the card to stretch full-width");
   assert.ok(/\.gs-search-card--stretch[^{]*\{[^}]*width:\s*100%/.test(css), "stretch card fills its container width");
   assert.ok(!/float:\s*right/.test(css.match(/\.gs-search-card--rail-fallback\s\{[^}]*\}/)?.[0] || ""), "no shrunk floated column remains");
-  // Main-column insertion must not happen silently: the only un-classed
-  // insertion is into the rail itself.
-  const tryInsert = src.slice(src.indexOf("const tryInsert"), src.indexOf("if (!tryInsert())"));
-  assert.ok(tryInsert.includes("target.rail"), "insertion distinguishes rail from fallback");
+  // The old in-rail mount is gone: no rail selectors drive insertion.
+  assert.ok(!src.includes("function insertionPoint"), "rail insertionPoint is gone");
+  assert.ok(!src.includes("'#rhs'"), "Google #rhs no longer a mount target");
+  assert.ok(!src.includes("target.rail"), "insertion no longer distinguishes rail from fallback");
+  // Theme follows the page: background luminance sampled, light class set.
+  assert.ok(src.includes("function applyPageTheme"), "page theme sampler exists");
+  assert.ok(src.includes("getComputedStyle(document.body).backgroundColor"), "page background sampled");
+  assert.ok(src.includes("gs-search-card--light"), "light class toggled from the sample");
+  assert.ok(src.includes("FLOAT_MIN_WIDTH"), "float width breakpoint mirrored in JS");
   // Opt-in generation and the settings gate are unchanged.
   assert.ok(src.includes("Generate answer"), "opt-in Generate button intact");
   assert.ok(src.includes("stored.searchEnhance === false"), "searchEnhance gate intact");
   assert.ok(src.includes("'search-answer'"), "search-answer action unchanged");
 });
 
-/* ---------- 1.0.24: search card — fresh results, full-width box ----------
+/* ---------- 1.0.24: search card — fresh results (layout updated 1.0.33) ---
    Regression: the card captured results once at mount (often before Google
    rendered them) and the Generate handler closed over that stale, usually
    empty array, so the model reported the search as empty. The card also
-   shrank into a 336px floated column outside a native rail. */
-check("1.0.24: search card re-collects results and stretches to fill its container", () => {
+   shrank into a 336px floated column outside a native rail. In 1.0.33 the
+   wide layout became the floating right box (pinned in the 1.0.33 block
+   above); this block keeps pinning the live-results behavior. */
+check("1.0.24: search card re-collects results live (layout in 1.0.33 block)", () => {
   const src = fs.readFileSync(path.join(EXT, "content/search.js"), "utf8");
-  const css = fs.readFileSync(path.join(EXT, "content/panel.css"), "utf8");
   const build = src.slice(src.indexOf("function buildCard"), src.indexOf("async function init"));
   // Results are live state, refreshed re-entrantly — not a mount snapshot.
   assert.ok(build.includes("refreshResults"), "card refreshes results after mount");
@@ -1005,17 +1032,13 @@ check("1.0.24: search card re-collects results and stretches to fill its contain
   // for a direct answer instead of claiming the search returned nothing.
   assert.ok(src.includes("do not claim the search itself returned nothing"), "empty prompt never blames the search");
   assert.ok(build.includes("No ") && build.includes("results found on this page yet"), "honest still-loading label");
-  // Card fills its container; fallback is a full-width stretched block.
-  const cardCss = css.match(/\.gs-search-card\s\{[^}]*\}/)[0];
-  assert.ok(cardCss.includes("width: 100%"), "card fills its container width");
-  const stretch = css.match(/\.gs-search-card--stretch,[^{]*\{[^}]*\}/)[0];
-  assert.ok(stretch.includes("width: 100%"), "stretch fallback is full width");
-  assert.ok(stretch.includes("max-width: 880px"), "stretch fallback has a readable cap, not 336px");
-  assert.ok(!stretch.includes("float: right"), "no floated column");
-  assert.ok(src.includes("gs-search-card--stretch"), "non-rail insertion uses the stretch class");
   // Late results keep flowing into a mounted card.
   assert.ok(src.includes("watchCard"), "mounted card is watched for late results");
   assert.ok(src.includes("__gsRefreshResults"), "card exposes its refresher to the watcher");
+  // The floating mount relocates the same node, so the watcher expandos
+  // survive viewport changes.
+  assert.ok(src.includes("function ensureMount"), "mount layout is kept in step with the viewport");
+  assert.ok(src.includes("card.__gsRefreshResults = refreshResults"), "card exposes its refresher");
 });
 
 /* ---------- 1.0.9: icon selection toolbar, Copy first -------------------
@@ -1523,7 +1546,7 @@ Promise.all([Promise.resolve(sseDone), Promise.resolve(imageDone), Promise.resol
    fallback, widened liveness, touch selection, helper payloads. */
 check("1.0.21: version, model-select wiring, detach transport, mobile surfaces", () => {
   assert.ok(manifest, "manifest required");
-  assert.strictEqual(manifest.version, "1.0.32", "release version");
+  assert.strictEqual(manifest.version, "1.0.33", "release version");
   assert.ok(manifest.browser_specific_settings.gecko_android, "gecko_android block present");
   // Shared picker loads before both helpers.
   const ytEntry = (manifest.content_scripts || []).find((cs) => (cs.js || []).includes("content/youtube.js"));
@@ -1620,7 +1643,7 @@ check("1.0.19: icons built as same-document SVG nodes (no DOMParser import)", ()
    static 9px text; now icons-only everywhere, name via long-press. */
 check("1.0.23: panel placement ladder + long-press toolbar labels", () => {
   assert.ok(manifest, "manifest required");
-  assert.strictEqual(manifest.version, "1.0.32", "release version");
+  assert.strictEqual(manifest.version, "1.0.33", "release version");
   const yt = fs.readFileSync(path.join(EXT, "content/youtube.js"), "utf8");
   // Ladder exists, tried sequentially in priority order.
   const ladder = yt.slice(yt.indexOf("const PANEL_PLACEMENTS"), yt.indexOf("function bestPanelPlacement"));
@@ -1964,7 +1987,7 @@ check("1.0.27 blob/MSE extraction + per-provider transcription model", () => {
    per-video summary language + model selectors. */
 check("1.0.28 manifest recovery + chunking + summary controls", () => {
   assert.ok(manifest, "manifest required");
-  assert.strictEqual(manifest.version, "1.0.32", "release version");
+  assert.strictEqual(manifest.version, "1.0.33", "release version");
 
   // Watcher: registered at document_start in its OWN entry, before the
   // document_end content entry; webRequest present, blocking variant absent.
@@ -2098,7 +2121,7 @@ check("1.0.29 chat transport: jobPost delivers, sidebar re-attaches", () => {
    keyframe names, renames, and the panel root marker classes. */
 check("1.0.30 CSS isolation: page stylesheets cannot touch host UI", () => {
   assert.ok(manifest, "manifest required");
-  assert.strictEqual(manifest.version, "1.0.32", "release version");
+  assert.strictEqual(manifest.version, "1.0.33", "release version");
 
   // overlay.css (shadow-only) must never be page-injected again; panel.css
   // carries the small page-level surface (YouTube panel, search card).
@@ -2171,7 +2194,7 @@ check("1.0.30 CSS isolation: page stylesheets cannot touch host UI", () => {
    flatten, and the above/below placement branch in showToolbar(). */
 check("1.0.31 selection menu position: setting plumbed end to end", () => {
   assert.ok(manifest, "manifest required");
-  assert.strictEqual(manifest.version, "1.0.32", "release version");
+  assert.strictEqual(manifest.version, "1.0.33", "release version");
 
   const storageJs = fs.readFileSync(path.join(EXT, "lib/storage.js"), "utf8");
   assert.ok(storageJs.includes("selectionToolbarPosition: 'above'"), "storage default is above");
@@ -2213,7 +2236,7 @@ check("1.0.31 selection menu position: setting plumbed end to end", () => {
    configurable too. Pinned end to end like 1.0.31. */
 check("1.0.32 selection menu delay + padding: debounced, configurable", () => {
   assert.ok(manifest, "manifest required");
-  assert.strictEqual(manifest.version, "1.0.32", "release version");
+  assert.strictEqual(manifest.version, "1.0.33", "release version");
 
   const storageJs = fs.readFileSync(path.join(EXT, "lib/storage.js"), "utf8");
   assert.ok(storageJs.includes("selectionToolbarDelayMs: 800"), "storage delay default is 800ms");
