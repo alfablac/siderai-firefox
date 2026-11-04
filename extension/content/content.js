@@ -412,10 +412,25 @@
       root.querySelector('[data-gs="write-menu"]'));
   }
 
+  function syncOverlayStyles(root) {
+    if (!root || !overlayCssText) return;
+    let style = root.querySelector('style[data-gs="overlay-styles"]');
+    if (!style) {
+      style = document.createElement('style');
+      style.setAttribute('data-gs', 'overlay-styles');
+      root.insertBefore(style, root.firstChild);
+    }
+    if (style.textContent !== overlayCssText) style.textContent = overlayCssText;
+  }
+
   function ensureRoot() {
     if (shadowRoot) {
       const host = document.getElementById('graphite-sider-root');
       if (host && host.isConnected && host.shadowRoot === shadowRoot && rootElsPresent(shadowRoot)) {
+        // The overlay stylesheet loads asynchronously. A root may have been
+        // created by an early command before that fetch completed; update
+        // its style even when the UI nodes themselves are still intact.
+        syncOverlayStyles(shadowRoot);
         return shadowRoot;
       }
       // Host gone or replaced: the cached root is detached, rebuild.
@@ -441,15 +456,14 @@
       // A cloned host's float panel loses its expandos/listeners too.
       const fp = shadowRoot.querySelector('[data-gs="float-panel"]');
       if (fp) wireFloatPanel(gsRoot, fp); else buildFloatPanel(gsRoot);
+      syncOverlayStyles(shadowRoot);
       return shadowRoot;
     }
     // Fresh or emptied shadow: drop leftovers and build the full UI.
     // The rebuilt float panel needs a fresh iframe load + geometry.
     floatPanelReady = false;
     while (shadowRoot.firstChild) shadowRoot.removeChild(shadowRoot.firstChild);
-    const style = document.createElement('style');
-    style.textContent = overlayCssText;
-    shadowRoot.appendChild(style);
+    syncOverlayStyles(shadowRoot);
     const root = document.createElement('div');
     root.className = 'gs-root graphite-sider-ui';
     const toolbarEl = createEl('div', 'gs-toolbar graphite-sider-hidden');
