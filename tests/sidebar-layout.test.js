@@ -7,6 +7,7 @@ assert.ok(html.indexOf('id="groupToggle"') < html.indexOf('class="chat-controls"
 assert.ok(html.indexOf('class="chat-controls"') < html.indexOf('id="groupModels"'));
 assert.match(html, /id="groupModelSearch"[^>]*aria-label="Filter group chat models"/);
 assert.match(css, /\.tabs\{[^}]*overflow-x:auto/);
+assert.match(css, /\.model-menu\{[^}]*bottom:calc\(100% \+ 4px\)/);
 assert.match(css, /\.tab\{[^}]*border-radius:7px 7px 0 0/);
 assert.match(js, /groupModelSearch'\)\.addEventListener\('input', renderGroupModels\)/);
 assert.match(js, /groupSelection\[cb\.value\] = cb\.checked/);
