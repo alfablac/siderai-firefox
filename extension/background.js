@@ -219,12 +219,14 @@ async function tryFloatPanel(command) {
 
 /* @returns {Promise<{opened:boolean, mode:'sidebar'|'tab'|'float'|null}>} */
 async function openSidebar() {
-  if (await tryFloatPanel('showFloatPanel')) return { opened: true, mode: 'float' };
+  // sidebarAction.open() requires a user gesture. Start it before any async
+  // settings or tab work so content-action messages do not lose that gesture.
   if (ext.sidebarAction) {
     try {
       if (typeof ext.sidebarAction.open === 'function') { await ext.sidebarAction.open(); return { opened: true, mode: 'sidebar' }; }
     } catch (e) { /* fall through to the tab fallback (Android has no sidebar) */ }
   }
+  if (await tryFloatPanel('showFloatPanel')) return { opened: true, mode: 'float' };
   return openChatTab().then(function (ok) { return { opened: !!ok, mode: ok ? 'tab' : null }; });
 }
 
