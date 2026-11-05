@@ -168,6 +168,12 @@
       <input id="floatPanel" type="checkbox">
       <span><strong>Use the floating sidebar panel</strong><br><small>Open the sidebar as a draggable, resizable in-page panel that remembers its position.</small></span>
     </label>
+    <h3>Native sidebar shortcut</h3>
+    <label for="sidebarShortcut">Keyboard shortcut</label>
+    <input id="sidebarShortcut" type="text" placeholder="Ctrl+Q" aria-describedby="sidebarShortcutStatus">
+    <button id="saveSidebarShortcut" class="btn" type="button">Set shortcut</button>
+    <p id="sidebarShortcutStatus" class="muted" role="status" aria-live="polite"></p>
+    <p class="muted">Default: Ctrl+Q. Toggles the native sidebar open or closed. Page buttons save an action for the sidebar; press the shortcut to open it. Firefox or your OS may reserve this combination. Use another shortcut if it conflicts. You can also right-click a page and choose Graphite Sider → Open sidebar.</p>
   </section>
 
   <!-- ================= Prompt Library ================= -->

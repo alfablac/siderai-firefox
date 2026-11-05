@@ -1,7 +1,7 @@
 {
   "manifest_version": 2,
   "name": "Graphite Sider — AI Sidebar (BYO API)",
-  "version": "1.0.41",
+  "version": "1.0.42",
   "description": "Graphite-themed AI sidebar for Firefox. Bring your own key (BYOK; OpenAI-compatible, Anthropic, Ollama, LM Studio) for page and YouTube summaries with clickable timestamps, translation and writing help. No account, no proprietary backend.",
   "author": "Graphite Sider contributors",
   "icons": {
@@ -78,6 +78,10 @@
     "open_in_tab": true
   },
   "commands": {
+    "open-sidebar": {
+      "suggested_key": { "default": "Ctrl+Q" },
+      "description": "Open the native Graphite Sider sidebar"
+    },
     "_execute_sidebar_action": {
       "suggested_key": {
         "default": "Ctrl+Shift+Y",

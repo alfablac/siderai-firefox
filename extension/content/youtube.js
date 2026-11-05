@@ -992,11 +992,12 @@
     titleSpan.className = 'gs-yt-title';
     titleSpan.textContent = '\u25C6 Graphite';
     head.appendChild(titleSpan);
-    [['summarize', 'Summarize with Graphite'], ['chapters', 'Chapters'], ['bilingual', 'Bilingual subtitles'], ['sidebar', 'Send summary to sidebar'], ['openChat', 'Open chat']].forEach(function (pair) {
+    [['summarize', 'Summarize with Graphite'], ['chapters', 'Chapters'], ['bilingual', 'Bilingual subtitles'], ['sidebar', 'Send summary to sidebar']].forEach(function (pair) {
       var btn = document.createElement('button');
       btn.className = 'gs-yt-btn';
       btn.dataset.gsYt = pair[0];
       btn.textContent = pair[1];
+      if (pair[0] === 'sidebar' && globalThis.GraphiteSidebarButton) globalThis.GraphiteSidebarButton(btn, pair[1]);
       head.appendChild(btn);
     });
     var bodyDiv = document.createElement('div');
@@ -1015,12 +1016,6 @@
     panel.querySelector('[data-gs-yt="chapters"]').addEventListener('click', () => showChapters());
     panel.querySelector('[data-gs-yt="bilingual"]').addEventListener('click', (event) => toggleBilingual(event.currentTarget));
     panel.querySelector('[data-gs-yt="sidebar"]').addEventListener('click', sendToSidebar);
-    panel.querySelector('[data-gs-yt="openChat"]').addEventListener('click', () => {
-      // No sidebar on Firefox for Android: the background falls back to a
-      // chat tab there and opens the real sidebar on desktop.
-      runtime.sendMessage({ type: 'openSidebarWith', action: 'chat', text: '', url: location.href, title: document.title })
-        .catch(() => {});
-    });
     // Model picker: same selection the sidebar/options use (persisted via
     // the background). Content scripts cannot load sidebar code, so the
     // shared picker lives in lib/model-select.js (loaded before this file).
@@ -1181,9 +1176,10 @@
     let text = summaryCache.videoId === getVideoId() ? summaryCache.text : '';
     if (!text) text = await summarizeVideo();
     try {
-      await runtime.sendMessage({
+      await globalThis.GraphiteOpenFloatingChat({
         type: 'openSidebarWith',
         action: 'youtube-summary',
+        response: !!text,
         text: text || location.href,
         url: location.href,
         title: document.title

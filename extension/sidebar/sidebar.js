@@ -905,7 +905,9 @@
       var entry = { id: state.conversationId, title: title, updatedAt: Date.now(), messages: state.messages.map(function (m) { return { role: m.role, content: typeof m.content === 'string' ? m.content : plainText(m.content) }; }) };
       hist = hist.filter(function (h) { return h.id !== entry.id; });
       hist.unshift(entry);
-      return storageSet({ graphite_history: hist.slice(0, 100) });
+      var saved = { graphite_history: hist.slice(0, 100) };
+      if (IS_FLOAT) saved.graphite_float_chat = entry;
+      return storageSet(saved);
     }).catch(function () {});
   }
 
@@ -922,6 +924,7 @@
 
     var content = userContentFor(text || 'Describe this.');
     state.messages.push({ role: 'user', content: content });
+    persistConversation();
     addMessageEl('user', 'You', plainText(content));
     state.attachment = null; $('attachmentPreview').classList.add('hidden');
 
@@ -945,6 +948,7 @@
     if (combos.length < 2) { status('Group chat needs 2-4 checked models (or @mention matching models)'); if (combos.length === 1) { /* fall through single */ } else return Promise.resolve(); }
     var content = userContentFor(text);
     state.messages.push({ role: 'user', content: content });
+    persistConversation();
     addMessageEl('user', 'You (group)', plainText(content));
     state.attachment = null; $('attachmentPreview').classList.add('hidden');
 
@@ -2993,10 +2997,19 @@
     if (!action) return false;
     var target = action.surface || action.targetSurface || '';
     if (IS_FLOAT) return target === '' || target === 'float';
-    return target === '';
+    return target === '' || target === 'native';
   }
   function handlePendingAction(action) {
     if (!action) return;
+    if (action.response && action.text) {
+      stopGeneration();
+      var messages = [];
+      if (action.prompt) messages.push({ role: 'user', content: action.prompt });
+      messages.push({ role: 'assistant', content: action.text });
+      loadConversation({ id: uid(), title: action.title || 'Chat', messages: messages });
+      persistConversation();
+      return;
+    }
     var type = action.type || action.action || '';
     var text = action.text || action.selection || action.content || '';
     // Background context menus (sibling agent) may send tone-qualified ids
@@ -3046,11 +3059,7 @@
     // action (or vice versa) through this poll: only the native surface
     // polls the background; the float surface relies on the storage
     // change listener above, which checks pendingForThisSurface first.
-    if (IS_FLOAT) return;
-    sendMessage({ type: 'getPendingAction' }).then(function (r) {
-      var a = r && (r.action || r);
-      if (a && (a.type || a.action || a.text || a.prompt) && pendingForThisSurface(a)) handlePendingAction(a);
-    }).catch(function () {});
+    // Read the scoped key on both surfaces, including a newly loaded iframe.
     storageGet(PENDING_KEY).then(function (o) {
       var a = o[PENDING_KEY];
       if (a && pendingForThisSurface(a)) { var c = {}; c[PENDING_KEY] = null; storageSet(c); handlePendingAction(a); }
@@ -3178,6 +3187,9 @@
           }
         }
         if (area === 'local' && changes[SETTINGS_KEY]) loadSettings();
+        if (!IS_FLOAT && area === 'local' && changes.graphite_float_chat && changes.graphite_float_chat.newValue && !state.generating) {
+          loadConversation(changes.graphite_float_chat.newValue);
+        }
       });
       if (api.tabs && api.tabs.onActivated) api.tabs.onActivated.addListener(function (info) {
         // Chat-as-tab: remember the page tab the user switches away from,
@@ -3214,7 +3226,14 @@
     loadToolFavorites().then(function () { renderTools(); });
     renderTools();
     loadVideoSummaryPrefs();
-    loadSettings().then(function () { refreshPageChip(); checkPendingAction(); });
+    loadSettings().then(function () {
+      refreshPageChip();
+      if (IS_FLOAT) { checkPendingAction(); return; }
+      storageGet('graphite_float_chat').then(function (saved) {
+        if (saved.graphite_float_chat) loadConversation(saved.graphite_float_chat);
+        checkPendingAction();
+      }).catch(function () { checkPendingAction(); });
+    });
   }
   function openSettings() {
     try {

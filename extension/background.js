@@ -95,6 +95,7 @@ globalThis.GraphiteFeatures = FEATURES;
 
 var MENU = {
   ROOT: 'graphite-root',
+  OPEN_SIDEBAR: 'graphite-open-sidebar',
   SUMMARIZE_SELECTION: 'graphite-summarize-selection',
   TRANSLATE_SELECTION: 'graphite-translate-selection',
   EXPLAIN_SELECTION: 'graphite-explain-selection',
@@ -133,6 +134,7 @@ function createMenus() {
   var done = function () {
     var sel = ['selection'];
     menusApi.create({ id: MENU.ROOT, title: 'Graphite Sider', contexts: ['selection', 'page', 'image', 'link'] });
+    menusApi.create({ id: MENU.OPEN_SIDEBAR, parentId: MENU.ROOT, title: 'Open sidebar', contexts: ['all'] });
     menusApi.create({ id: MENU.SUMMARIZE_SELECTION, parentId: MENU.ROOT, title: 'Summarize selection', contexts: sel });
     menusApi.create({ id: MENU.TRANSLATE_SELECTION, parentId: MENU.ROOT, title: 'Translate selection', contexts: sel });
     menusApi.create({ id: MENU.EXPLAIN_SELECTION, parentId: MENU.ROOT, title: 'Explain selection', contexts: sel });
@@ -205,11 +207,11 @@ function sendTabCommand(tabId, command, extra) {
 // to the active tab's content script first. A truthy answer means the
 // panel handled it; null/false (no content script on this page) falls
 // back to the native sidebar / chat tab.
-async function tryFloatPanel(command) {
+async function tryFloatPanel(command, force, tabId) {
   try {
     var settings = await GraphiteStorage.loadSettings().catch(function () { return null; });
-    if (!settings || !settings.settings || settings.settings.floatPanel !== true) return false;
-    var tabs = await queryActiveTab();
+    if (!force && (!settings || !settings.settings || settings.settings.floatPanel !== true)) return false;
+    var tabs = tabId == null ? await queryActiveTab() : [{ id: tabId }];
     var tab = tabs && tabs[0];
     if (!tab || tab.id == null) return false;
     var res = await sendTabCommand(tab.id, command || 'showFloatPanel');
@@ -271,6 +273,10 @@ async function openSidebarNative() {
 
 if (menusApi && menusApi.onClicked) {
   menusApi.onClicked.addListener(function (info, tab) {
+    if (info.menuItemId === MENU.OPEN_SIDEBAR) {
+      openSidebarNative().catch(function () {});
+      return;
+    }
     var def = MENU_ACTIONS[info.menuItemId];
     if (!def) return;
     var pending = {
@@ -321,6 +327,11 @@ if (ext.action && ext.action.onClicked && !ext.browserAction) {
 
 if (ext.commands && ext.commands.onCommand) {
   ext.commands.onCommand.addListener(async function (command) {
+    if (command === 'open-sidebar') {
+      if (ext.sidebarAction && typeof ext.sidebarAction.toggle === 'function') await ext.sidebarAction.toggle();
+      else await openSidebarNative();
+      return;
+    }
     if (command === '_execute_sidebar_action') { await toggleSidebar(); return; }
     var tabs = await queryActiveTab();
     var tab = tabs && tabs[0];
@@ -1032,7 +1043,7 @@ function resolveTabIdForMessage(tabId, label) {
 /* --- One-shot message router -------------------------------------------------
  * Sidebar / content scripts send runtime messages; return value is sent back
  * as { ok:true, result } or { ok:false, error }. */
-function handleMessage(msg) {
+function handleMessage(msg, sender) {
   gsLog('msg', String(msg.type), { provider: (msg.provider && (msg.provider.label || msg.provider.kind)) || msg.providerId || '', model: msg.model || '' });
   switch (msg.type) {
     case 'chat':
@@ -1080,13 +1091,26 @@ function handleMessage(msg) {
       return fetch(msg.dataUrl).then(function (r) { return r.arrayBuffer(); })
         .then(function (buf) { return GraphitePDF.extractTextFromPDF(buf); });
     }
+    case 'getSidebarShortcut':
+      return ext.commands.getAll().then(function (commands) {
+        var command = commands.find(function (item) { return item.name === 'open-sidebar'; });
+        return { shortcut: command && command.shortcut || '' };
+      });
     case 'openSidebarWith':
-      return dispatchToSidebar({
-        action: msg.action || 'chat', promptId: msg.promptId || null,
-        tone: msg.tone || '',
-        text: msg.text || '', selection: msg.text || '',
-        url: msg.url || '', title: msg.title || '', tabId: msg.tabId
-      }).then(function (r) { return { opened: !!r.opened, mode: r.mode || null }; });
+      // Content-script clicks cannot grant Firefox's native-sidebar gesture.
+      // Preserve float mode; otherwise queue for the real shortcut/toolbar.
+      return (msg.floatingOpened ? Promise.resolve(true) : tryFloatPanel('showFloatPanel', true, sender && sender.tab && sender.tab.id)).then(async function (floating) {
+        var action = {
+          action: msg.action || 'chat', promptId: msg.promptId || null,
+          tone: msg.tone || '',
+          text: msg.text || '', selection: msg.text || '',
+          response: msg.response === true, prompt: msg.prompt || '',
+          url: msg.url || '', title: msg.title || '', tabId: msg.tabId,
+          surface: floating ? 'float' : 'native'
+        };
+        await GraphiteStorage.setPendingAction(action);
+        return { opened: floating, queued: true, mode: floating ? 'float' : 'sidebar' };
+      });
     case 'clearHistory':
       return GraphiteStorage.clearHistory().then(function () { return { cleared: true }; });
     case 'fetchImage': {
@@ -1462,7 +1486,7 @@ if (ext.runtime && ext.runtime.onMessage) {
       sendResponse({ ok: false, error: 'Message rejected: not from this extension.' });
       return true;
     }
-    handleMessage(msg).then(function (result) {
+    handleMessage(msg, sender).then(function (result) {
       // The tts handler already shapes its own payload.
       if (msg.type === 'tts') sendResponse(result);
       else sendResponse({ ok: true, result: result });

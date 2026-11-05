@@ -675,12 +675,12 @@ check("background prompt path guarded and loads settings", () => {
   assert.ok(!/(^|[^\w.$])global\./.test(bg), "background.js must not use the bare global object");
 });
 
-check("manifest background order and release version 1.0.41", () => {
+check("manifest background order and release version 1.0.42", () => {
   assert.ok(manifest, "manifest required");
   const scripts = (manifest.background && manifest.background.scripts) || [];
   const iP = scripts.indexOf("lib/prompts.js"), iY = scripts.indexOf("lib/youtube.js"), iB = scripts.indexOf("background.js");
   assert.ok(iP >= 0 && iY >= 0 && iB > iP && iB > iY, "lib/prompts.js + lib/youtube.js load before background.js");
-  assert.strictEqual(manifest.version, "1.0.41", "release version");
+  assert.strictEqual(manifest.version, "1.0.42", "release version");
 });
 
 /* ---------- 1.0.6 bug: transcript truncated at 22:52 of a 44:59 video -----
@@ -1583,7 +1583,7 @@ Promise.all([Promise.resolve(sseDone), Promise.resolve(imageDone), Promise.resol
    fallback, widened liveness, touch selection, helper payloads. */
 check("1.0.21: version, model-select wiring, detach transport, mobile surfaces", () => {
   assert.ok(manifest, "manifest required");
-  assert.strictEqual(manifest.version, "1.0.41", "release version");
+  assert.strictEqual(manifest.version, "1.0.42", "release version");
   assert.ok(manifest.browser_specific_settings.gecko_android, "gecko_android block present");
   // Shared picker loads before both helpers.
   const ytEntry = (manifest.content_scripts || []).find((cs) => (cs.js || []).includes("content/youtube.js"));
@@ -1621,12 +1621,12 @@ check("1.0.21: version, model-select wiring, detach transport, mobile surfaces",
   assert.ok(yt.includes("SUMMARY_BACKGROUND_TIMEOUT_MS = 90000"), "youtube liveness widened to 90s");
   assert.ok(yt.includes("pageshow") && yt.includes("visibilitychange"), "resume hooks re-arm liveness");
   assert.ok(yt.includes("ytModelPicker"), "youtube tracks the picker instance");
-  assert.ok(yt.includes("'openChat'") && yt.includes("Open chat"), "youtube panel offers Open chat");
+  assert.ok(!yt.includes("'openChat'"), "youtube panel omits the standalone Open chat button");
   // Search: picker mount + payload.
   const search = fs.readFileSync(path.join(EXT, "content/search.js"), "utf8");
   assert.ok(search.includes("GraphiteModelSelect.createPicker"), "search mounts the picker");
   assert.ok(search.includes("providerId: sel") && search.includes("model: sel"), "search sends picker selection");
-  assert.ok(search.includes("gs-search-open-chat"), "search card offers Open chat");
+  assert.ok(!search.includes("gs-search-open-chat"), "search card omits the standalone Open chat button");
   // Sidebar: persistence, coarse composer, chat-tab origin tracking.
   const side = fs.readFileSync(path.join(EXT, "sidebar/sidebar.js"), "utf8");
   assert.ok(side.includes("setActiveModel"), "sidebar persists picker choices");
@@ -1680,7 +1680,7 @@ check("1.0.19: icons built as same-document SVG nodes (no DOMParser import)", ()
    static 9px text; now icons-only everywhere, name via long-press. */
 check("1.0.23: panel placement ladder + long-press toolbar labels", () => {
   assert.ok(manifest, "manifest required");
-  assert.strictEqual(manifest.version, "1.0.41", "release version");
+  assert.strictEqual(manifest.version, "1.0.42", "release version");
   const yt = fs.readFileSync(path.join(EXT, "content/youtube.js"), "utf8");
   // Ladder exists, tried sequentially in priority order.
   const ladder = yt.slice(yt.indexOf("const PANEL_PLACEMENTS"), yt.indexOf("function bestPanelPlacement"));
@@ -2024,7 +2024,7 @@ check("1.0.27 blob/MSE extraction + per-provider transcription model", () => {
    per-video summary language + model selectors. */
 check("1.0.28 manifest recovery + chunking + summary controls", () => {
   assert.ok(manifest, "manifest required");
-  assert.strictEqual(manifest.version, "1.0.41", "release version");
+  assert.strictEqual(manifest.version, "1.0.42", "release version");
 
   // Watcher: registered at document_start in its OWN entry, before the
   // document_end content entry; webRequest present, blocking variant absent.
@@ -2158,7 +2158,7 @@ check("1.0.29 chat transport: jobPost delivers, sidebar re-attaches", () => {
    keyframe names, renames, and the panel root marker classes. */
 check("1.0.30 CSS isolation: page stylesheets cannot touch host UI", () => {
   assert.ok(manifest, "manifest required");
-  assert.strictEqual(manifest.version, "1.0.41", "release version");
+  assert.strictEqual(manifest.version, "1.0.42", "release version");
 
   // overlay.css (shadow-only) must never be page-injected again; panel.css
   // carries the small page-level surface (YouTube panel, search card).
@@ -2231,7 +2231,7 @@ check("1.0.30 CSS isolation: page stylesheets cannot touch host UI", () => {
    flatten, and the above/below placement branch in showToolbar(). */
 check("1.0.31 selection menu position: setting plumbed end to end", () => {
   assert.ok(manifest, "manifest required");
-  assert.strictEqual(manifest.version, "1.0.41", "release version");
+  assert.strictEqual(manifest.version, "1.0.42", "release version");
 
   const storageJs = fs.readFileSync(path.join(EXT, "lib/storage.js"), "utf8");
   assert.ok(storageJs.includes("selectionToolbarPosition: 'above'"), "storage default is above");
@@ -2273,7 +2273,7 @@ check("1.0.31 selection menu position: setting plumbed end to end", () => {
    configurable too. Pinned end to end like 1.0.31. */
 check("1.0.32 selection menu delay + padding: debounced, configurable", () => {
   assert.ok(manifest, "manifest required");
-  assert.strictEqual(manifest.version, "1.0.41", "release version");
+  assert.strictEqual(manifest.version, "1.0.42", "release version");
 
   const storageJs = fs.readFileSync(path.join(EXT, "lib/storage.js"), "utf8");
   assert.ok(storageJs.includes("selectionToolbarDelayMs: 800"), "storage delay default is 800ms");
@@ -2335,7 +2335,7 @@ check("1.0.32 selection menu delay + padding: debounced, configurable", () => {
    and the 1.0.32 debounce could be starved forever. Pinned below. */
 check("1.0.34 floating panel + self-healing menus", () => {
   assert.ok(manifest, "manifest required");
-  assert.strictEqual(manifest.version, "1.0.41", "release version");
+  assert.strictEqual(manifest.version, "1.0.42", "release version");
 
   const content = fs.readFileSync(path.join(EXT, "content/content.js"), "utf8");
   // Floating panel: build, persist, toggle.
@@ -2366,8 +2366,8 @@ check("1.0.34 floating panel + self-healing menus", () => {
 
   // Background: float-first routing + native escape hatch.
   const bg = fs.readFileSync(path.join(EXT, "background.js"), "utf8");
-  assert.ok(bg.includes("async function tryFloatPanel(command)"), "background tries the float panel first");
-  assert.ok(bg.includes("settings.settings.floatPanel !== true) return false"), "float routing is opt-in only");
+  assert.ok(bg.includes("async function tryFloatPanel(command, force, tabId)"), "background supports explicit floating-panel opens in the originating tab");
+  assert.ok(bg.includes("if (!force && (!settings || !settings.settings || settings.settings.floatPanel !== true)) return false"), "automatic float routing is opt-in; explicit clicks bypass it");
   assert.ok(bg.includes("case 'openSidebarNative':"), "background can open the native sidebar on request");
   assert.ok(bg.includes("surface: 'float'"), "float dispatches are marked for the float instance");
   const openSidebar = bg.slice(bg.indexOf("async function openSidebar()"), bg.indexOf("async function toggleSidebar()"));
@@ -2382,7 +2382,7 @@ check("1.0.34 floating panel + self-healing menus", () => {
   const sb = fs.readFileSync(path.join(EXT, "sidebar/sidebar.js"), "utf8");
   assert.ok(sb.includes("IS_FLOAT"), "sidebar detects the float surface");
   assert.ok(sb.includes("function pendingForThisSurface(action)"), "pending actions are surface-scoped");
-  assert.ok(sb.includes("if (IS_FLOAT) return;"), "float instance skips the consuming background poll");
+  assert.ok(!sb.includes("sendMessage({ type: 'getPendingAction' })"), "both surfaces use the scoped storage key rather than an unscoped consuming poll");
 
   // Settings plumbing for the opt-in.
   const storageJs = fs.readFileSync(path.join(EXT, "lib/storage.js"), "utf8");

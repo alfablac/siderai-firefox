@@ -1297,6 +1297,24 @@ function renderLanguageOptions(preserveValue) {
 }
 
 function init() {
+  var commands = typeof browser !== "undefined" && browser.commands;
+  var shortcut = el("sidebarShortcut");
+  var shortcutStatus = el("sidebarShortcutStatus");
+  function refreshShortcut() {
+    return commands.getAll().then(function (items) {
+      var command = items.find(function (item) { return item.name === "open-sidebar"; });
+      shortcut.value = command && command.shortcut || "";
+      shortcutStatus.textContent = shortcut.value ? "Current shortcut: " + shortcut.value : "No shortcut assigned. Choose an available combination.";
+    });
+  }
+  el("saveSidebarShortcut").disabled = !commands || !commands.update;
+  if (commands && commands.update) {
+    refreshShortcut().catch(function (err) { shortcutStatus.textContent = err.message; });
+    el("saveSidebarShortcut").addEventListener("click", function () {
+      commands.update({ name: "open-sidebar", shortcut: shortcut.value.trim() }).then(refreshShortcut)
+        .catch(function (err) { shortcutStatus.textContent = "Could not set shortcut: " + err.message; });
+    });
+  } else shortcutStatus.textContent = "Shortcut configuration is unavailable in this browser.";
   renderPresetOptions();
   renderLanguageOptions("");
   bindEvents();

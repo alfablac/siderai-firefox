@@ -269,17 +269,31 @@
   let activeField = null;
   let writeFocusOutTimer = 0;
 
+  globalThis.GraphiteSidebarButton = function (button, label) {
+    runtime.sendMessage({ type: 'getSidebarShortcut' }).then(function (response) {
+      if (!response || !response.ok) return;
+      const shortcut = response.result && response.result.shortcut;
+      button.textContent = label + (shortcut ? ' (' + shortcut + ')' : ' (toolbar icon)');
+      button.title = 'Click to open a floating chat. Open the native sidebar with ' + (shortcut || 'the extension toolbar icon') + ' to continue the chat.';
+    }).catch(() => {});
+  };
+
+  globalThis.GraphiteOpenFloatingChat = async function (message) {
+    await showFloatPanel();
+    const reply = await runtime.sendMessage(Object.assign({}, message, { type: 'openSidebarWith', floatingOpened: true }));
+    if (!reply || !reply.ok) throw new Error(reply && reply.error || 'Could not load the response into the floating chat.');
+    return reply;
+  };
+
   function openSidebarWith(action, text) {
-    try {
-      const promise = runtime.sendMessage({
+    globalThis.GraphiteOpenFloatingChat({
         type: 'openSidebarWith',
         action: action || 'chat',
         text: text || '',
+        response: !!text,
         url: location.href,
         title: document.title
-      });
-      if (promise && typeof promise.catch === 'function') promise.catch(() => {});
-    } catch (e) { /* sidebar open is best-effort */ }
+      }).catch(error => { setCardError(error.message); });
   }
 
   /* ---- Rewrite tones: single source of truth is lib/prompts.js
@@ -688,7 +702,7 @@
   async function showFloatPanel() {
     ensureRoot();
     const panel = floatPanelEl();
-    if (!panel) return;
+    if (!panel) throw new Error('Floating panel could not be created. Reload this page.');
     const frame = panel.querySelector('[data-gs="float-frame"]');
     if (!floatPanelReady) {
       floatPanelReady = true;
@@ -987,6 +1001,7 @@
       const el = document.createElement('button');
       el.className = 'gs-btn' + (button.primary ? ' gs-btn-primary' : '');
       el.textContent = button.label;
+      if (button.label === 'Open in sidebar') globalThis.GraphiteSidebarButton(el, button.label);
       el.addEventListener('click', () => button.onClick(el));
       footer.appendChild(el);
     });

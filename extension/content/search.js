@@ -461,17 +461,6 @@
         searchModelPicker = GraphiteModelSelect.createPicker(head, {});
       }
     } catch (e) { searchModelPicker = null; }
-    // No sidebar on Firefox for Android: open the chat (sidebar on desktop,
-    // chat tab there) from the card too.
-    const openChatBtn = document.createElement('button');
-    openChatBtn.className = 'gs-yt-btn gs-search-open-chat';
-    openChatBtn.type = 'button';
-    openChatBtn.textContent = 'Open chat';
-    openChatBtn.addEventListener('click', () => {
-      runtime.sendMessage({ type: 'openSidebarWith', action: 'chat', text: '', url: location.href, title: document.title })
-        .catch(() => {});
-    });
-    head.appendChild(openChatBtn);
     const body = document.createElement('div');
     body.className = 'gs-search-body';
     const sources = document.createElement('p');
@@ -543,6 +532,7 @@
         sidebarBtnEl.type = 'button';
         sidebarBtnEl.setAttribute('data-gs-open-sidebar', '');
         sidebarBtnEl.textContent = 'Open in sidebar';
+        if (globalThis.GraphiteSidebarButton) globalThis.GraphiteSidebarButton(sidebarBtnEl, 'Open in sidebar');
         const copyBtnEl = document.createElement('button');
         copyBtnEl.className = 'gs-yt-btn';
         copyBtnEl.type = 'button';
@@ -553,13 +543,15 @@
         body.appendChild(ansFoot);
         const sidebarBtn = body.querySelector('[data-gs-open-sidebar]');
         if (sidebarBtn) sidebarBtn.addEventListener('click', () => {
-          runtime.sendMessage({
+          globalThis.GraphiteOpenFloatingChat({
             type: 'openSidebarWith',
             action: 'search-answer',
+            response: true,
+            prompt: query,
             text: answer,
             url: location.href,
             title: document.title
-          }).catch(() => {});
+          }).catch(error => { sidebarBtn.textContent = error.message; });
         });
         const copyBtn = body.querySelector('[data-gs-copy]');
         if (copyBtn) copyBtn.addEventListener('click', async () => {
