@@ -535,6 +535,7 @@
       try {
         const answer = await chatSync([{ role: 'user', content: prompt }], 'search-answer');
         setGeneratedHtml(body, markdownLite(answer));
+        button.textContent = 'Answer generated';
         const ansFoot = document.createElement('div');
         ansFoot.className = 'gs-search-foot';
         const sidebarBtnEl = document.createElement('button');

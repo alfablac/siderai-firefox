@@ -314,6 +314,24 @@
   margin-top: 10px;
 }
 
+.gs-search-card .gs-yt-btn {
+  appearance: none;
+  font: inherit;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--gs-card-text);
+  background: var(--gs-card-quote-bg);
+  border: 1px solid var(--gs-card-border);
+  border-radius: 8px;
+  padding: 6px 10px;
+  cursor: pointer;
+}
+
+.gs-search-card .gs-yt-btn:hover {
+  border-color: var(--gs-card-accent);
+  color: var(--gs-card-accent);
+}
+
 .gs-search-card .gs-search-sources {
   color: var(--gs-card-muted);
   font-size: 11px;
